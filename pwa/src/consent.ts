@@ -72,3 +72,20 @@ export async function responsibleOf(db: Db, status: ApiStatus | null): Promise<s
   const saved = await db.get('config', 'pilot_responsible')
   return typeof saved === 'string' && saved !== '' ? saved : null
 }
+
+export interface PrivacyView {
+  title: string
+  intro: string
+  sections: { title: string; body: string }[]
+}
+
+const PRIVACY_SECTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+/** The full text of `/privacy` in PT, EN or ES (spec 10.1.3), the same texts of the consent screen's own selector. */
+export function privacyView(lang: ConsentLang): PrivacyView {
+  return {
+    title: consentT(lang, 'consent.privacy_title'),
+    intro: consentT(lang, 'consent.privacy_intro'),
+    sections: PRIVACY_SECTIONS.map((n) => ({ title: consentT(lang, `consent.privacy_s${n}_title`), body: consentT(lang, `consent.privacy_s${n}_body`) })),
+  }
+}

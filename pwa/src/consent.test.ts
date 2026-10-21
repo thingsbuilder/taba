@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import en from './i18n/en.json'
 import es from './i18n/es.json'
 import ptBR from './i18n/pt-BR.json'
-import { CONSENT_LANGS, LEGAL_BASES, effectiveBasis, consentT, consentView, defaultConsentLang, defaultLegalBasis, rememberResponsible, responsibleOf } from './consent'
+import { CONSENT_LANGS, LEGAL_BASES, effectiveBasis, consentT, consentView, defaultConsentLang, defaultLegalBasis, privacyView, rememberResponsible, responsibleOf } from './consent'
 import { detectLanguage, getLanguage, setLanguage, t } from './i18n'
 import { freshDb } from './testing'
 
@@ -92,5 +92,25 @@ describe('pilot responsible from GET /v1/status', () => {
     await rememberResponsible(db, { unico: 'ok' })
     expect(await responsibleOf(db, { unico: 'ok' })).toBeNull()
     expect(await responsibleOf(db, null)).toBeNull()
+  })
+})
+
+describe('the privacy page in three languages (spec 10.1.3)', () => {
+  it.each(['pt-BR', 'en', 'es'] as const)('has the title, the intro and the nine sections in %s', (lang) => {
+    const view = privacyView(lang)
+    expect(view.sections).toHaveLength(9)
+    expect([view.title, view.intro, ...view.sections.flatMap((s) => [s.title, s.body])].every((text) => text.length > 0 && !text.startsWith('consent.'))).toBe(true)
+  })
+
+  it('has really different texts, and the mandatory sentences in each language', () => {
+    const [pt, en, es] = [privacyView('pt-BR'), privacyView('en'), privacyView('es')]
+    expect(new Set([pt.title, en.title, es.title]).size).toBe(3)
+    expect(es.sections[5]!.body).toBe('Los datos no se comparten con la policía ni con inmigración.')
+    expect(es.sections[6]!.body).toContain('Rechazar la selfie no quita el albergue ni las donaciones.')
+    expect(en.sections[5]!.body).toBe('The data is not shared with the police or with immigration.')
+  })
+
+  it('every privacy key of the volunteer interface exists in Spanish', () => {
+    for (const k of Object.keys(ptBR).filter((k) => k.startsWith('consent.privacy_'))) expect(es, k).toHaveProperty([k])
   })
 })
