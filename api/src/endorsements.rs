@@ -63,6 +63,7 @@ pub async fn create_code(
     if !volunteer.is_admin_of(&shelter_id) {
         return Err(forbidden());
     }
+    crate::events::ensure_shelter_open(&state.db, &shelter_id).await?;
     valid_position(position.lat, position.lon, position.accuracy)?;
     let mut bytes = [0u8; 16];
     rand::fill(&mut bytes);
@@ -146,6 +147,7 @@ pub async fn endorse(
             if shelter.confirmation == Confirmation::Confirmed {
                 return Err(already_confirmed());
             }
+            crate::events::ensure_open(&db, shelter.event_id.as_deref()).await?;
 
             // The endorser: an admin of a confirmed shelter that may endorse, and not a member
             // of the new one (spec 3.9).

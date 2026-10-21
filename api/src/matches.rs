@@ -10,7 +10,6 @@ use axum::response::{IntoResponse, Response};
 use firestore::{FirestoreDb, FirestoreInstant, path};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
@@ -83,20 +82,9 @@ pub struct MatchDoc {
     pub created_at: FirestoreInstant,
 }
 
-/// `matches/{sha256(search_id|person_id)}` as lowercase hex.
-// The matching module (owner B) calls it and `queue_for` when it creates a match.
-#[allow(dead_code)]
-pub fn match_id(search_id: &str, person_id: &str) -> String {
-    Sha256::digest(format!("{search_id}|{person_id}").as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
 /// The queue of a match for `person`, who is now in `shelter` if anywhere (spec 4.8): a child goes
 /// to `protection` whatever the shelter; a confirmed shelter keeps its own match (and its id);
 /// an unconfirmed shelter or none goes to `central`.
-#[allow(dead_code)]
 pub fn queue_for(
     person: &PersonDoc,
     shelter: Option<&ShelterDoc>,
@@ -543,6 +531,7 @@ pub async fn post_decision(
 mod tests {
     use super::*;
     use crate::audit::LegalBasis;
+    use crate::matching::match_id;
     use crate::people::{Level, Needs, Origin, Vulnerabilities};
     use crate::test_support::{ORIGIN, TestApp, north_of_origin};
     use crate::{shelters, store};

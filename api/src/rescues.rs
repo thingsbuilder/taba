@@ -516,8 +516,6 @@ pub async fn nearby_shelters(
 // ---- who may see a rescued person (spec 4.6, 4.12) ----
 
 /// Whether `volunteer` registered a rescue of `person`.
-// Called by `people::visible_person` once the orchestrator wires it (see the hand-off notes).
-#[allow(dead_code)]
 pub async fn registered_rescue_of(
     db: &FirestoreDb,
     volunteer: &Volunteer,
@@ -534,8 +532,6 @@ pub async fn registered_rescue_of(
 
 /// The thumbnail of a rescued person who has no shelter yet (spec 4.6, Q33): the volunteer who
 /// registered the rescue and the Civil Defense. Once the person has a stay, the shelter rules apply.
-// Called by `thumbnail::get_thumbnail` once the orchestrator wires it (see the hand-off notes).
-#[allow(dead_code)]
 pub async fn can_see_thumbnail(
     db: &FirestoreDb,
     volunteer: &Volunteer,

@@ -6,10 +6,10 @@ use sha2::{Digest, Sha256};
 
 use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::error::ApiError;
-use crate::matches::{self, MatchDoc, MatchStatus, MediatorKind};
+use crate::matches::{self, MatchDoc, MatchStatus};
 use crate::people::{self, Level, PersonDoc};
 use crate::searches::{self, SearchDoc};
-use crate::shelters::{self, Confirmation, ShelterDoc};
+use crate::shelters::{self, ShelterDoc};
 use crate::store::{self, fs_error, tx_create};
 
 /// `matches/{sha256(search_id|person_id)}` as lowercase hex (spec 7).
@@ -18,29 +18,6 @@ pub fn match_id(search_id: &str, person_id: &str) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
-}
-
-/// The queue of a match by the situation of the person found (spec 4.8): a child goes to
-/// `protection` in any situation, a person in a `confirmed` shelter to that shelter, anyone
-/// else (`unconfirmed` shelter, or no shelter) to `central`.
-// ponytail: owner C (`matches.rs`) owns this rule; swap this call for `matches::queue_for` if C
-// publishes it.
-pub fn queue_for(
-    is_child: bool,
-    shelter: Option<&ShelterDoc>,
-    fallback_shelter_id: Option<&str>,
-) -> (MediatorKind, Option<String>) {
-    if is_child {
-        return (MediatorKind::Protection, None);
-    }
-    match shelter {
-        Some(s) if s.confirmation == Confirmation::Confirmed => (
-            MediatorKind::Shelter,
-            s.id.clone()
-                .or_else(|| fallback_shelter_id.map(str::to_string)),
-        ),
-        _ => (MediatorKind::Central, None),
-    }
 }
 
 /// Creates the match of a search and a person if there is none yet. A match that exists in any
@@ -62,11 +39,7 @@ pub async fn open_match(
     {
         return Ok(false);
     }
-    let (mediator_kind, mediator_shelter_id) = queue_for(
-        person.is_child,
-        shelter,
-        person.current_shelter_id.as_deref(),
-    );
+    let (mediator_kind, mediator_shelter_id) = matches::queue_for(person, shelter);
     let doc = MatchDoc {
         id: None,
         search_id: search_id.to_string(),

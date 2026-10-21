@@ -113,6 +113,7 @@ pub async fn create_invite(
     if !volunteer.is_admin_of(&shelter_id) {
         return Err(forbidden());
     }
+    crate::events::ensure_shelter_open(&state.db, &shelter_id).await?;
     if request.kind == InviteKind::Link && request.role == ShelterRole::Admin {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -245,6 +246,7 @@ pub async fn cancel_invite(
             if !volunteer.is_admin_of(&invite.shelter_id) {
                 return Err(forbidden());
             }
+            crate::events::ensure_shelter_open(&db, &invite.shelter_id).await?;
             invite.status = InviteStatus::Canceled;
             tx_replace(&db, tx, COLLECTION, &code, &invite)?;
             audit::add(
@@ -437,10 +439,11 @@ pub async fn accept_invite(
     let device = auth::device_id(&headers)?;
     // A dead invite is refused before the capture is looked at, so it costs nothing and
     // leaves the capture unused.
-    store::get::<InviteDoc>(&state.db, COLLECTION, &code)
+    let invite = store::get::<InviteDoc>(&state.db, COLLECTION, &code)
         .await?
         .filter(|i| i.is_valid(store::now()))
         .ok_or_else(invite_invalid)?;
+    crate::events::ensure_shelter_open(&state.db, &invite.shelter_id).await?;
     let mut capture = usable_capture(&state, &device, &request.capture_id, Purpose::Invite).await?;
     let person_id = resolve_person(&state, &request.capture_id, &mut capture).await?;
 

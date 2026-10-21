@@ -164,13 +164,6 @@ fn registering_membership(volunteer: &Volunteer) -> Result<Option<&Membership>, 
     }
 }
 
-/// `403` when the volunteer may not register searches; otherwise the id of the shelter the
-/// search comes from (`None` for civil defense, `mediator` and `protection` outside a shelter).
-#[allow(dead_code)] // called by search_links.rs (owner E)
-pub fn registering_shelter(volunteer: &Volunteer) -> Result<Option<String>, ApiError> {
-    Ok(registering_membership(volunteer)?.map(|m| m.shelter_id.clone()))
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 struct DayCount {
     count: u32,
@@ -356,7 +349,6 @@ async fn register(
 /// now (`matching`), and answer the same whether or not there was one. `503 unico_degraded` when
 /// Unico cannot be used, without writing anything. The daily limit is not taken here: the route
 /// takes it, and the family link takes it when the link is made (`take_daily_slot`).
-#[allow(dead_code)] // called by search_links.rs (owner E)
 pub async fn register_photos(
     state: &AppState,
     owner: SearchOwner,
@@ -446,6 +438,7 @@ pub async fn post_search(
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let membership = registering_membership(&volunteer)?;
+    crate::events::ensure_open(&state.db, membership.and_then(|m| m.event_id.as_deref())).await?;
     let input = parse_input(body)?;
     let owner = SearchOwner {
         volunteer_id: volunteer.id.clone(),
@@ -828,18 +821,6 @@ mod tests {
         assert_eq!(
             (here.mediator_kind, here.mediator_shelter_id),
             (MediatorKind::Shelter, Some(confirmed))
-        );
-    }
-
-    #[test]
-    fn a_person_with_no_shelter_goes_to_the_central_queue() {
-        assert_eq!(
-            matching::queue_for(false, None, None),
-            (MediatorKind::Central, None)
-        );
-        assert_eq!(
-            matching::queue_for(true, None, None),
-            (MediatorKind::Protection, None)
         );
     }
 

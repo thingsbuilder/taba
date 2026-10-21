@@ -343,6 +343,7 @@ pub async fn promote_member(
     if !volunteer.is_admin_of(&shelter_id) {
         return Err(forbidden());
     }
+    crate::events::ensure_shelter_open(&state.db, &shelter_id).await?;
     if request.role != ShelterRole::Admin {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -405,6 +406,7 @@ pub async fn remove_member(
     if !volunteer.is_admin_of(&shelter_id) && !civil_defense {
         return Err(forbidden());
     }
+    crate::events::ensure_shelter_open(&state.db, &shelter_id).await?;
     store::transact(&state.db, |db, tx| {
         let (shelter_id, target, by) = (shelter_id.clone(), target.clone(), volunteer.id.clone());
         Box::pin(async move {

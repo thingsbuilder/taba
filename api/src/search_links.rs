@@ -153,6 +153,7 @@ pub async fn post_search_link(
     if !global && !member_of_confirmed {
         return Err(forbidden());
     }
+    crate::events::ensure_open(&state.db, shelter.event_id.as_deref()).await?;
 
     let now = store::now();
     let code = new_code();
@@ -340,6 +341,7 @@ where
                 .await?
                 .filter(|l| l.is_valid(now))
                 .ok_or_else(ApiError::search_link_invalid)?;
+            crate::events::ensure_open(&db, link.event_id.as_deref()).await?;
             if link.processing_until.is_some_and(|until| now < until) {
                 return Err(busy());
             }
@@ -389,15 +391,13 @@ where
             }
             audit::add(&db, tx, &entry)?;
             // Informational, only for who made the link, never the content.
-            let mut alert = AlertDoc::new(
+            let mut alert = AlertDoc::personal(
                 AlertKind::FamilySearchReceived,
                 "search",
                 &search_id,
+                &link.created_by,
                 json!({ "usable_photos": outcome.usable_photos }),
-            )
-            .about_volunteers(vec![link.created_by.clone()]);
-            alert.informational = true;
-            alert.for_civil_defense = false;
+            );
             alert.event_id = link.event_id.clone();
             alerts::add(&db, tx, &alert)
         })
