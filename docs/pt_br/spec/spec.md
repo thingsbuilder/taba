@@ -353,6 +353,7 @@ O registro é feito **no ponto de desembarque ou triagem**, não no barco.
 8. A busca fica ativa até o descarte do evento do abrigo de origem; cada check-in ou resgate posterior é comparado com as buscas ativas [dec. k, Q25].
 9. **Antes de apagar** [dec. k, A5, Q25]: quando o evento é encerrado, cada busca ativa sem match aceito gera o alerta `search_expiring` para quem a registrou, com a data do descarte e a orientação de encaminhar à delegacia e à Cruz Vermelha.
 10. Match → mediação (4.8).
+11. **Link da família** [decisão do dono, fase 4; opcional]: em vez de digitar a busca, o operador gera um link de uso único com validade de 12 horas (`POST /v1/search-links`). A família abre `/f/<code>` (público, sem login, PT | EN | ES) e envia os dados e de 1 a 5 fotos da própria galeria (`POST /v1/search-links/{code}/submit`), que passa pelo mesmo pipeline do item 5 e tem a mesma resposta do item 6. A busca fica em nome do operador que gerou o link (`via = family_link`), com o limite diário, a auditoria e a mediação dele; o operador não lê o conteúdo enviado. Sem fila offline; em modo degradado o envio responde `503 unico_degraded` e o link continua valendo.
 
 ### 3.8 Revalidação
 Revalidação = nova captura com liveness cujo `person_id` resultante é comparado com o esperado (5.1).
@@ -1005,7 +1006,7 @@ Itens que referenciam um abrigo, pessoa ou núcleo criado offline vêm depois de
 - Risco residual: agressor que é admin do mesmo abrigo da vítima. Mitigação: `mediator` pode atender a fila do abrigo (4.8) e auditoria; registrado no RIPD.
 
 ### 10.4 Endpoints públicos e custo
-- Públicos no piloto: `GET /status`, `POST /captures` (só `login` e `invite`), `POST /sessions`, `GET /invites/{code}`, `POST /invites/{code}/accept`.
+- Públicos no piloto: `GET /status`, `POST /captures` (só `login` e `invite`), `POST /sessions`, `GET /invites/{code}`, `POST /invites/{code}/accept`, `GET /search-links/{code}` e `POST /search-links/{code}/submit` (link da família, 3.7 item 11: link de uso único de 12 h, limite por link e por aparelho).
 - Limites para capturas públicas ficam com a seção 16 (Q15, adiada). No piloto, abuso só consome créditos, e o fim dos créditos leva ao modo degradado [dec. k, Q7].
 - Corpo máximo de 6 MB (5 fotos de até 800 KB em base64); imagem individual ≤ 800 KB.
 - Liveness na entrega só por amostragem e alto valor reduz o consumo de processos da Unico [dec. h, A1].

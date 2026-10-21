@@ -15,6 +15,7 @@ Registrar resgatados no ponto de desembarque, buscar desaparecidos por foto sem 
 - `GET /v1/shelters/nearby` com capacidade e lotação, mostrado na tela de resgate.
 - Matches com buscas ativas também no resgate.
 - A biometria tardia (4.12) passa a reapontar `rescues.person_id`.
+- A biometria tardia (4.12) também dispara a comparação com as buscas ativas, como o check-in e o resgate.
 
 **Busca (3.7)**
 - Quem registra: voluntário de abrigo `confirmed`, DC, `mediator` ou `protection`; abrigo `unconfirmed` → `403`.
@@ -24,6 +25,13 @@ Registrar resgatados no ponto de desembarque, buscar desaparecidos por foto sem 
 - Um token por foto; guarda só os `person_id` derivados; um match em qualquer foto conta.
 - **Resposta sempre igual**, com ou sem match: `202 {message: "search_registered", usable_photos}`.
 - Busca ativa até o descarte do evento do abrigo de origem; cada check-in e resgate posterior é comparado.
+
+**Busca pelo link da família (opcional; decisão do dono na fase 4, spec 3.7 item 11)**
+- O voluntário que pode registrar buscas (3.7 item 1) escolhe "Enviar link para a família" em vez de preencher a busca; os dois caminhos convivem. `POST /v1/search-links` cria `search_links/{code}` (128 bits, base64url, uso único, **validade de 12 horas**, `created_by`, `shelter_id`, `event_id`, `status`) e devolve `{code, url, expires_at}`; o app abre o compartilhar do celular. Conta no `SEARCHES_PER_DAY` do voluntário na criação (`429 search_limit`). `DELETE /v1/search-links/{code}` cancela.
+- Página pública `/f/<code>` (sem login, sem instalação, PT | EN | ES): aviso "Esta busca não substitui o registro de desaparecimento na delegacia.", consentimento (o que é guardado, por quanto tempo, quem acessa), dados do desaparecido e da família, 1 a 5 fotos escolhidas da galeria do celular da família. `GET /v1/search-links/{code}` (público) diz só se o link vale, sem revelar quem o gerou nem o abrigo. `POST /v1/search-links/{code}/submit` (público) usa o mesmo pipeline do `POST /v1/searches` (um token por foto, guarda só os `person_id` derivados, descarta as fotos, tenta o match na hora) e responde sempre igual: `202 {message: "search_registered", usable_photos}`. Não há fila offline: sem sinal, a família tenta de novo.
+- O link só é consumido quando o processamento termina com sucesso; em modo degradado responde `503 unico_degraded` e o link continua valendo. Reenviar não paga de novo as fotos já processadas (idempotência). Link expirado, usado ou cancelado: `410 search_link_invalid`.
+- A busca fica registrada em nome do voluntário que gerou o link (`registered_by`, `via = family_link`): limite, auditoria e mediação ficam presos a ele. **O voluntário não lê o conteúdo enviado:** só vê em "Avisos" que a família enviou e `usable_photos`.
+- Contenção de abuso nas rotas públicas: limite de tentativas por link e por aparelho, corpo máximo de 6 MB, imagem ≤ 800 KB, nada de dado pessoal em log; a spec 10.4 passa a listar as duas rotas.
 
 **Mediação (4.8)**
 - Match idempotente `matches/{sha256(search_id|person_id)}`.
@@ -64,20 +72,20 @@ Doações (fase 5); descarte, painel, anomalias (fase 6); "Estou Seguro" e media
 ## O que a fase cria
 | Tipo | Nomes |
 |---|---|
-| Coleções | `rescues`, `searches`, `matches` |
-| Rotas | `POST /v1/rescues`, `PATCH /v1/rescues/{id}`, `GET /v1/shelters/nearby`, `POST /v1/searches`, `GET /v1/matches`, `GET /v1/matches/{id}`, `POST /v1/matches/{id}/decision`, `POST /v1/volunteers/{volunteer_id}/roles`, `DELETE /v1/volunteers/{volunteer_id}/roles/{role}` |
+| Coleções | `rescues`, `searches`, `matches`, `search_links` (TTL em `expires_at`) |
+| Rotas | `POST /v1/rescues`, `PATCH /v1/rescues/{id}`, `GET /v1/shelters/nearby`, `POST /v1/searches`, `GET /v1/matches`, `GET /v1/matches/{id}`, `POST /v1/matches/{id}/decision`, `POST /v1/volunteers/{volunteer_id}/roles`, `DELETE /v1/volunteers/{volunteer_id}/roles/{role}`; link da família: `POST /v1/search-links`, `DELETE /v1/search-links/{code}`, `GET /v1/search-links/{code}` e `POST /v1/search-links/{code}/submit` (as duas últimas públicas) |
 | Alertas | `search_expiring` |
-| Erros | `search_limit`, `match_already_decided`, `event_closed` |
+| Erros | `search_limit`, `match_already_decided`, `event_closed`, `search_link_invalid` |
 | Variáveis | `SEARCHES_PER_DAY`, `INACTIVITY_DAYS`, `PURGE_AFTER_DAYS` (só para calcular `purge_at`) |
 | Módulos | `rescues.rs`, `searches.rs`, `jobs.rs` (encerramento) |
-| PWA | `/rescue`, `/search`, conferência de match na `/inbox`, gestão de papéis |
-| Índices | `searches (person_ids, status)`, `searches (event_id, status)`, `matches (mediator_kind, mediator_shelter_id, status, created_at)` |
+| PWA | `/rescue`, `/search` (com "Enviar link para a família"), página pública `/f/:code`, conferência de match na `/inbox`, gestão de papéis |
+| Índices | `searches (person_ids, status)`, `searches (event_id, status)`, `matches (mediator_kind, mediator_shelter_id, status, created_at)`; TTL `search_links.expires_at` |
 
 ## Dependências
 Fase 3 (pessoas, níveis, miniatura, biometria tardia, fila com fotos cifradas, modo degradado) e fase 2 (eventos, abrigos, alertas).
 
 ## Testes
-**Unitários (obrigatórios):** resgate (criação `assisted`, histórico, evento pelo GPS, `no_biometrics` em modo degradado); `nearby` (raio, vagas); busca (permissões, limite diário, resposta idêntica byte a byte com e sem match, `usable_photos`); escolha da fila para cada situação (criança, confirmado, não confirmado, sem abrigo); "quem decide primeiro fecha" com decisões concorrentes; `accept` libera o contato só nesse momento; `not_the_person`; idempotência do match; concessão de papéis por papel; tarefa de encerramento (todos fechados, inatividade, `purge_at`, miniaturas, `search_expiring`); `409 event_closed`; mensagem de WhatsApp nos dois idiomas.
+**Unitários (obrigatórios):** resgate (criação `assisted`, histórico, evento pelo GPS, `no_biometrics` em modo degradado); `nearby` (raio, vagas); busca (permissões, limite diário, resposta idêntica byte a byte com e sem match, `usable_photos`); escolha da fila para cada situação (criança, confirmado, não confirmado, sem abrigo); "quem decide primeiro fecha" com decisões concorrentes; `accept` libera o contato só nesse momento; `not_the_person`; idempotência do match; concessão de papéis por papel; tarefa de encerramento (todos fechados, inatividade, `purge_at`, miniaturas, `search_expiring`); `409 event_closed`; mensagem de WhatsApp nos dois idiomas. Link da família: validade de 12 h, uso único (envios concorrentes: exatamente um sucesso), `503 unico_degraded` sem consumir o link, resposta idêntica com e sem match, o voluntário não recebe o conteúdo, limites por link e por aparelho, `search_limit` na criação.
 
 **Manuais com a Unico** (cada foto de busca é uma chamada; anote no PR):
 - Resgate de uma pessoa (1).
@@ -97,6 +105,7 @@ Fase 3 (pessoas, níveis, miniatura, biometria tardia, fila com fotos cifradas, 
 ## Checklist de pronto
 - [ ] Resgate no ponto de desembarque com miniatura, `nearby` e matches.
 - [ ] Busca online e offline, com resposta idêntica e limite diário.
+- [ ] Busca pelo link da família (opcional) com as duas rotas públicas protegidas.
 - [ ] Três filas de mediação, conferência, `accept`/`decline`/`not_the_person`.
 - [ ] Concessão de `mediator` e `protection` por validador ou DC.
 - [ ] Tarefa horária de encerramento com `search_expiring`; `409 event_closed`.
