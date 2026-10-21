@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { getOrCreateDeviceId, isIosOutsideStandalone, requestPersistence, showStorageWarning } from './device'
+import { getOrCreateDeviceId, isIosOutsideStandalone, requestPersistence } from './device'
 import { freshDb } from './testing'
 
 const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1'
@@ -44,16 +44,5 @@ describe('requestPersistence', () => {
   it('treats a missing or failing API as not persisted', async () => {
     expect(await requestPersistence(undefined)).toBe(false)
     expect(await requestPersistence({ persist: vi.fn().mockRejectedValue(new Error('denied')) })).toBe(false)
-  })
-})
-
-describe('showStorageWarning', () => {
-  it('warns when persistence was refused, and always in an iPhone tab even if it was granted', () => {
-    expect(showStorageWarning(false, false)).toBe(true)
-    expect(showStorageWarning(true, true)).toBe(true)
-    expect(showStorageWarning(false, true)).toBe(true)
-  })
-  it('stays quiet when persistence was granted outside an iPhone tab', () => {
-    expect(showStorageWarning(true, false)).toBe(false)
   })
 })
