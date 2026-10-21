@@ -345,7 +345,7 @@ O registro é feito **no ponto de desembarque ou triagem**, não no barco.
 ### 3.7 Busca de desaparecidos [dec. k, A5, Q8, Q45]
 1. Quem registra: voluntário de abrigo `confirmed`, DC, `mediator` ou `protection` [dec. d; dec. k, A5].
 2. A tela diz, antes de tudo: **"Esta busca não substitui o registro de desaparecimento na delegacia."** [dec. k, A5].
-3. O operador registra: nome, apelido e observações do desaparecido; nome, telefone, parentesco e idioma da família; de 1 a 5 fotos (galeria permitida, é a exceção). Limite: `SEARCHES_PER_DAY` buscas por voluntário por dia (padrão 10) [dec. k, Q8].
+3. O operador registra: nome, apelido e observações do desaparecido; nome, telefone, parentesco e idioma da família; de 1 a 5 fotos (galeria permitida, é a exceção). Limite: `SEARCHES_PER_DAY` buscas por voluntário por dia (padrão 10), contado no dia do fuso `TZ_PILOT` (padrão `America/Sao_Paulo`): a cota recomeça à meia-noite desse fuso, e não às 21h [dec. k, Q8].
 4. `POST /v1/searches`. Sem sinal, vai pela fila; as fotos ficam **cifradas no aparelho** (6.1.7) e são **apagadas logo após o envio** (`2xx`) [dec. k, Q45].
 5. Servidor gera um token por foto (`api+humantoken`), guarda só os `person_id` derivados (`searches.person_ids`, nível "busca": não vira pessoa) e compara com `people`. Um match em qualquer foto conta. Em modo degradado, a busca espera na fila.
 6. **A resposta é sempre a mesma**, com ou sem match: `202 {message: "search_registered", usable_photos}`. O app mostra "Busca registrada. Se a pessoa for encontrada e concordar, a equipe entrará em contato com a família." Nem o operador fica sabendo se houve match.
@@ -353,7 +353,7 @@ O registro é feito **no ponto de desembarque ou triagem**, não no barco.
 8. A busca fica ativa até o descarte do evento do abrigo de origem; cada check-in ou resgate posterior é comparado com as buscas ativas [dec. k, Q25].
 9. **Antes de apagar** [dec. k, A5, Q25]: quando o evento é encerrado, cada busca ativa sem match aceito gera o alerta `search_expiring` para quem a registrou, com a data do descarte e a orientação de encaminhar à delegacia e à Cruz Vermelha.
 10. Match → mediação (4.8).
-11. **Link da família** [decisão do dono, fase 4; opcional]: em vez de digitar a busca, o operador gera um link de uso único com validade de 12 horas (`POST /v1/search-links`). A família abre `/f/<code>` (público, sem login, PT | EN | ES) e envia os dados e de 1 a 5 fotos da própria galeria (`POST /v1/search-links/{code}/submit`), que passa pelo mesmo pipeline do item 5 e tem a mesma resposta do item 6. A busca fica em nome do operador que gerou o link (`via = family_link`), com o limite diário, a auditoria e a mediação dele; o operador não lê o conteúdo enviado. Sem fila offline; em modo degradado o envio responde `503 unico_degraded` e o link continua valendo.
+11. **Link da família** [decisão do dono, fase 4; opcional]: em vez de digitar a busca, o operador gera um link de uso único com validade de 12 horas (`POST /v1/search-links`). A família abre `/f/<code>` (público, sem login, PT | EN | ES) e envia os dados e de 1 a 5 fotos da própria galeria (`POST /v1/search-links/{code}/submit`), que passa pelo mesmo pipeline do item 5 e tem a mesma resposta do item 6. A busca fica em nome do operador que gerou o link (`via = family_link`), com o limite diário, a auditoria e a mediação dele; o operador não lê o conteúdo enviado. Sem fila offline; em modo degradado o envio responde `503 unico_degraded` e o link continua valendo. O link só é consumido quando pelo menos uma foto gerou token: se nenhuma serviu, o envio responde o mesmo `202` com `usable_photos: 0`, nada é registrado (nem busca nem aviso), a tentativa conta no teto de 5 por link e o link continua valendo; a página diz "Nenhuma foto serviu; mande outras fotos". O abrigo de origem da busca é o `shelter_id` do link: quem tem abrigo `confirmed` usa o seu por padrão; DC, `mediator` e `protection` escolhem qualquer abrigo `confirmed` de evento ativo (`422 invalid_shelter` se não existir ou não for confirmado; `409 event_closed` se o evento acabou).
 
 ### 3.8 Revalidação
 Revalidação = nova captura com liveness cujo `person_id` resultante é comparado com o esperado (5.1).
@@ -661,6 +661,7 @@ Na VM, lidas de `/etc/taba/env`; em desenvolvimento, de `.env` criado a partir d
 | `DELIVERY_RETENTION_DAYS` | 90 | Entregas pseudonimizadas [dec. k, A10; dec. l, Q50] |
 | `SESSION_DAYS` | 7 | [dec. k, Q26] |
 | `SEARCHES_PER_DAY` | 10 | Por voluntário [dec. k, Q8] |
+| `TZ_PILOT` | `America/Sao_Paulo` | Fuso (nome IANA) cujo dia a cota diária de buscas segue |
 | `DELIVERY_SAMPLE_RATE` | 0.05 | [dec. k, Q41] |
 | `ANOMALY_CHECKINS_PER_10MIN` | 30 | [dec. k, Q39] |
 | `ANOMALY_RESCUES_PER_10MIN` | 100 | [dec. k, Q39] |
@@ -1027,7 +1028,7 @@ Itens que referenciam um abrigo, pessoa ou núcleo criado offline vêm depois de
 - Detecção: primeiro valor de `navigator.languages` que começa com `pt` → `pt-BR`; senão `en`.
 - Seletor "PT | EN" fixo no topo. Escolha salva em `config.language` e, logado, em `volunteers.language` (`PATCH /me`). Ao logar, o idioma do perfil prevalece.
 - Links enviados (convite, aviso à família) não carregam idioma: quem abre vê no idioma do próprio celular.
-- Mensagem de WhatsApp à família: no `family.language` informado na busca (`pt-BR` ou `en`).
+- Mensagem de WhatsApp à família: no `family.language` informado na busca (`pt-BR`, `en` ou `es`).
 - Datas e números: `Intl.DateTimeFormat` e `Intl.NumberFormat`.
 - Dados digitados não são traduzidos. Erros do servidor chegam como códigos estáveis e são traduzidos pelo app.
 
