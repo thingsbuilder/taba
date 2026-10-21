@@ -487,8 +487,7 @@ async fn create_in(
                 &new.id,
                 json!({ "conflicts_with": conflicts_with, "other_site_reason": shelter.other_site_reason }),
             )
-            .in_event(&assignment.event_id)
-            .for_shelters(vec![new.id.clone()]),
+            .in_event(&assignment.event_id),
         )?;
     }
     if assignment.in_range.len() > 1 {
@@ -2067,6 +2066,64 @@ mod follow_up_tests {
         assert!(
             me["memberships"][0]["shelter_id"] == json!(alfa)
                 && me["memberships"][1]["shelter_id"] == json!(zulu)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_flagged_shelter_alert_is_for_the_civil_defense_not_the_creator() {
+        let app = TestApp::new().await;
+        let (ana, bia) = (app.actor("Ana").await, app.actor("Bia").await);
+        app.create_shelter(&ana, "Ginásio", ORIGIN).await;
+        let mut body = shelter_body(
+            &crate::test_support::new_id(),
+            "Escola",
+            north_of_origin(80.0),
+        );
+        body["other_site_reason"] = json!("Outro prédio");
+        assert_eq!(
+            app.send("POST", "/v1/shelters", &bia.secret, Some(body))
+                .await
+                .0,
+            StatusCode::CREATED
+        );
+        let alert_id = all_docs(&app.state.db, "alerts").await[0]["_firestore_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Neither the creator of the flagged shelter nor the admin of the shelter it conflicts with.
+        for who in [&bia, &ana] {
+            let (status, listing) = app.send("GET", "/v1/alerts", &who.secret, None).await;
+            assert_eq!(
+                (status, listing["alerts"].as_array().unwrap().len()),
+                (StatusCode::OK, 0),
+                "{}",
+                who.id
+            );
+            let (status, _) = app
+                .send(
+                    "POST",
+                    &format!("/v1/alerts/{alert_id}/resolve"),
+                    &who.secret,
+                    None,
+                )
+                .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{}", who.id);
+        }
+        let dc = app.actor("DC").await;
+        app.grant(&dc, GlobalRole::CivilDefense).await;
+        let (_, listing) = app.send("GET", "/v1/alerts", &dc.secret, None).await;
+        assert_eq!(listing["alerts"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            app.send(
+                "POST",
+                &format!("/v1/alerts/{alert_id}/resolve"),
+                &dc.secret,
+                None
+            )
+            .await
+            .0,
+            StatusCode::OK
         );
     }
 }

@@ -149,6 +149,9 @@ pub async fn assign(
 }
 
 /// Whether the event's activity should be written now, and if so, remembers it.
+// ponytail: the "written within the hour" memory is per process (single e2-micro instance), and is
+// lost on restart, which costs one extra write per event. With more than one instance, each one
+// would write once an hour; read `last_activity_at` from the event document to share the limit.
 fn activity_due(state: &AppState, event_id: &str, now: Instant) -> bool {
     let mut seen = state
         .event_activity

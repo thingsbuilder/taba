@@ -95,6 +95,9 @@ pub async fn layer(State(state): State<AppState>, request: Request, next: Next) 
     let route = format!("{} {}", request.method(), request.uri().path());
 
     // Two copies of one request run one after the other, so the second finds the first's answer.
+    // ponytail: the per-key lock lives in this process's memory; fine with the single e2-micro
+    // instance. With more than one instance, two copies sent to different ones could both run:
+    // claim the key with a `create` on a pending `idempotency/{key}` document before running.
     let lock = {
         let mut locks = state
             .idempotency_locks
