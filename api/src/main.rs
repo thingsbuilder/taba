@@ -138,6 +138,10 @@ fn router(state: AppState) -> Router {
         .route("/v1/searches", post(searches::post_search))
         .route("/v1/matches", get(matches::list_matches))
         .route("/v1/matches/{id}", get(matches::get_match))
+        .route(
+            "/v1/matches/{id}/thumbnail",
+            get(matches::get_match_thumbnail),
+        )
         .route("/v1/matches/{id}/decision", post(matches::post_decision))
         .route("/v1/volunteers/{id}/roles", post(roles::post_role))
         .route(

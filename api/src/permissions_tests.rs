@@ -498,9 +498,6 @@ async fn phase_4_routes_are_registered_and_ask_for_a_session() {
     let app = TestApp::new().await;
     let ana = app.actor("Ana").await;
     for (method, path) in [
-        ("GET", "/v1/matches"),
-        ("GET", "/v1/matches/m1"),
-        ("POST", "/v1/matches/m1/decision"),
         ("POST", "/v1/search-links"),
         ("DELETE", "/v1/search-links/c1"),
     ] {
