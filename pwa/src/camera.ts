@@ -15,9 +15,12 @@ export function cameraErrorKey(error: unknown): string {
   return 'checkin.camera_unsupported'
 }
 
+/** Without a size the phone camera opens at 480x640, which Unico refused (INVALID_REQUEST); ask for the best the camera has up to full HD. */
+export const CAMERA_CONSTRAINTS = { width: { ideal: 1920 }, height: { ideal: 1080 } } as const
+
 export function openCamera(facing: Facing, nav: { mediaDevices?: Pick<MediaDevices, 'getUserMedia'> } = navigator): Promise<MediaStream> {
   if (!cameraSupported(nav)) return Promise.reject(new DOMException('no camera', 'NotSupportedError'))
-  return nav.mediaDevices!.getUserMedia({ video: { facingMode: facing }, audio: false })
+  return nav.mediaDevices!.getUserMedia({ video: { facingMode: facing, ...CAMERA_CONSTRAINTS }, audio: false })
 }
 
 export const stopStream = (stream: MediaStream | null): void => stream?.getTracks().forEach((t) => t.stop())
