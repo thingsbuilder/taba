@@ -3,8 +3,6 @@
   "home.title": "Welcome to Taba",
   "home.body": "Check-in, donations and the search for people will live here. The app is installed and opens even without signal.",
   "language.label": "Language",
-  "install.title": "Install Taba on your home screen",
-  "install.body": "So the app can keep your records and work without signal, install it first: tap Share, then \"Add to Home Screen\". Then open Taba from its icon. If you received an invite, paste it in the \"I have an invite\" field there.",
   "persist.warning": "Data on this phone may be erased by the browser; sync often.",
   "network.offline": "No signal",
   "network.offline_queue": "No signal · {n} queued",
@@ -202,5 +200,7 @@
   "invite.code_go": "Open invite",
   "invite.code_invalid": "That does not look like an invite. Paste the whole link or the code.",
   "nav.back": "Back",
-  "nav.home": "Home screen"
+  "nav.home": "Home screen",
+  "install.invite": "Installing Taba protects your records on this phone: without it the browser may erase them after a few days. Tap Share, then \"Add to Home Screen\", and open Taba from its icon.",
+  "install.dismiss": "Not now"
 }
