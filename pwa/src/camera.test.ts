@@ -5,7 +5,7 @@ describe('camera', () => {
   it('asks for the front or back camera without audio', async () => {
     const getUserMedia = vi.fn().mockResolvedValue({})
     await openCamera('environment', { mediaDevices: { getUserMedia } })
-    expect(getUserMedia).toHaveBeenCalledWith({ video: { facingMode: 'environment' }, audio: false })
+    expect(getUserMedia).toHaveBeenCalledWith({ video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false })
   })
 
   it('is unsupported without getUserMedia and rejects', async () => {
