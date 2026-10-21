@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createQueue } from './queue'
+import { phase3Label, queueErrorKey } from './queue-errors'
 import { canSearch, emptySearchForm, enqueueSearch, reducePhotos, searchBody, shareLink, takeSearchReply, validateSearch } from './search'
 import { freshDb } from './testing'
 
@@ -93,6 +94,12 @@ describe('search through the queue (spec 3.7, criterion 48)', () => {
     await queue.drain()
     expect(await db.get('queue', item.id)).toMatchObject({ state: 'pending', attempts: 1 })
   })
+})
+
+it('names the rescue and search items in the pending list, with the daily limit text', () => {
+  expect(phase3Label({ method: 'POST', path: '/v1/rescues' })).toBe('rescue.queue_label')
+  expect(phase3Label({ method: 'POST', path: '/v1/searches' })).toBe('search.queue_label')
+  expect(queueErrorKey('search_limit')).toBe('error.search_limit')
 })
 
 describe('reducePhotos', () => {

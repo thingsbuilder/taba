@@ -5,6 +5,7 @@ import { navigate } from '../nav'
 import { t } from '../i18n'
 import { useConflictNames } from '../pending-hook'
 import { pendingViews } from '../pending'
+import { canSearch } from '../search'
 import { InviteCodeField } from './InviteCodeField'
 import { signOut } from './signout'
 import type { QueueItem } from '../db'
@@ -54,6 +55,8 @@ export function Home({ ctx }: { ctx: AppContext }) {
       <button type="button" class="button button-secondary" onClick={() => navigate('/inbox')}>
         {t('home.inbox')}{alerts ? ` (${alerts})` : ''}
       </button>
+      <button type="button" class="button button-secondary" onClick={() => navigate('/rescue')}>{t('rescue.title')}</button>
+      {canSearch(active) && <button type="button" class="button button-secondary" onClick={() => navigate('/search')}>{t('search.title')}</button>}
       {pending.length > 0 && (
         <section class="card">
           <h2 class="subtitle">{t('pending.title')}</h2>
