@@ -15,6 +15,7 @@ Fechar o piloto: painel no formato do que a Defesa Civil reporta, CSV diário e 
 - Contagens por agregação `count()`.
 - `GET /v1/dashboard/events/{id}/daily.csv`: uma linha por abrigo, sem nome nem `person_id`.
 - Tela `/dashboard` na PWA.
+- **Abrigos a confirmar (lacuna da fase 2):** validador e DC precisam achar abrigos `unconfirmed` para confirmar, e hoje só chegam a um abrigo se souberem o ID (a tela inicial lista só os abrigos de que a pessoa é membro; `GET /v1/shelters` não existe). Lista na `/dashboard` (e atalho na tela inicial de quem tem `validator` ou `civil_defense`) com os abrigos aguardando aval ou confirmação, cada um levando a `/shelter/:id` com os botões de confirmar e revogar. Pode usar o campo "abrigos aguardando aval" do painel.
 
 **Exportação do abrigo (8.8, Q22)**
 - `GET /v1/shelters/{id}/export.csv` só para admin de abrigo `confirmed`: pessoas, núcleos e entregas do próprio abrigo, sem miniatura nem `person_id`, auditado. Abrigo `unconfirmed` → `403`.
@@ -79,6 +80,7 @@ Todas as fases anteriores (o painel conta o que elas criam; o descarte apaga o q
 
 ## Checklist de pronto
 - [ ] Painel completo e CSV diário.
+- [ ] Validador e DC encontram os abrigos a confirmar sem saber o ID.
 - [ ] Exportação do abrigo com as restrições.
 - [ ] Descarte diferenciado, pseudonimização e perfis antigos.
 - [ ] Anomalias informativas e auditoria revisada, com TTL de 1 ano.
