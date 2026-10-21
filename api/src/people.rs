@@ -16,6 +16,7 @@ use crate::auth::{self, AppState, CaptureDoc, Purpose, Volunteer};
 use crate::children;
 use crate::error::ApiError;
 use crate::households::{self, HouseholdDoc};
+use crate::idempotency;
 use crate::members::ShelterRole;
 use crate::shelters::{self, Confirmation, ShelterDoc};
 use crate::store::{self, fs_error, tx_delete, tx_replace};
@@ -737,8 +738,13 @@ pub async fn post_checkin(
             (person_id, Level::Verified, Some(capture_id.clone()))
         }
         (None, Some(photo), false) => {
-            let token = state.unico.token_from_image(&photo_bytes(photo)?).await?;
-            (state.person_id_for_token(&token), Level::Assisted, None)
+            let route = format!("POST /v1/shelters/{shelter_id}/checkins");
+            let id = idempotency::photo_person_id(&state, &headers, &volunteer.id, &route, async {
+                let token = state.unico.token_from_image(&photo_bytes(photo)?).await?;
+                Ok(state.person_id_for_token(&token))
+            })
+            .await?;
+            (id, Level::Assisted, None)
         }
         (None, None, true) => {
             uuid::Uuid::parse_str(&request.id).map_err(|_| invalid("id"))?;
@@ -1355,8 +1361,13 @@ pub async fn put_biometrics(
             (new_id, Level::Verified, Some(capture_id.clone()))
         }
         (None, Some(photo)) => {
-            let token = state.unico.token_from_image(&photo_bytes(photo)?).await?;
-            (state.person_id_for_token(&token), Level::Assisted, None)
+            let route = format!("PUT /v1/people/{person_id}/biometrics");
+            let id = idempotency::photo_person_id(&state, &headers, &volunteer.id, &route, async {
+                let token = state.unico.token_from_image(&photo_bytes(photo)?).await?;
+                Ok(state.person_id_for_token(&token))
+            })
+            .await?;
+            (id, Level::Assisted, None)
         }
         _ => return Err(invalid("biometrics")),
     };
@@ -2812,6 +2823,169 @@ mod tests {
         assert_eq!(conflict.len(), 1, "{alerts:?}");
         assert_eq!(conflict[0]["shelter_ids"], json!([w.shelter]));
         assert_eq!(conflict[0]["target_id"], existing.as_str());
+    }
+
+    /// A request with the actor's session, device and an `Idempotency-Key`.
+    async fn keyed(
+        app: &TestApp,
+        who: &Actor,
+        method: &str,
+        path: &str,
+        key: &str,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let auth = format!("Bearer {}", who.secret);
+        let (status, _, json) = app
+            .request(
+                method,
+                path,
+                &[
+                    ("authorization", auth.as_str()),
+                    ("x-device-id", who.device.as_str()),
+                    ("idempotency-key", key),
+                ],
+                Some(body),
+            )
+            .await;
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn a_photo_sent_again_after_a_failure_does_not_pay_unico_twice() {
+        // Criterion 55 on the photo routes: the call to Unico comes before the transaction, so a
+        // request refused after it and sent again with the same key must reuse its answer.
+        let w = world().await;
+        photos_are(&w.app, "tok-1", 1);
+        let (_, first) = call(
+            &w.app,
+            &w.volunteer,
+            "POST",
+            &format!("/v1/shelters/{}/checkins", w.shelter),
+            Some(checkin(json!({ "photo_base64": photo() }))),
+        )
+        .await;
+        let person = first["person_id"].as_str().unwrap();
+        let path = format!("/v1/people/{person}/biometrics");
+        let paid = w.app.unico.post_count();
+
+        // Someone else's face: refused after the paid call.
+        photos_are(&w.app, "tok-2", 1);
+        let (status, body) = keyed(
+            &w.app,
+            &w.volunteer,
+            "PUT",
+            &path,
+            "key-1",
+            json!({ "photo_base64": photo() }),
+        )
+        .await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::CONFLICT, Some("person_mismatch"))
+        );
+        assert_eq!(w.app.unico.post_count(), paid + 1);
+        for _ in 0..3 {
+            let (status, body) = keyed(
+                &w.app,
+                &w.volunteer,
+                "PUT",
+                &path,
+                "key-1",
+                json!({ "photo_base64": photo() }),
+            )
+            .await;
+            assert_eq!(
+                (status, body["error"].as_str()),
+                (StatusCode::CONFLICT, Some("person_mismatch"))
+            );
+        }
+        assert_eq!(
+            w.app.unico.post_count(),
+            paid + 1,
+            "the retries made no paid call"
+        );
+
+        // Another key is another request, and asks again.
+        photos_are(&w.app, "tok-2", 1);
+        keyed(
+            &w.app,
+            &w.volunteer,
+            "PUT",
+            &path,
+            "key-2",
+            json!({ "photo_base64": photo() }),
+        )
+        .await;
+        assert_eq!(w.app.unico.post_count(), paid + 2);
+        // Without a key every call asks.
+        photos_are(&w.app, "tok-2", 2);
+        for _ in 0..2 {
+            call(
+                &w.app,
+                &w.volunteer,
+                "PUT",
+                &path,
+                Some(json!({ "photo_base64": photo() })),
+            )
+            .await;
+        }
+        assert_eq!(w.app.unico.post_count(), paid + 4);
+    }
+
+    #[tokio::test]
+    async fn a_kept_answer_is_not_handed_to_another_volunteer_or_route() {
+        let w = world().await;
+        photos_are(&w.app, "tok-1", 1);
+        let path = format!("/v1/shelters/{}/checkins", w.shelter);
+        let (status, first) = keyed(
+            &w.app,
+            &w.volunteer,
+            "POST",
+            &path,
+            "key-x",
+            checkin(json!({ "photo_base64": photo() })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{first}");
+        // A key reused by someone else gets the middleware's refusal and no kept answer.
+        let (status, body) = keyed(
+            &w.app,
+            &w.admin,
+            "POST",
+            &path,
+            "key-x",
+            checkin(json!({ "photo_base64": photo() })),
+        )
+        .await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Some("idempotency_key_mismatch")
+            )
+        );
+        // The document is kept under its own id, with the id of the person and no token.
+        let kept = crate::test_support::all_docs(&w.app.state.db, "idempotency").await;
+        let photo_doc = kept
+            .iter()
+            .find(|d| d["_firestore_id"] == "photo~key-x")
+            .unwrap();
+        assert_eq!(photo_doc["person_id"], first["person_id"]);
+        assert!(!photo_doc.to_string().contains("tok-1"));
+        // `~` is not accepted in a key, so a client cannot aim at those documents.
+        let (status, body) = keyed(
+            &w.app,
+            &w.volunteer,
+            "POST",
+            &path,
+            "photo~key-x",
+            checkin(json!({ "photo_base64": photo() })),
+        )
+        .await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("invalid_idempotency_key"))
+        );
     }
 
     #[tokio::test]

@@ -86,7 +86,7 @@ pub async fn layer(State(state): State<AppState>, request: Request, next: Next) 
     if !is_write(request.method()) {
         return next.run(request).await;
     }
-    if key.chars().count() > MAX_KEY_CHARS || key.contains('/') {
+    if key.chars().count() > MAX_KEY_CHARS || key.contains('/') || key.contains('~') {
         return ApiError::new(StatusCode::BAD_REQUEST, "invalid_idempotency_key").into_response();
     }
     let Some(volunteer_id) = signed_in_as(&state, request.headers()).await else {
@@ -165,6 +165,60 @@ async fn serve(
         );
     }
     Response::from_parts(parts, Body::from(bytes))
+}
+
+/// What a paid call to Unico about a photo said, kept for the key of the request that made it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PhotoResult {
+    volunteer_id: String,
+    route: String,
+    /// The HMAC of the token, never the token.
+    person_id: String,
+    #[serde(with = "firestore::serialize_as_timestamp")]
+    expires_at: FirestoreInstant,
+}
+
+/// The person a photo belongs to, asking Unico (a paid call) once per `Idempotency-Key`. The
+/// handlers that send a photo call Unico before their transaction, so a request that fails
+/// after it (contention, a refusal) and is sent again with the same key would pay a second
+/// time; the answer of the first call is kept under the key for as long as the key lives and
+/// the retry reuses it (spec 8, 9.4). Without a usable key it simply asks.
+pub async fn photo_person_id<F>(
+    state: &AppState,
+    headers: &HeaderMap,
+    volunteer_id: &str,
+    route: &str,
+    ask: F,
+) -> Result<String, ApiError>
+where
+    F: std::future::Future<Output = Result<String, ApiError>>,
+{
+    let key = key_of(headers)
+        .filter(|k| k.chars().count() <= MAX_KEY_CHARS && !k.contains('/') && !k.contains('~'));
+    let Some(key) = key else { return ask.await };
+    let id = format!("photo~{key}");
+    if let Ok(Some(kept)) = store::get::<PhotoResult>(&state.db, COLLECTION, &id).await {
+        if store::now() < kept.expires_at
+            && kept.volunteer_id == volunteer_id
+            && kept.route == route
+        {
+            return Ok(kept.person_id);
+        }
+    }
+    let person_id = ask.await?;
+    let kept = PhotoResult {
+        volunteer_id: volunteer_id.into(),
+        route: route.into(),
+        person_id: person_id.clone(),
+        expires_at: store::now() + TTL,
+    };
+    if let Err(error) = store::replace(&state.db, COLLECTION, &id, &kept).await {
+        tracing::warn!(
+            code = error.code,
+            "could not keep the answer of Unico for the key"
+        );
+    }
+    Ok(person_id)
 }
 
 #[cfg(test)]
