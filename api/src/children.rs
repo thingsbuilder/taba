@@ -507,7 +507,8 @@ mod tests {
                 assert!(empty, "{label}: {listed}");
             }
         }
-        let (status, _) = w
+        // A plain volunteer opens the box (for their own search alerts) and finds it empty.
+        let (status, listed) = w
             .app
             .send(
                 "GET",
@@ -516,7 +517,10 @@ mod tests {
                 None,
             )
             .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            (status, listed["alerts"].as_array().map(Vec::len)),
+            (StatusCode::OK, Some(0))
+        );
     }
 
     #[tokio::test]
