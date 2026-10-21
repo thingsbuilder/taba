@@ -5,6 +5,7 @@
 | `taba-mark.svg` | Mark on light backgrounds |
 | `taba-mark-dark.svg` | Mark on dark backgrounds |
 | `taba-app-icon.svg` | App icon, favicon, PWA icon (square, rounded corners) |
+| `taba-mark-256.png` | Mark as 256×256 PNG with transparent background, for places that do not accept SVG (Unico console logo) |
 
 The mark is a ring of six *ocas* (houses) around a center: the layout of a *taba*, the Tupi word for village.
 
