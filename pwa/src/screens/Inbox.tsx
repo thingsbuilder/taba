@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 import type { AlertView } from '../api'
-import { alertLink, alertTextKey } from '../alerts'
+import { alertLink, alertPhones, alertTextKey } from '../alerts'
 import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
 import { useOnline } from '../hooks'
@@ -46,6 +46,9 @@ export function Inbox({ ctx }: { ctx: AppContext }) {
           return (
             <li class="card" key={a.id}>
               <p class="body-strong">{t(alertTextKey(a.kind), { kind: a.kind })}</p>
+              {alertPhones(a).map((p) => (
+                <p class="body" key={p.textKey}>{t(p.textKey, { phone: p.phone })}</p>
+              ))}
               <p class="caption">{new Date(a.created_at).toLocaleString(ctx.active?.profile.language)}</p>
               {link && <button type="button" class="button button-secondary" onClick={() => navigate(link)}>{t('inbox.open')}</button>}
               <button type="button" class="button button-secondary" onClick={() => void resolve(a.id)}>{t('inbox.resolve')}</button>
