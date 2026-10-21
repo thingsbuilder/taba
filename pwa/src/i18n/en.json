@@ -3,7 +3,6 @@
   "home.title": "Welcome to Taba",
   "home.body": "Check-in, donations and the search for people will live here. The app is installed and opens even without signal.",
   "language.label": "Language",
-  "persist.warning": "Data on this phone may be erased by the browser; sync often.",
   "network.offline": "No signal",
   "network.offline_queue": "No signal · {n} queued",
   "network.queue": "{n} queued",

@@ -24,7 +24,7 @@ export function isIosOutsideStandalone(nav: IosProbe): boolean {
   return (iphoneOrIpod || ipad) && nav.standalone !== true
 }
 
-/** Spec 3.0.3: `false` (or no API) means the browser may erase our data; the UI warns permanently. */
+/** Spec 3.0.3: asks the browser to keep our data; `false` (or no API) means it may erase it. */
 export async function requestPersistence(storage: Pick<StorageManager, 'persist'> | undefined): Promise<boolean> {
   try {
     return (await storage?.persist?.()) === true
@@ -33,6 +33,5 @@ export async function requestPersistence(storage: Pick<StorageManager, 'persist'
   }
 }
 
-/** Spec 3.0.3: the permanent warning shows when the browser did not grant persistence, and always
- *  in an iPhone tab, where Safari erases site data after about 7 days without use even if `persist()` answers. */
-export const showStorageWarning = (persisted: boolean, iosTab: boolean): boolean => !persisted || iosTab
+/** How long "not now" on the install invitation hides it (spec 3.0.2). */
+export const INSTALL_PROMPT_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000

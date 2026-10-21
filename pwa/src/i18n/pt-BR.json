@@ -3,7 +3,6 @@
   "home.title": "Bem-vindo ao Taba",
   "home.body": "Aqui ficarão o check-in, as doações e a busca de pessoas. O app já está instalado e abre mesmo sem sinal.",
   "language.label": "Idioma",
-  "persist.warning": "Os dados deste celular podem ser apagados pelo navegador; sincronize com frequência.",
   "network.offline": "Sem sinal",
   "network.offline_queue": "Sem sinal · {n} na fila",
   "network.queue": "{n} na fila",

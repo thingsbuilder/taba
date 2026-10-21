@@ -200,8 +200,8 @@ Regras de membros [dec. b]: admin não remove admin; o abrigo sempre tem pelo me
 
 ### 3.0 Pré-requisitos do aparelho
 1. Primeiro acesso: o app gera `device_id` (UUID v4) e guarda no IndexedDB.
-2. No iPhone, a instalação na tela de início é **opcional** (decisão do dono na fase 2, que substitui o bloqueio de [dec. a]). O app detecta `navigator.standalone !== true` em iOS e **não bloqueia** nada: mostra um convite curto para instalar (instalar protege os cadastros contra a limpeza do navegador; Compartilhar > Adicionar à Tela de Início), que o usuário dispensa por sessão. Os links de convite (3.3) abrem direto no navegador. A fase 6 revê se a instalação volta a ser exigida para o cadastro offline, porque o Safari fora da tela de início apaga o IndexedDB após cerca de 7 dias sem uso.
-3. Ao abrir, o app chama `navigator.storage.persist()` [dec. a]. Se a resposta for `false`, mostra um aviso permanente "os dados deste celular podem ser apagados pelo navegador; sincronize com frequência". No iPhone fora da tela de início o aviso aparece sempre, mesmo que a resposta seja `true`.
+2. No iPhone, a instalação na tela de início é **opcional** (decisão do dono na fase 2, que substitui o bloqueio de [dec. a]). O app detecta `navigator.standalone !== true` em iOS e **não bloqueia** nada: mostra um convite curto para instalar (instalar protege os cadastros contra a limpeza do navegador; Compartilhar > Adicionar à Tela de Início), que o usuário dispensa por 7 dias. Os links de convite (3.3) abrem direto no navegador. A fase 6 revê se a instalação volta a ser exigida para o cadastro offline, porque o Safari fora da tela de início apaga o IndexedDB após cerca de 7 dias sem uso.
+3. Ao abrir, o app chama `navigator.storage.persist()` [dec. a]. O app não mostra aviso sobre a resposta (decisão do dono na fase 2). O "Agora não" do convite de instalação (3.0.2) o esconde por 7 dias.
 4. O app consulta `GET /v1/status` ao abrir e a cada sincronização; em modo degradado mostra a faixa de 5.7.
 
 ### 3.1 Credenciamento e login de voluntário

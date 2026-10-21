@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { type Api, type ApiStatus, getStatus } from './api'
 import type { AppContext } from './app-context'
 import type { Db } from './db'
-import { isIosOutsideStandalone, requestPersistence, showStorageWarning } from './device'
+import { INSTALL_PROMPT_SNOOZE_MS, isIosOutsideStandalone, requestPersistence } from './device'
 import { useLanguage, useOnline } from './hooks'
 import { type Language, saveLanguage, setLanguage, t } from './i18n'
 import { SESSIONS_CHANGED } from './events'
@@ -101,17 +101,20 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
       await refresh()
     })
   }, [online, active?.volunteer_id])
-  const [persisted, setPersisted] = useState(true)
   const iosTab = isIosOutsideStandalone(navigator)
-  const [installDismissed, setInstallDismissed] = useState(false)
+  // Hidden until the stored "not now" of the last 7 days is read, so the prompt does not flash.
+  const [installDismissed, setInstallDismissed] = useState(true)
+  useEffect(() => {
+    void db.get('config', 'install_prompt_dismissed_at').then((at) => setInstallDismissed(typeof at === 'number' && Date.now() - at < INSTALL_PROMPT_SNOOZE_MS))
+  }, [])
 
   // Spec 3.0.4: ask for the status on open and whenever the connection comes back.
   useEffect(() => {
     if (online) void getStatus().then(setStatus)
   }, [online])
-  // Spec 3.0.3: asked on every start; in an iPhone tab the answer does not protect the data (see showStorageWarning).
+  // Spec 3.0.3: asked on every start; the answer is not shown.
   useEffect(() => {
-    void requestPersistence(navigator.storage).then(setPersisted)
+    void requestPersistence(navigator.storage)
   }, [])
 
   const { pathname, search } = useLocation()
@@ -139,8 +142,7 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
       )}
       <NetworkChip queue={queue} />
       {status?.unico === 'degraded' && <div class="banner" role="status">{t('degraded.banner')}</div>}
-      {showStorageWarning(persisted, iosTab) && <div class="banner" role="alert">{t('persist.warning')}</div>}
-      {iosTab && !installDismissed && <InstallPrompt onDismiss={() => setInstallDismissed(true)} />}
+      {iosTab && !installDismissed && <InstallPrompt onDismiss={() => { setInstallDismissed(true); void db.put('config', Date.now(), 'install_prompt_dismissed_at') }} />}
       {ready && (needsPin(active) && route.name !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
     </>
   )
