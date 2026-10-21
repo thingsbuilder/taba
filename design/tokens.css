@@ -1,0 +1,107 @@
+/* Taba — generated from tokens.json. Do not edit by hand: change tokens.json and regenerate. */
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@600;700&family=Figtree:wght@400;600&family=IBM+Plex+Mono:wght@500&display=swap");
+
+:root, [data-theme="light"] {
+  --bg: #FBF8F3;
+  --surface: #FFFFFF;
+  --surface-sunken: #F2EEE6;
+  --border: #E5E1D8;
+  --ink: #22302D;
+  --ink-muted: #5B6764;
+  --primary: #2C7A72;
+  --on-primary: #FFFFFF;
+  --primary-soft: #E3EFEC;
+  --on-primary-soft: #1E5A54;
+  --urucum: #D9622B;
+  --warning-soft: #FBE6D6;
+  --on-warning: #7A3410;
+  --success-soft: #DDF0E4;
+  --on-success: #1D5A35;
+  --neutral-soft: #ECE9E3;
+  --on-neutral: #3F4745;
+  --danger-soft: #FBE3E1;
+  --on-danger: #8C1D18;
+  --focus: #2C7A72;
+  --shadow-card: 0 1px 2px rgba(34,48,45,0.08), 0 4px 12px rgba(34,48,45,0.06);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141A18;
+    --surface: #1E2624;
+    --surface-sunken: #0F1412;
+    --border: #2E3835;
+    --ink: #EAF0EE;
+    --ink-muted: #A3B3AF;
+    --primary: #5BBFB5;
+    --on-primary: #0D1A18;
+    --primary-soft: #1F3A36;
+    --on-primary-soft: #A9E0D9;
+    --urucum: #F08A54;
+    --warning-soft: #3D2617;
+    --on-warning: #F7C29E;
+    --success-soft: #1D3A29;
+    --on-success: #9FDDB6;
+    --neutral-soft: #2A302E;
+    --on-neutral: #C9D3CF;
+    --danger-soft: #3D1C1A;
+    --on-danger: #F4B4AE;
+    --focus: #8FD8CF;
+    --shadow-card: 0 1px 2px rgba(0,0,0,0.5);
+    color-scheme: dark;
+  }
+}
+
+[data-theme="dark"] {
+  --bg: #141A18;
+  --surface: #1E2624;
+  --surface-sunken: #0F1412;
+  --border: #2E3835;
+  --ink: #EAF0EE;
+  --ink-muted: #A3B3AF;
+  --primary: #5BBFB5;
+  --on-primary: #0D1A18;
+  --primary-soft: #1F3A36;
+  --on-primary-soft: #A9E0D9;
+  --urucum: #F08A54;
+  --warning-soft: #3D2617;
+  --on-warning: #F7C29E;
+  --success-soft: #1D3A29;
+  --on-success: #9FDDB6;
+  --neutral-soft: #2A302E;
+  --on-neutral: #C9D3CF;
+  --danger-soft: #3D1C1A;
+  --on-danger: #F4B4AE;
+  --focus: #8FD8CF;
+  --shadow-card: 0 1px 2px rgba(0,0,0,0.5);
+  color-scheme: dark;
+}
+
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 14px;
+  --space-4: 20px;
+  --space-5: 28px;
+  --space-6: 40px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-pill: 999px;
+  --control-height: 52px;
+  --touch-min: 48px;
+  --nav-height: 48px;
+  --font-display: "Outfit", system-ui, sans-serif;
+  --font-body: "Figtree", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+.display { font-family: var(--font-display); font-size: 30px; line-height: 36px; font-weight: 700; letter-spacing: -0.5px; }
+.title { font-family: var(--font-display); font-size: 22px; line-height: 28px; font-weight: 700; }
+.heading { font-family: var(--font-display); font-size: 17px; line-height: 24px; font-weight: 600; }
+.body { font-family: var(--font-body); font-size: 16px; line-height: 24px; font-weight: 400; }
+.body-strong { font-family: var(--font-body); font-size: 16px; line-height: 24px; font-weight: 600; }
+.label { font-family: var(--font-body); font-size: 14px; line-height: 20px; font-weight: 600; }
+.caption { font-family: var(--font-body); font-size: 13px; line-height: 18px; font-weight: 400; }
+.code { font-family: var(--font-mono); font-size: 15px; line-height: 20px; font-weight: 500; letter-spacing: 0.5px; }
