@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { resolveRoute } from './routes'
+import { resolveRoute, usesShell } from './routes'
 
 it('maps the fixed paths and sends anything else to not_found', () => {
   expect(resolveRoute('/')).toEqual({ name: 'home' })
@@ -41,4 +41,11 @@ it('reads the public family page and the match check', () => {
   expect(resolveRoute('/f/Xy-_9')).toEqual({ name: 'family', code: 'Xy-_9' })
   expect(resolveRoute('/matches/abc')).toEqual({ name: 'match', id: 'abc' })
   for (const bad of ['/f', '/f/', '/f/a/b', '/matches', '/matches/a/b']) expect(resolveRoute(bad)).toEqual({ name: 'not_found' })
+})
+
+it('shows the family page outside the shell and every other screen inside it', () => {
+  expect(usesShell(resolveRoute('/f/abc'))).toBe(false)
+  for (const path of ['/', '/login', '/profile', '/search', '/rescue', '/inbox', '/matches/m1', '/roles', '/diagnostics', '/shelter/s1', '/nope']) {
+    expect(usesShell(resolveRoute(path)), path).toBe(true)
+  }
 })

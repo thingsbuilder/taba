@@ -10,6 +10,8 @@ export interface PendingView {
   state: QueueItem['state']
   /** i18n key of the error, when the item waits for a person. */
   errorKey?: string
+  /** Whether sending it again can help: the daily search limit cannot be beaten by waiting a minute. */
+  retryable: boolean
   /** What the text of the error needs, such as which household got in the way. */
   errorParams?: Record<string, string>
   shelterId?: string
@@ -88,6 +90,7 @@ export function pendingViews(items: QueueItem[], shelterId?: string, names: Conf
         labelKey: labelOf(i),
         state: i.state,
         errorKey: conflict?.key ?? (i.error ? queueErrorKey(i.error) : undefined),
+        retryable: i.error !== 'search_limit',
         ...(conflict ? { errorParams: conflict.params } : {}),
         shelterId: i.shelter_id,
       }

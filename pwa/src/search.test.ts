@@ -59,6 +59,28 @@ describe('search through the queue (spec 3.7, criterion 48)', () => {
     expect(await db.count('blobs')).toBe(0)
   })
 
+  it('stores the photos as ciphertext, not as the JPEG bytes, and removes them after the 2xx', async () => {
+    const db = await freshDb()
+    const fetchMock = vi.fn<typeof fetch>().mockRejectedValueOnce(new TypeError('offline')).mockResolvedValue(json(202, { message: 'search_registered', usable_photos: 1 }))
+    const queue = createQueue({ db, fetch: fetchMock, deviceId: async () => 'd', getStatus: async () => null, random: () => 0 })
+    // A picture-sized blob with a JPEG header and recognizable content.
+    const bytes = new Uint8Array(4096).map((_, i) => (i < 3 ? [0xff, 0xd8, 0xff][i]! : (i * 31 + 7) % 251))
+    const item = await enqueueSearch(queue, { id: 's2', form, photos: [new Blob([bytes])], volunteerId: 'ana' })
+    await queue.drain()
+
+    const stored = new Uint8Array((await db.get('blobs', item.id))!.data)
+    expect(stored.length).toBeGreaterThan(bytes.length) // plus the authentication tag
+    expect(Array.from(stored.subarray(0, 3))).not.toEqual([0xff, 0xd8, 0xff])
+    const hay = Array.from(stored).join(',')
+    expect(hay).not.toContain(Array.from(bytes.subarray(100, 140)).join(',')) // a run of the original is nowhere in it
+    // The queue item itself holds no photo either.
+    expect(JSON.stringify(item)).not.toContain('photos_base64')
+
+    await db.put('queue', { ...(await db.get('queue', item.id))!, next_attempt_at: 0 })
+    await queue.drain()
+    expect(await db.count('blobs')).toBe(0)
+  })
+
   it('hands the screen usable_photos once, and only for the search that was sent', async () => {
     const db = await freshDb()
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(json(202, { message: 'search_registered', usable_photos: 1 }))

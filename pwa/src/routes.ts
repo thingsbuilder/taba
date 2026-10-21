@@ -30,6 +30,9 @@ const SIMPLE: Record<string, RouteName> = {
   '/diagnostics': 'diagnostics',
 }
 
+/** The family's page is public and stands alone: no session, PIN, top bar, queue or install prompt. */
+export const usesShell = (route: Route): boolean => route.name !== 'family'
+
 // Each phase adds its routes here (spec 6.1).
 export function resolveRoute(pathname: string): Route {
   const simple = SIMPLE[pathname]

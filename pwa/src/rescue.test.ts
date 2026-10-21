@@ -75,24 +75,54 @@ describe('rescue in the queue (spec 3.6)', () => {
     expect(await db.count('blobs')).toBe(0)
   })
 
-  it('a rescue queued while Unico worked, refused with unico_degraded, goes again without the photo and the photo waits as a late biometrics item', async () => {
-    const { db, fetchMock, queue } = await setup()
-    fetchMock.mockImplementation(async (path) =>
-      String(path) === '/v1/rescues' && fetchMock.mock.calls.length === 1 ? json(503, { error: 'unico_degraded' }) : json(201, { rescue_id: 'r1', person_id: 'r1', level: 'no_biometrics' }),
-    )
-    await enqueueRescue(queue, { body: rescueBody({ id: 'r1', form: form(), position, capturedAt: at }), photo: jpeg(1), thumbnail: jpeg(2), degraded: false, volunteerId: 'ana' })
-    await queue.drain()
-    const rescues = fetchMock.mock.calls.filter(([path]) => String(path) === '/v1/rescues').map(([, init]) => JSON.parse(init?.body as string))
-    expect(rescues).toHaveLength(2)
-    expect(rescues[0].photo_base64).toBeTruthy()
-    expect(rescues[1]).not.toHaveProperty('photo_base64')
-    expect(rescues[1]).not.toHaveProperty('no_biometrics')
-    expect(rescues[1].thumbnail_base64).toBeTruthy()
-    // The rescue is done; the photo waits, still encrypted, for Unico (the status is not known to be ok).
-    const items = await queue.list()
-    expect(items.map((i) => [i.method, i.path, i.error])).toEqual([['PUT', '/v1/people/r1/biometrics', 'unico_degraded']])
-    const { decryptPhotoFields } = await import('./crypto')
-    expect(Object.keys(await decryptPhotoFields(db, (await db.get('blobs', items[0]!.id))!))).toEqual(['photo_base64'])
+  describe('a rescue the server registered without biometrics keeps its photo', () => {
+    const rescueReply = (level: string) => json(201, { rescue_id: 'r1', person_id: level === 'assisted' ? 'tok' : 'r1', level })
+    const send = async (puts: Response) => {
+      const { db, fetchMock, queue } = await setup()
+      fetchMock.mockImplementation(async (path) => (String(path) === '/v1/rescues' ? rescueReply(level.value) : puts.clone()))
+      await enqueueRescue(queue, { body: rescueBody({ id: 'r1', form: form(), position, capturedAt: at }), photo: jpeg(1), thumbnail: jpeg(2), degraded: false, volunteerId: 'ana' })
+      await queue.drain()
+      return { db, fetchMock, queue }
+    }
+    const level = { value: 'no_biometrics' }
+
+    it('2xx no_biometrics: the photo goes to a late PUT with the person of the answer, and is erased only after that one answers', async () => {
+      level.value = 'no_biometrics'
+      const { db, fetchMock, queue } = await send(json(200, { person_id: 'tok', level: 'assisted' }))
+      // The real answer of the server (2xx, no_biometrics) sent the photo along the second request.
+      const calls = fetchMock.mock.calls.map(([path, init]) => [String(path), init?.method])
+      expect(calls).toEqual([['/v1/rescues', 'POST'], ['/v1/people/r1/biometrics', 'PUT']])
+      expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string).photo_base64).toBeTruthy()
+      expect(JSON.parse(fetchMock.mock.calls[1]![1]?.body as string).photo_base64).toBeTruthy()
+      expect(await queue.list()).toEqual([])
+      expect(await db.count('blobs')).toBe(0)
+    })
+
+    it('the photo stays encrypted in the queue while the late PUT waits, and not in the rescue item', async () => {
+      level.value = 'no_biometrics'
+      const { db, queue } = await send(json(503, { error: 'unico_degraded' }))
+      const items = await queue.list()
+      expect(items.map((i) => [i.method, i.path, i.error])).toEqual([['PUT', '/v1/people/r1/biometrics', 'unico_degraded']])
+      const { decryptPhotoFields } = await import('./crypto')
+      expect(Object.keys(await decryptPhotoFields(db, (await db.get('blobs', items[0]!.id))!))).toEqual(['photo_base64'])
+      expect(await db.count('blobs')).toBe(1)
+    })
+
+    it('a photo without a usable face is asked about again by a person, with the photo kept', async () => {
+      level.value = 'no_biometrics'
+      const { db, queue } = await send(json(422, { error: 'no_face' }))
+      const [late] = await queue.list()
+      expect(late).toMatchObject({ method: 'PUT', state: 'needs_action', error: 'no_face', photo_refusals: 1 })
+      expect(await db.count('blobs')).toBe(1)
+    })
+
+    it('2xx assisted: nothing is left and no late PUT is made', async () => {
+      level.value = 'assisted'
+      const { db, fetchMock, queue } = await send(json(200, {}))
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      expect(await queue.list()).toEqual([])
+      expect(await db.count('blobs')).toBe(0)
+    })
   })
 
   it('in degraded mode the rescue goes without the photo, which waits as a late biometrics item', async () => {

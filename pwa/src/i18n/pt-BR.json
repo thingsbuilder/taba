@@ -643,7 +643,7 @@
   "family.invalid": "Este link expirou ou já foi usado. Peça outro a quem enviou.",
   "family.consent_title": "Antes de começar",
   "family.consent_stored": "Vamos guardar o nome e as fotos só para buscar essa pessoa nos abrigos. As fotos são apagadas logo depois da busca.",
-  "family.consent_retention": "Os dados da busca ficam guardados enquanto ela estiver ativa e são apagados quando o evento for encerrado.",
+  "family.consent_retention": "Os dados da busca ficam guardados enquanto ela estiver ativa e são apagados até 30 dias depois do fim do evento, no máximo.",
   "family.consent_access": "Só quem atende essa busca na rede de abrigos vê os dados. O seu telefone só é liberado se a pessoa for encontrada e concordar.",
   "family.consent_basis": "Usamos os dados com o seu consentimento. Você pode pedir para apagar quando quiser.",
   "family.consent_no_police": "Os dados nunca vão para a polícia nem para a imigração.",

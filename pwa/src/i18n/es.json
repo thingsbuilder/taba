@@ -42,7 +42,7 @@
   "family.invalid": "Este enlace venció o ya fue usado. Pide otro a quien te lo envió.",
   "family.consent_title": "Antes de empezar",
   "family.consent_stored": "Vamos a guardar el nombre y las fotos solo para buscar a esta persona en los albergues. Las fotos se borran justo después de la búsqueda.",
-  "family.consent_retention": "Los datos de la búsqueda se guardan mientras esté activa y se borran cuando el evento se cierre.",
+  "family.consent_retention": "Los datos de la búsqueda se guardan mientras esté activa y se borran, como máximo, 30 días después de que termine el evento.",
   "family.consent_access": "Solo ven los datos quienes atienden esta búsqueda en la red de albergues. Tu teléfono solo se entrega si la persona aparece y está de acuerdo.",
   "family.consent_basis": "Usamos los datos con tu consentimiento. Puedes pedir que los borremos cuando quieras.",
   "family.consent_no_police": "Los datos nunca van a la policía ni a inmigración.",

@@ -87,7 +87,7 @@ export function QueueAlerts({ ctx }: { ctx: AppContext }) {
               <button type="button" class="button button-secondary" onClick={() => void queue.registerWithoutPhoto(p.id)}>{t('queue.photo_without')}</button>
             </>
           ) : (
-            p.state === 'needs_action' && <button type="button" class="button button-secondary" onClick={() => void queue.retry(p.id)}>{t('queue.retry')}</button>
+            p.state === 'needs_action' && p.retryable && <button type="button" class="button button-secondary" onClick={() => void queue.retry(p.id)}>{t('queue.retry')}</button>
           )}
           <button
             type="button"

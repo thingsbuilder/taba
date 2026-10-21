@@ -11,7 +11,7 @@ import { chooseLanguage } from './language'
 import { SESSIONS_CHANGED } from './events'
 import { navigate, useLocation } from './nav'
 import type { Queue } from './queue'
-import { type Route, resolveRoute } from './routes'
+import { type Route, resolveRoute, usesShell } from './routes'
 import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession } from './sessions'
 import { Checkin } from './screens/Checkin'
 import { Diagnostics } from './screens/Diagnostics'
@@ -91,7 +91,7 @@ interface AppProps {
 /** `/f/:code` is the family's public page (spec 3.7 item 11): outside the shell, so no session, PIN, top bar, queue or install prompt. */
 export function App(props: AppProps) {
   const route = resolveRoute(useLocation().pathname)
-  return route.name === 'family' ? <Family code={route.code!} /> : <Shell {...props} />
+  return usesShell(route) ? <Shell {...props} /> : <Family code={route.code!} />
 }
 
 function Shell({ db, api, queue, nominatim, updateApply }: AppProps) {

@@ -159,6 +159,26 @@ export function createQueue(deps: QueueDeps) {
     return n
   }
 
+  /** The photo of a registration made without biometrics, as a late `PUT` item that keeps it encrypted (spec 4.12). */
+  async function queueLatePhoto(item: QueueItem, personId: string, photoBase64: string, error?: string): Promise<void> {
+    const late: QueueItem = {
+      id: crypto.randomUUID(),
+      method: 'PUT',
+      path: `/v1/people/${personId}/biometrics`,
+      body: {},
+      volunteer_id: item.volunteer_id,
+      shelter_id: item.shelter_id,
+      created_at: Math.max(now(), lastCreatedAt + 1),
+      attempts: 0,
+      next_attempt_at: 0,
+      state: 'pending',
+      ...(error ? { error } : {}),
+    }
+    lastCreatedAt = late.created_at
+    await db.put('blobs', await encryptPhotoFields(db, late.id, { photo_base64: photoBase64 }))
+    await db.put('queue', late)
+  }
+
   /**
    * A photo check-in or rescue queued while Unico worked, sent when it no longer does: it becomes the
    * registration without biometrics (`person_id` = its `id`) and a late biometrics `PUT` after it that
@@ -173,25 +193,10 @@ export function createQueue(deps: QueueDeps) {
     const fields = await decryptPhotoFields(db, photos).catch(() => null)
     if (!fields?.photo_base64) return false
 
-    const late: QueueItem = {
-      id: crypto.randomUUID(),
-      method: 'PUT',
-      path: `/v1/people/${body.id}/biometrics`,
-      body: {},
-      volunteer_id: item.volunteer_id,
-      shelter_id: item.shelter_id,
-      created_at: Math.max(now(), lastCreatedAt + 1),
-      attempts: 0,
-      next_attempt_at: 0,
-      state: 'pending',
-      error: 'unico_degraded',
-    }
-    lastCreatedAt = late.created_at
     const { photo_base64, ...rest } = fields
-    await db.put('blobs', await encryptPhotoFields(db, late.id, { photo_base64 }))
+    await queueLatePhoto(item, body.id, photo_base64, 'unico_degraded')
     if (rest.thumbnail_base64) await db.put('blobs', await encryptPhotoFields(db, item.id, rest))
     else await db.delete('blobs', item.id)
-    await db.put('queue', late)
     const { error: _e, ...registration } = item
     await db.put('queue', { ...registration, body: isCheckin ? { ...(item.body as object), no_biometrics: true } : item.body, attempts: 0, next_attempt_at: 0 })
     notify()
@@ -306,6 +311,13 @@ export function createQueue(deps: QueueDeps) {
 
       if (res.ok) {
         const reply = res.status === 204 ? null : await res.json().catch(() => null)
+        // The server registered the rescue without biometrics (no usable face, or Unico out): the photo
+        // it could not use is not lost, it waits as a late biometrics item until that one is answered.
+        const sentPhoto = (body as { photo_base64?: string } | null)?.photo_base64
+        const rescued = reply as { person_id?: string; level?: string } | null
+        if (item.path === RESCUE_PATH && sentPhoto && rescued?.level === 'no_biometrics' && rescued.person_id) {
+          await queueLatePhoto(item, rescued.person_id, sentPhoto)
+        }
         await remove(item.id)
         await applyPhase3Synced(db, item, reply)
         await recordSearchReply(db, item, reply)
