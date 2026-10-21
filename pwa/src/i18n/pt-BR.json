@@ -168,7 +168,7 @@
   "alert.shelter_flagged": "Abrigo criado perto de outro, com a explicação de que é outro local. Confira.",
   "alert.event_overlap": "Um abrigo alcança mais de um evento. Ele entrou no mais próximo; resolva à mão.",
   "alert.volunteer_removed": "Um voluntário do seu abrigo foi removido de outro abrigo.",
-  "alert.endorser_flagged": "Um aval dado por você ou pelo seu abrigo foi revogado. Confira.",
+  "alert.endorser_flagged": "Uma pessoa deu aval a um abrigo cuja confirmação foi revogada. Confira.",
   "alert.generic": "Aviso: {kind}",
   "error.insufficient_accuracy": "A posição está imprecisa. Vá a um lugar aberto e tente de novo.",
   "error.shelter_nearby": "Já existe um abrigo perto daqui.",

@@ -168,7 +168,7 @@
   "alert.shelter_flagged": "A shelter was created near another one, with the explanation that it is a different place. Please check.",
   "alert.event_overlap": "A shelter reaches more than one event. It joined the closest; sort it out by hand.",
   "alert.volunteer_removed": "A volunteer of your shelter was removed from another shelter.",
-  "alert.endorser_flagged": "An endorsement given by you or your shelter was revoked. Please check.",
+  "alert.endorser_flagged": "A volunteer endorsed a shelter whose confirmation was revoked. Please check.",
   "alert.generic": "Notice: {kind}",
   "error.insufficient_accuracy": "The position is imprecise. Go somewhere open and try again.",
   "error.shelter_nearby": "There is already a shelter near here.",

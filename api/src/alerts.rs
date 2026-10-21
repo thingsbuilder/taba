@@ -101,7 +101,13 @@ pub fn add(
 
 /// Who receives an alert (spec 8.8): the Civil Defense gets all of them; admins get the
 /// non-informational ones of their shelters; `protection` gets the protection ones.
+/// `endorser_flagged` goes to the Civil Defense and the validators, never to the shelter admins,
+/// and never to the endorser it is about.
 pub fn is_recipient(volunteer: &Volunteer, alert: &AlertDoc) -> bool {
+    if alert.kind == AlertKind::EndorserFlagged {
+        return volunteer.is_validator_or_civil_defense()
+            && !alert.volunteer_ids.contains(&volunteer.id);
+    }
     volunteer.has_global(GlobalRole::CivilDefense)
         || (alert.for_protection && volunteer.has_global(GlobalRole::Protection))
         || (!alert.informational
@@ -128,7 +134,7 @@ fn view(alert: &AlertDoc) -> Value {
 }
 
 fn can_receive_any(volunteer: &Volunteer) -> bool {
-    volunteer.has_global(GlobalRole::CivilDefense)
+    volunteer.is_validator_or_civil_defense()
         || volunteer.has_global(GlobalRole::Protection)
         || volunteer.has_admin_membership()
 }
@@ -319,13 +325,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn volunteers_validators_and_strangers_have_no_alert_box() {
+    async fn volunteers_and_strangers_have_no_alert_box() {
         let w = world().await;
         seed(&w.app, alert_for(&[&w.shelter_a])).await;
         let validator = w.app.actor("Val").await;
         w.app.grant(&validator, GlobalRole::Validator).await;
         let stranger = w.app.actor("Ze").await;
-        for who in [&w.volunteer_a, &validator, &stranger] {
+        // A validator reads alerts, but of `endorser_flagged` only (checked in the endorsement tests).
+        let (status, body) = w
+            .app
+            .send("GET", "/v1/alerts", &validator.secret, None)
+            .await;
+        assert_eq!(
+            (status, body["alerts"].as_array().unwrap().len()),
+            (StatusCode::OK, 0)
+        );
+        for who in [&w.volunteer_a, &stranger] {
             let (status, body) = w.app.send("GET", "/v1/alerts", &who.secret, None).await;
             assert_eq!(
                 (status, error_of(&body)),

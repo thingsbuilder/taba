@@ -427,7 +427,7 @@ async fn alerts_and_bans_follow_the_matrix() {
         "GET",
         "/v1/alerts",
         None,
-        &[AdminUnconfirmed, AdminConfirmed, CivilDefense],
+        &[AdminUnconfirmed, AdminConfirmed, Validator, CivilDefense],
         false,
     )
     .await;

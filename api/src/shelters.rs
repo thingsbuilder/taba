@@ -830,7 +830,6 @@ async fn flag_endorser(
                 "reason": reason,
             }),
         )
-        .for_shelters(vec![endorsement.endorser_shelter_id.clone()])
         .about_volunteers(vec![endorser.clone()]),
     )
 }
@@ -1225,6 +1224,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_explanation_with_no_neighbour_creates_an_ordinary_shelter() {
+        // Owner's decision: the reason only applies to a conflict, so with nothing nearby the
+        // shelter is normal, not flagged, and raises no alert.
         let app = TestApp::new().await;
         let ana = app.actor("Ana").await;
         let mut body = shelter_body(&new_id(), "Ginásio", ORIGIN);

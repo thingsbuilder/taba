@@ -549,7 +549,14 @@ pub async fn ban_volunteer(
             doc.banned_at = Some(now);
             doc.flag_reasons.push(format!("banned: {reason}"));
             tx_replace(&db, tx, VOLUNTEERS, &target, &doc)?;
-            for mut membership in active_of_volunteer(&db, &target).await? {
+            let memberships = active_of_volunteer(&db, &target).await?;
+            // A ban never leaves a shelter without an admin.
+            for membership in memberships.iter().filter(|m| m.role == ShelterRole::Admin) {
+                if admin_count(&db, &membership.shelter_id).await? <= 1 {
+                    return Err(last_admin());
+                }
+            }
+            for mut membership in memberships {
                 membership.remove(&by, now);
                 let id = membership_id(&membership.shelter_id, &target);
                 tx_replace(&db, tx, COLLECTION, &id, &membership)?;
@@ -1486,6 +1493,76 @@ mod membership_tests {
                 .filter(|a| *a == "volunteer.ban")
                 .count(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ban_never_leaves_a_shelter_without_an_admin() {
+        let c = crew().await;
+        let civil_defense = c.app.actor("DC").await;
+        c.app.grant(&civil_defense, GlobalRole::CivilDefense).await;
+        // Two admins: banning one is fine; the other is then the last and cannot be banned.
+        let first = format!("/v1/volunteers/{}/ban", c.second_admin.id);
+        assert_eq!(
+            c.app
+                .send(
+                    "POST",
+                    &first,
+                    &civil_defense.secret,
+                    Some(json!({ "reason": "x" }))
+                )
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let last = format!("/v1/volunteers/{}/ban", c.admin.id);
+        let (status, body) = c
+            .app
+            .send(
+                "POST",
+                &last,
+                &civil_defense.secret,
+                Some(json!({ "reason": "x" })),
+            )
+            .await;
+        assert_eq!(
+            (status, error_of(&body)),
+            (StatusCode::CONFLICT, Some("last_admin"))
+        );
+        let profile: VolunteerDoc = store::get(&c.app.state.db, VOLUNTEERS, &c.admin.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!profile.banned);
+        assert_eq!(
+            status_of(&c.app, &c.shelter, &c.admin).await,
+            MembershipStatus::Active
+        );
+        assert_eq!(
+            c.app.get_authed("/v1/me", &c.admin.secret).await.0,
+            StatusCode::OK,
+            "nothing was undone"
+        );
+        // Once another admin exists, the ban goes through.
+        c.app
+            .send(
+                "PATCH",
+                &format!("{}/{}", members_path(&c.shelter), c.volunteer.id),
+                &c.admin.secret,
+                Some(json!({ "role": "admin" })),
+            )
+            .await;
+        assert_eq!(
+            c.app
+                .send(
+                    "POST",
+                    &last,
+                    &civil_defense.secret,
+                    Some(json!({ "reason": "x" }))
+                )
+                .await
+                .0,
+            StatusCode::OK
         );
     }
 }

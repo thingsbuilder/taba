@@ -742,7 +742,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn revoking_flags_the_endorser_and_alerts_their_admins_and_the_civil_defense() {
+    async fn revoking_flags_the_endorser_and_alerts_the_civil_defense_and_validators() {
         let s = scene().await;
         endorsed(&s).await;
         let civil_defense = s.app.actor("DC").await;
@@ -792,7 +792,7 @@ mod tests {
             (
                 &json!("endorser_flagged"),
                 &json!(s.endorser.id),
-                &json!([s.endorser_shelter]),
+                &json!([]),
                 &json!([s.endorser.id]),
                 &json!(true)
             )
@@ -801,8 +801,27 @@ mod tests {
             alerts[0]["detail"]["revoked_shelter_id"],
             json!(s.new_shelter)
         );
-        // The endorser's own shelter admin (the endorser) and the Civil Defense see it; the new shelter's admin does not.
-        for (who, expected) in [(&s.endorser, 1), (&civil_defense, 1), (&s.newcomer, 0)] {
+        // The Civil Defense and the validators see it. The endorser it is about does not (and
+        // cannot resolve it), nor do the admins of the new shelter or of the endorser's shelter.
+        let validator = s.app.actor("Val").await;
+        s.app.grant(&validator, GlobalRole::Validator).await;
+        let admin_of_endorser_shelter = s.app.actor("OtherAdmin").await;
+        s.app
+            .join_again(
+                &s.app
+                    .invite(&s.endorser, &s.endorser_shelter, "qr", "admin")
+                    .await,
+                &admin_of_endorser_shelter,
+            )
+            .await;
+        let alert_id = alerts[0]["_firestore_id"].as_str().unwrap().to_string();
+        for (who, expected) in [
+            (&validator, 1),
+            (&civil_defense, 1),
+            (&s.endorser, 0),
+            (&admin_of_endorser_shelter, 0),
+            (&s.newcomer, 0),
+        ] {
             let (_, listing) = s.app.send("GET", "/v1/alerts", &who.secret, None).await;
             assert_eq!(
                 listing["alerts"].as_array().unwrap().len(),
@@ -810,7 +829,32 @@ mod tests {
                 "{}",
                 who.id
             );
+            if expected == 0 {
+                let path = format!("/v1/alerts/{alert_id}/resolve");
+                assert_eq!(
+                    s.app.send("POST", &path, &who.secret, None).await.0,
+                    StatusCode::FORBIDDEN,
+                    "{}",
+                    who.id
+                );
+            }
         }
+        // A validator who is the flagged endorser does not see the alert about themself either.
+        s.app.grant(&s.endorser, GlobalRole::Validator).await;
+        let (_, own) = s
+            .app
+            .send("GET", "/v1/alerts", &s.endorser.secret, None)
+            .await;
+        assert!(own["alerts"].as_array().unwrap().is_empty());
+        let path = format!("/v1/alerts/{alert_id}/resolve");
+        assert_eq!(
+            s.app.send("POST", &path, &s.endorser.secret, None).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            s.app.send("POST", &path, &validator.secret, None).await.0,
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]
