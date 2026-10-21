@@ -708,7 +708,10 @@ pub async fn post_checkin(
             let mut capture =
                 auth::usable_capture(&state, &device, capture_id, Purpose::Checkin).await?;
             // The capture was asked for one shelter and cannot check anyone in elsewhere.
-            if capture.shelter_id.as_deref() != Some(shelter_id.as_str()) {
+            // Nor can another volunteer, even on the same phone, use someone else's capture.
+            if capture.shelter_id.as_deref() != Some(shelter_id.as_str())
+                || capture.volunteer_id.as_deref() != Some(volunteer.id.as_str())
+            {
                 return Err(wrong_capture_target());
             }
             let person_id = auth::resolve_person(&state, capture_id, &mut capture).await?;
@@ -1263,7 +1266,9 @@ pub async fn put_biometrics(
             let mut capture =
                 auth::usable_capture(&state, &device, capture_id, Purpose::Biometrics).await?;
             // ... and a biometrics capture was asked for one person.
-            if capture.expected_person_id.as_deref() != Some(person_id.as_str()) {
+            if capture.expected_person_id.as_deref() != Some(person_id.as_str())
+                || capture.volunteer_id.as_deref() != Some(volunteer.id.as_str())
+            {
                 return Err(wrong_capture_target());
             }
             let new_id = auth::resolve_person(&state, capture_id, &mut capture).await?;

@@ -454,3 +454,135 @@ async fn in_degraded_mode_unico_routes_answer_503_and_path_c_keeps_working() {
         (StatusCode::OK, Some("degraded"), Some("limit"))
     );
 }
+
+// ---- a capture belongs to the volunteer who asked for it ----
+
+#[tokio::test]
+async fn another_volunteer_on_the_same_phone_cannot_use_a_checkin_or_biometrics_capture() {
+    let s = scene().await;
+    let colleague = s
+        .app
+        .join(
+            &s.app.invite(&s.admin, &s.shelter, "qr", "volunteer").await,
+            "Colleague",
+        )
+        .await;
+    // The colleague works on the same phone (same device id) and has a session of their own.
+    let on_same_phone = Actor {
+        device: s.volunteer.device.clone(),
+        ..colleague
+    };
+
+    let (_, made) = capture(
+        &s.app,
+        &s.volunteer,
+        json!({ "purpose": "checkin", "shelter_id": s.shelter }),
+    )
+    .await;
+    let checkin_capture = made["capture_id"].as_str().unwrap().to_string();
+    finish(&s.app, &checkin_capture, "tok-ana").await;
+    let (status, body) = call(
+        &s.app,
+        &on_same_phone,
+        "POST",
+        &format!("/v1/shelters/{}/checkins", s.shelter),
+        Some(checkin_body(json!({ "capture_id": checkin_capture }))),
+    )
+    .await;
+    assert_eq!(
+        (status, error_of(&body)),
+        (StatusCode::FORBIDDEN, Some("capture_wrong_target")),
+        "{body}"
+    );
+    // The one who asked still can.
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/shelters/{}/checkins", s.shelter),
+        Some(checkin_body(json!({ "capture_id": checkin_capture }))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // Late biometrics of a person without biometrics: same rule.
+    let (_, anon) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/shelters/{}/checkins", s.shelter),
+        Some(checkin_body(
+            json!({ "no_biometrics": true, "data": { "name": "Bia" } }),
+        )),
+    )
+    .await;
+    let bia = anon["person_id"].as_str().unwrap();
+    let (_, made) = capture(
+        &s.app,
+        &s.volunteer,
+        json!({ "purpose": "biometrics", "expected_person_id": bia }),
+    )
+    .await;
+    let biometrics_capture = made["capture_id"].as_str().unwrap();
+    finish(&s.app, biometrics_capture, "tok-bia").await;
+    let (status, body) = call(
+        &s.app,
+        &on_same_phone,
+        "PUT",
+        &format!("/v1/people/{bia}/biometrics"),
+        Some(json!({ "capture_id": biometrics_capture })),
+    )
+    .await;
+    assert_eq!(
+        (status, error_of(&body)),
+        (StatusCode::FORBIDDEN, Some("capture_wrong_target")),
+        "{body}"
+    );
+    let (status, _) = call(
+        &s.app,
+        &s.volunteer,
+        "PUT",
+        &format!("/v1/people/{bia}/biometrics"),
+        Some(json!({ "capture_id": biometrics_capture })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+// ---- spec 10.1.1: the legal basis of looking at a thumbnail ----
+
+#[tokio::test]
+async fn looking_at_a_thumbnail_is_audited_with_the_vital_interest_basis() {
+    let s = scene().await;
+    let jpeg = [0xFFu8, 0xD8, 0xFF, 0xE0, 1, 2];
+    // Registered with consent: the basis of the registration is not the one of the look.
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/shelters/{}/checkins", s.shelter),
+        Some(checkin_body(json!({
+            "no_biometrics": true,
+            "legal_basis": "consent",
+            "thumbnail_base64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, jpeg),
+        }))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let path = format!(
+        "/v1/people/{}/thumbnail",
+        body["person_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        call(&s.app, &s.volunteer, "GET", &path, None).await.0,
+        StatusCode::OK
+    );
+    let looks: Vec<Value> = all_docs(&s.app.state.db, "audit_log")
+        .await
+        .into_iter()
+        .filter(|e| e["action"] == "thumbnail.view")
+        .collect();
+    assert_eq!(looks.len(), 1);
+    assert_eq!(looks[0]["legal_basis"], "vital_interest");
+    assert_eq!(looks[0]["shelter_id"], json!(s.shelter));
+}

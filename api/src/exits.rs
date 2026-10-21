@@ -296,8 +296,8 @@ async fn record_failed_revalidation(
                     "guardian_id": guardian_id,
                     "by": a.volunteer.id,
                 }),
-            )
-            .for_shelters(vec![a.shelter_id.clone()]);
+            );
+            // For protection and the Civil Defense only: the admins of the shelter do not get it.
             alert.for_protection = true;
             alerts::add(&db, tx, &alert)?;
             audit::add(
@@ -1033,6 +1033,52 @@ mod tests {
                 )
                 .await;
         assert_eq!(listed["alerts"][0]["kind"], "revalidation_failed");
+        // Protection and the Civil Defense see and resolve it; the admins of the shelter, whoever
+        // tried the exit included, do not; nor does a validator.
+        let alert_id = alerts[0]["_firestore_id"].as_str().unwrap().to_string();
+        let resolve = format!("/v1/alerts/{alert_id}/resolve");
+        for who in [
+            Who::AdminUnconfirmed,
+            Who::AdminConfirmed,
+            Who::VolunteerUnconfirmed,
+        ] {
+            let secret = &s.w.actor(who).unwrap().secret;
+            let (_, listed) = s.w.app.send("GET", "/v1/alerts", secret, None).await;
+            let seen = listed["alerts"].as_array().map_or(0, Vec::len);
+            assert_eq!(seen, 0, "{who:?}");
+            assert_eq!(
+                s.w.app.send("POST", &resolve, secret, None).await.0,
+                StatusCode::FORBIDDEN,
+                "{who:?}"
+            );
+        }
+        let validator = &s.w.actor(Who::Validator).unwrap().secret;
+        assert_eq!(
+            s.w.app.send("POST", &resolve, validator, None).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (_, civil) =
+            s.w.app
+                .send(
+                    "GET",
+                    "/v1/alerts",
+                    &s.w.actor(Who::CivilDefense).unwrap().secret,
+                    None,
+                )
+                .await;
+        assert_eq!(civil["alerts"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            s.w.app
+                .send(
+                    "POST",
+                    &resolve,
+                    &s.w.actor(Who::Protection).unwrap().secret,
+                    None
+                )
+                .await
+                .0,
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]

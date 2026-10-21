@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::people::{self, PersonDoc};
@@ -131,7 +131,7 @@ pub async fn get_thumbnail(
     let entry = AuditEntry::new("thumbnail.view", "person", &person_id)
         .by(&volunteer.id)
         .in_shelter(&shelter_id)
-        .basis(person.legal_basis);
+        .basis(LegalBasis::VitalInterest);
     store::transact(&state.db, |db, tx| {
         let entry = entry.clone();
         Box::pin(async move { audit::add(&db, tx, &entry) })
