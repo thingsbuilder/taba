@@ -17,9 +17,7 @@ import { Invite } from './screens/Invite'
 import { Members } from './screens/Members'
 import { NewShelter } from './screens/NewShelter'
 import { Shelter } from './screens/Shelter'
-import { gateFor } from './install-gate'
 import { InstallIos } from './screens/InstallIos'
-import { InviteHandoff } from './screens/InviteHandoff'
 import { Login } from './screens/Login'
 import { NotFound } from './screens/NotFound'
 import { PinSetup } from './screens/PinSetup'
@@ -117,7 +115,6 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
 
   const { pathname, search } = useLocation()
   const route = resolveRoute(pathname)
-  const gate = gateFor(route, blocked)
   const ctx: AppContext = { db, api, queue, nominatim, active, sessions, status, refresh }
   return (
     <>
@@ -142,7 +139,7 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
       {!blocked && <NetworkChip queue={queue} />}
       {!blocked && status?.unico === 'degraded' && <div class="banner" role="status">{t('degraded.banner')}</div>}
       {!blocked && !persisted && <div class="banner" role="alert">{t('persist.warning')}</div>}
-      {gate === 'install' ? <InstallIos /> : gate === 'invite_handoff' ? <InviteHandoff ctx={ctx} code={route.code!} /> : ready && (needsPin(active) && route.name !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
+      {blocked ? <InstallIos /> : ready && (needsPin(active) && route.name !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
     </>
   )
 }
