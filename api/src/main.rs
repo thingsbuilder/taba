@@ -1,14 +1,22 @@
 mod alerts;
 mod audit;
 mod auth;
+mod cards;
+mod children;
 mod config;
+mod degraded;
 mod endorsements;
 mod error;
 mod events;
+mod exits;
 mod geo;
+mod households;
 mod idempotency;
+#[cfg(test)]
+mod integration_tests;
 mod invites;
 mod members;
+mod people;
 #[cfg(test)]
 mod permissions_tests;
 mod shelters;
@@ -16,6 +24,7 @@ mod status;
 mod store;
 #[cfg(test)]
 mod test_support;
+mod thumbnail;
 mod unico;
 mod volunteers;
 
@@ -25,7 +34,7 @@ use anyhow::{Context, bail};
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::middleware;
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use firestore::FirestoreDb;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
@@ -80,6 +89,41 @@ fn router(state: AppState) -> Router {
         )
         .route("/v1/shelters/{id}/leave", post(members::leave_shelter))
         .route("/v1/volunteers/{id}/ban", post(members::ban_volunteer))
+        // Phase 3
+        .route("/v1/shelters/{id}/checkins", post(people::post_checkin))
+        .route("/v1/shelters/{id}/people", get(people::list_people))
+        .route(
+            "/v1/shelters/{id}/people/needs-selfie",
+            get(people::needs_selfie),
+        )
+        .route(
+            "/v1/people/{person_id}",
+            get(people::get_person).patch(people::patch_person),
+        )
+        .route(
+            "/v1/people/{person_id}/biometrics",
+            put(people::put_biometrics),
+        )
+        .route(
+            "/v1/people/{person_id}/guardians",
+            post(children::post_guardian),
+        )
+        .route(
+            "/v1/people/{person_id}/thumbnail",
+            get(thumbnail::get_thumbnail),
+        )
+        .route("/v1/shelters/{id}/exits", post(exits::post_exit))
+        .route(
+            "/v1/shelters/{id}/households",
+            post(households::post_household),
+        )
+        .route(
+            "/v1/households/{id}",
+            get(households::get_household).patch(households::patch_household),
+        )
+        .route("/v1/households/{id}/cards", post(cards::post_card))
+        .route("/v1/cards/{code}", get(cards::get_card))
+        .route("/v1/cards/{code}/cancel", post(cards::cancel_card))
         .route("/v1/alerts", get(alerts::get_alerts))
         .route("/v1/alerts/{id}/resolve", post(alerts::resolve_alert))
         .fallback(error::not_found)
@@ -136,6 +180,24 @@ async fn role(config: Config, args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `taba unico resume` (spec 5.7): leaves the degraded mode caused by the monthly limit.
+async fn unico_command(config: Config, args: &[String]) -> anyhow::Result<()> {
+    let [verb] = args else {
+        bail!("usage: taba unico resume");
+    };
+    if verb != "resume" {
+        bail!("unknown unico command {verb:?}: use resume");
+    }
+    let db = FirestoreDb::new(&config.gcp_project)
+        .await
+        .context("failed to connect to Firestore")?;
+    let changed = degraded::resume(&db)
+        .await
+        .map_err(|err| anyhow::anyhow!("{} {}", err.status.as_u16(), err.code))?;
+    println!("{}", if changed { "done" } else { "nothing to change" });
+    Ok(())
+}
+
 /// systemd stops the service with SIGTERM; Ctrl-C covers local development.
 async fn shutdown_signal() {
     use tokio::signal::unix::{SignalKind, signal};
@@ -175,8 +237,15 @@ async fn main() -> anyhow::Result<()> {
             )
             .await
         }
+        Some("unico") => {
+            unico_command(
+                Config::from_env()?,
+                &std::env::args().skip(2).collect::<Vec<_>>(),
+            )
+            .await
+        }
         other => bail!(
-            "usage: taba serve | taba role grant|revoke <volunteer_id> <role> (got {other:?})"
+            "usage: taba serve | taba role grant|revoke <volunteer_id> <role> | taba unico resume (got {other:?})"
         ),
     }
 }
@@ -188,6 +257,48 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn unico_command_rejects_bad_arguments_before_touching_the_database() {
+        let config = test_config("http://127.0.0.1:1");
+        for bad in [&[][..], &["pause"], &["resume", "now"]] {
+            let err = unico_command(config.clone(), &args(bad)).await.unwrap_err();
+            assert!(err.to_string().contains("unico"), "{bad:?}: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn unico_resume_leaves_the_degraded_mode() {
+        let mut config = test_config("http://127.0.0.1:1");
+        config.gcp_project = format!("taba-test-{}", uuid::Uuid::new_v4());
+        let db = FirestoreDb::new(&config.gcp_project).await.unwrap();
+        degraded::enter_limit(&db).await.unwrap();
+        assert_eq!(
+            degraded::blocking_reason(&db).await.unwrap(),
+            Some(status::Reason::Limit)
+        );
+        unico_command(config, &args(&["resume"])).await.unwrap();
+        assert_eq!(degraded::blocking_reason(&db).await.unwrap(), None);
+        let doc = degraded::read(&db).await.unwrap().unwrap();
+        assert_eq!(doc.unico, status::Unico::Ok);
+    }
+
+    #[tokio::test]
+    async fn unico_resume_leaves_the_limit_mode_for_real() {
+        // The command opens its own connection to the project, as the operator's does.
+        let mut config = test_config("http://127.0.0.1:1");
+        config.gcp_project = format!("taba-test-{}", uuid::Uuid::new_v4());
+        let db = FirestoreDb::new(&config.gcp_project).await.unwrap();
+        degraded::enter_limit(&db).await.unwrap();
+        assert!(degraded::blocking_reason(&db).await.unwrap().is_some());
+
+        unico_command(config.clone(), &args(&["resume"]))
+            .await
+            .unwrap();
+        assert!(degraded::blocking_reason(&db).await.unwrap().is_none());
+        // Running it again with nothing to resume is not an error.
+        unico_command(config, &args(&["resume"])).await.unwrap();
     }
 
     #[tokio::test]

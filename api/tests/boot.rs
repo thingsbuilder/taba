@@ -48,6 +48,8 @@ fn serve_starts_without_a_rustls_panic() {
         .env("GCP_PROJECT", "boot-test")
         .env("DOMAIN", "taba.example.org")
         .env("HMAC_KEY", format!("{}=", "A".repeat(43)))
+        .env("THUMBNAIL_KEY", format!("{}=", "A".repeat(43)))
+        .env("PILOT_RESPONSIBLE", "Pilot Team")
         .env("UNICO_URL", "http://127.0.0.1:1")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -69,6 +71,13 @@ fn serve_starts_without_a_rustls_panic() {
                 ("POST", "/v1/endorsements/in-person"),
                 ("GET", "/v1/alerts"),
                 ("DELETE", "/v1/shelters/s1/members/v1"),
+                // Phase 3 routes, registered since stage 0.
+                ("POST", "/v1/shelters/s1/checkins"),
+                ("PUT", "/v1/people/p1/biometrics"),
+                ("GET", "/v1/people/p1/thumbnail"),
+                ("POST", "/v1/shelters/s1/exits"),
+                ("GET", "/v1/cards/ABCD2345"),
+                ("POST", "/v1/households/h1/cards"),
             ] {
                 answered.push((method, path, request(method, path)));
             }
@@ -91,6 +100,11 @@ fn serve_starts_without_a_rustls_panic() {
         "the binary panicked at start-up:\n{stderr}"
     );
     eprintln!("boot: {} routes answered", answered.len());
+    // It either listened and answered, or the port was taken (a local API already running).
+    assert!(
+        !answered.is_empty() || stderr.contains("failed to bind"),
+        "the binary neither listened nor reported a busy port:\n{stderr}"
+    );
     for (method, path, response) in answered {
         let (status, body) = response.unwrap_or_else(|| panic!("no answer to {method} {path}"));
         let (code, error) = if path == "/v1/nope" {
@@ -101,4 +115,37 @@ fn serve_starts_without_a_rustls_panic() {
         assert!(status.contains(code), "{method} {path}: {status}");
         assert!(body.contains(error), "{method} {path}: {body}");
     }
+}
+
+/// `serve` without the thumbnail key must stop with an ordinary error that names it, not panic
+/// and not start listening (spec 6.2.2).
+#[test]
+fn serve_refuses_to_start_without_the_thumbnail_key() {
+    let dir = std::env::temp_dir().join(format!("taba-boot-key-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let credentials = dir.join("service-account.json");
+    std::fs::write(
+        &credentials,
+        r#"{"type":"service_account","project_id":"p","private_key_id":"x","private_key":"not a key","client_email":"a@b.c","client_id":"1","token_uri":"https://oauth2.googleapis.com/token"}"#,
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_taba"))
+        .arg("serve")
+        .env_remove("FIRESTORE_EMULATOR_HOST")
+        .env_remove("THUMBNAIL_KEY")
+        .env("GOOGLE_APPLICATION_CREDENTIALS", &credentials)
+        .env("GCP_PROJECT", "boot-test")
+        .env("DOMAIN", "taba.example.org")
+        .env("HMAC_KEY", format!("{}=", "A".repeat(43)))
+        .env("UNICO_URL", "http://127.0.0.1:1")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "it started without the key");
+    assert!(!stderr.contains("panicked"), "panicked:\n{stderr}");
+    assert!(
+        stderr.contains("THUMBNAIL_KEY"),
+        "does not name the key:\n{stderr}"
+    );
 }

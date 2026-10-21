@@ -34,6 +34,9 @@ pub struct AuditEntry {
     pub device_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shelter_id: Option<String>,
+    /// The volunteer whose queued item an admin took over (spec 9.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taken_over_from: Option<String>,
     pub action: String,
     pub target_kind: String,
     pub target_id: String,
@@ -51,6 +54,7 @@ impl AuditEntry {
             volunteer_id: None,
             device_id: None,
             shelter_id: None,
+            taken_over_from: None,
             action: action.into(),
             target_kind: target_kind.into(),
             target_id: target_id.into(),
@@ -71,6 +75,11 @@ impl AuditEntry {
 
     pub fn in_shelter(mut self, shelter_id: &str) -> Self {
         self.shelter_id = Some(shelter_id.into());
+        self
+    }
+
+    pub fn taken_over_from(mut self, volunteer_id: Option<&str>) -> Self {
+        self.taken_over_from = volunteer_id.map(str::to_string);
         self
     }
 

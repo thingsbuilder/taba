@@ -1,6 +1,26 @@
+import type {
+  BiometricsRequest,
+  BiometricsResponse,
+  CardCancelRequest,
+  CardCreateRequest,
+  CardView,
+  CheckinRequest,
+  CheckinResponse,
+  ExitRequest,
+  GuardianRequest,
+  HouseholdCreateRequest,
+  HouseholdPatchRequest,
+  HouseholdView,
+  PatchPersonRequest,
+  PersonSummary,
+  PersonView,
+} from './api-phase3'
+
 export interface ApiStatus {
   unico: 'ok' | 'degraded'
   reason?: 'limit' | 'unavailable'
+  /** `PILOT_RESPONSIBLE`, for the consent screen; null when the instance has none. */
+  pilot_responsible?: string | null
 }
 
 /** `GET /v1/status` (spec 8.1). Returns null when the server cannot be reached. */
@@ -126,7 +146,7 @@ export interface AcceptResponse extends SessionResponse {
   membership: Membership
 }
 
-export type CapturePurpose = 'login' | 'invite'
+export type CapturePurpose = 'login' | 'invite' | 'checkin' | 'revalidation' | 'biometrics'
 
 export interface GeoBody {
   lat: number
@@ -161,8 +181,12 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
   }
 
   return {
-    createCapture: (purpose: CapturePurpose = 'login') =>
-      call<{ capture_id: string; link: string; expires_at: string }>('POST', '/v1/captures', { body: { purpose } }),
+    // `checkin`, `revalidation` and `biometrics` need the session and say what the capture is for.
+    createCapture: (purpose: CapturePurpose = 'login', opts: { secret?: string; shelter_id?: string; expected_person_id?: string } = {}) =>
+      call<{ capture_id: string; link: string; expires_at: string }>('POST', '/v1/captures', {
+        secret: opts.secret,
+        body: { purpose, ...(opts.shelter_id ? { shelter_id: opts.shelter_id } : {}), ...(opts.expected_person_id ? { expected_person_id: opts.expected_person_id } : {}) },
+      }),
     createSession: (captureId: string, profile?: ProfileInput) =>
       call<SessionResponse>('POST', '/v1/sessions', { body: { capture_id: captureId, ...(profile ? { profile } : {}) } }),
     getMe: (secret: string) => call<Me>('GET', '/v1/me', { secret }),
@@ -199,6 +223,29 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
     removeMember: (secret: string, id: string, volunteerId: string) =>
       call<null>('DELETE', `/v1/shelters/${id}/members/${volunteerId}`, { secret }),
     leaveShelter: (secret: string, id: string) => call<null>('POST', `/v1/shelters/${id}/leave`, { secret }),
+
+    // Phase 3 (spec 8.5). The offline writes go through the queue; these are the direct calls.
+    postCheckin: (secret: string, shelterId: string, body: CheckinRequest) =>
+      call<CheckinResponse>('POST', `/v1/shelters/${shelterId}/checkins`, { secret, body }),
+    listPeople: (secret: string, shelterId: string) => call<{ people: PersonSummary[] }>('GET', `/v1/shelters/${shelterId}/people`, { secret }),
+    listNeedsSelfie: (secret: string, shelterId: string) =>
+      call<{ people: PersonSummary[] }>('GET', `/v1/shelters/${shelterId}/people/needs-selfie`, { secret }),
+    getPerson: (secret: string, id: string) => call<{ person: PersonView }>('GET', `/v1/people/${id}`, { secret }),
+    patchPerson: (secret: string, id: string, body: PatchPersonRequest) => call<{ person: PersonView }>('PATCH', `/v1/people/${id}`, { secret, body }),
+    putBiometrics: (secret: string, id: string, body: BiometricsRequest) =>
+      call<BiometricsResponse>('PUT', `/v1/people/${id}/biometrics`, { secret, body }),
+    postGuardian: (secret: string, id: string, body: GuardianRequest) => call<{ person: PersonView }>('POST', `/v1/people/${id}/guardians`, { secret, body }),
+    /** The thumbnail is an `image/jpeg`: the caller reads the blob, so this one returns the raw response. */
+    getThumbnail: (secret: string, id: string) =>
+      fetchFn(`/v1/people/${id}/thumbnail`, { headers: { Authorization: `Bearer ${secret}` } }),
+    postExit: (secret: string, shelterId: string, body: ExitRequest) => call<{ person: PersonView }>('POST', `/v1/shelters/${shelterId}/exits`, { secret, body }),
+    postHousehold: (secret: string, shelterId: string, body: HouseholdCreateRequest) =>
+      call<{ household: HouseholdView }>('POST', `/v1/shelters/${shelterId}/households`, { secret, body }),
+    getHousehold: (secret: string, id: string) => call<HouseholdView>('GET', `/v1/households/${id}`, { secret }),
+    patchHousehold: (secret: string, id: string, body: HouseholdPatchRequest) => call<HouseholdView>('PATCH', `/v1/households/${id}`, { secret, body }),
+    postCard: (secret: string, householdId: string, body: CardCreateRequest) => call<CardView>('POST', `/v1/households/${householdId}/cards`, { secret, body }),
+    getCard: (secret: string, code: string) => call<CardView>('GET', `/v1/cards/${code}`, { secret }),
+    cancelCard: (secret: string, code: string, body: CardCancelRequest = {}) => call<CardView>('POST', `/v1/cards/${code}/cancel`, { secret, body }),
 
     // Alerts (spec 8.8)
     listAlerts: (secret: string) => call<{ alerts: AlertView[] }>('GET', '/v1/alerts', { secret }),

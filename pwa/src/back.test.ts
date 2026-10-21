@@ -12,3 +12,11 @@ it('goes to the logical parent of each inner screen', () => {
 it('falls back to the home screen for anything else', () => {
   for (const path of ['/', '/nope', '/shelter']) expect(backTarget(resolveRoute(path)), path).toBe('/')
 })
+
+it('goes from the phase 3 shelter screens back to the shelter, and from a person to the home screen', () => {
+  for (const sub of ['checkin', 'people', 'exit', 'households/h1']) {
+    expect(backTarget(resolveRoute(`/shelter/s1/${sub}`)), sub).toBe('/shelter/s1')
+  }
+  expect(backTarget(resolveRoute('/person/p1'))).toBe('/')
+  expect(backTarget(resolveRoute('/privacy'))).toBe('/')
+})

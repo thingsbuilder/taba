@@ -29,6 +29,36 @@ impl ApiError {
     pub fn internal() -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
     }
+
+    // Phase 3 codes (doc da fase 3, "O que a fase cria"); `no_face`, `invalid_image` and
+    // `image_too_large` already come from `UnicoError`.
+    pub fn unico_degraded() -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, "unico_degraded")
+    }
+
+    pub fn protection_role_required() -> Self {
+        Self::new(StatusCode::FORBIDDEN, "protection_role_required")
+    }
+
+    pub fn revalidation_failed() -> Self {
+        Self::new(StatusCode::CONFLICT, "revalidation_failed")
+    }
+
+    pub fn guardian_not_verified() -> Self {
+        Self::new(StatusCode::UNPROCESSABLE_ENTITY, "guardian_not_verified")
+    }
+
+    pub fn person_in_other_household() -> Self {
+        Self::new(StatusCode::CONFLICT, "person_in_other_household")
+    }
+
+    pub fn household_has_card() -> Self {
+        Self::new(StatusCode::CONFLICT, "household_has_card")
+    }
+
+    pub fn code_taken() -> Self {
+        Self::new(StatusCode::CONFLICT, "code_taken")
+    }
 }
 
 /// Lets a handler's error cross a Firestore transaction (see `store::fs_error`).

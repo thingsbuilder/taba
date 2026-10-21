@@ -8,3 +8,8 @@ vault_taba_unico_access_key: "chave-de-acesso-da-unico"
 # Guarde uma cópia FORA da VM e do repositório: perdê-la torna todos os IDs incomparáveis com
 # tokens novos, e trocá-la tem o mesmo efeito.
 vault_taba_hmac_key: "gerar-com-openssl-rand-base64-32"
+
+# Cifra a miniatura de pessoa sem identificação, AES-256-GCM (32 bytes em base64). Gere uma vez:
+#   openssl rand -base64 32
+# Guarde uma cópia FORA da VM: perdê-la torna as miniaturas ilegíveis (elas só duram até o fim do evento).
+vault_taba_thumbnail_key: "gerar-com-openssl-rand-base64-32"

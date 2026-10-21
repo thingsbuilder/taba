@@ -1,6 +1,6 @@
 import QRCode from 'qrcode'
 import { expect, it } from 'vitest'
-import { qrSvg } from './qr'
+import { decodeQrPixels, qrSvg } from './qr'
 
 /** Dark modules of the SVG: the stroke path is `M x y` then `h n` (draw n) and `m dx dy` (move). */
 function darkModules(svg: string, margin: number): Set<string> {
@@ -31,4 +31,21 @@ it('draws exactly the modules of the QR code of the URL', async () => {
 
 it('gives another picture for another text', async () => {
   expect(await qrSvg('https://taba.example.org/invite/a')).not.toBe(await qrSvg('https://taba.example.org/invite/b'))
+})
+
+it('jsQR (the reserve for Safari) reads back the card code from the QR pixels', () => {
+  const { modules } = QRCode.create('ABCD1234', {})
+  const scale = 6
+  const quiet = 4
+  const side = (modules.size + quiet * 2) * scale
+  const pixels = new Uint8ClampedArray(side * side * 4).fill(255)
+  for (let y = 0; y < side; y++) {
+    for (let x = 0; x < side; x++) {
+      const mx = Math.floor(x / scale) - quiet
+      const my = Math.floor(y / scale) - quiet
+      if (mx >= 0 && my >= 0 && mx < modules.size && my < modules.size && modules.get(my, mx) === 1) pixels.fill(0, (y * side + x) * 4, (y * side + x) * 4 + 3)
+    }
+  }
+  expect(decodeQrPixels(pixels, side, side)).toBe('ABCD1234')
+  expect(decodeQrPixels(new Uint8ClampedArray(100 * 100 * 4).fill(255), 100, 100)).toBeNull()
 })

@@ -27,6 +27,11 @@ pub enum AlertKind {
     EventOverlap,
     VolunteerRemoved,
     EndorserFlagged,
+    ChildSeparated,
+    RevalidationFailed,
+    ExceptionalExit,
+    HouseholdConflict,
+    UnicoLimit,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

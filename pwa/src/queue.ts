@@ -1,5 +1,7 @@
 import type { ApiStatus } from './api'
+import { decryptPhotoFields, encryptPhotoFields, blobToBase64 } from './crypto'
 import type { Db, QueueItem } from './db'
+import { applyPhase3Synced, undoPhase3Local } from './sync'
 
 // Generic offline write queue (spec 9.2). Strict FIFO, one item at a time.
 
@@ -38,6 +40,33 @@ export interface QueueDeps {
 
 export type NewQueueItem = Pick<QueueItem, 'method' | 'path' | 'body' | 'volunteer_id' | 'shelter_id'>
 
+/** Photos of a request. They are stored encrypted (spec 6.1.7) and put in the body as base64 only when sent. */
+export interface QueuePhotos {
+  photo?: Blob
+  thumbnail?: Blob
+}
+
+/** The two answers of a Unico that is out: the first request after the monthly limit, and the ones after it (spec 5.5, 5.7). */
+const isUnicoOut = (code: string | undefined): boolean => code === 'unico_degraded' || code === 'unico_limit'
+
+const CHECKIN_PATH = /^\/v1\/shelters\/[^/]+\/checkins$/
+
+/** Header that tells the server who signed the item before an admin took it over (spec 9.2, audit `taken_over_from`). */
+export const TAKEN_OVER_HEADER = 'X-Taken-Over-From'
+
+/** Ids a later item may depend on: the entity this item creates (`body.id`) and the person in a `/v1/people/{id}` path. */
+function idsOf(item: QueueItem): string[] {
+  const id = (item.body as { id?: unknown } | null)?.id
+  const person = /^\/v1\/people\/([^/]+)/.exec(item.path)?.[1]
+  return [typeof id === 'string' ? id : '', person ?? ''].filter(Boolean)
+}
+
+const mentions = (item: QueueItem, ids: Set<string>): boolean => {
+  if (ids.size === 0) return false
+  const text = item.path + JSON.stringify(item.body ?? null)
+  return [...ids].some((id) => text.includes(id))
+}
+
 export function createQueue(deps: QueueDeps) {
   const { db } = deps
   const now = deps.now ?? Date.now
@@ -53,7 +82,7 @@ export function createQueue(deps: QueueDeps) {
     return (await db.getAll('queue')).sort((a, b) => a.created_at - b.created_at)
   }
 
-  async function enqueue(input: NewQueueItem): Promise<QueueItem> {
+  async function enqueue(input: NewQueueItem, photos?: QueuePhotos): Promise<QueueItem> {
     // Strictly increasing so FIFO order survives two enqueues in the same millisecond.
     lastCreatedAt = Math.max(now(), lastCreatedAt + 1)
     const item: QueueItem = {
@@ -63,6 +92,14 @@ export function createQueue(deps: QueueDeps) {
       attempts: 0,
       next_attempt_at: 0,
       state: 'pending',
+    }
+    // The encrypted photo is stored first: the drain never sees an item whose photo is missing.
+    if (photos?.photo || photos?.thumbnail) {
+      const fields = {
+        ...(photos.photo ? { photo_base64: await blobToBase64(photos.photo) } : {}),
+        ...(photos.thumbnail ? { thumbnail_base64: await blobToBase64(photos.thumbnail) } : {}),
+      }
+      await db.put('blobs', await encryptPhotoFields(db, item.id, fields))
     }
     await db.put('queue', item)
     notify()
@@ -96,22 +133,108 @@ export function createQueue(deps: QueueDeps) {
     await drain()
   }
 
+  /** An admin takes the pending items of another volunteer in the given shelters (spec 9.2, M1): they go out with the admin's session. */
+  async function takeOver(fromVolunteerId: string, toVolunteerId: string, shelterIds: string[]): Promise<number> {
+    let n = 0
+    for (const item of await sortedItems()) {
+      if (item.volunteer_id !== fromVolunteerId || !item.shelter_id || !shelterIds.includes(item.shelter_id)) continue
+      await db.put('queue', { ...item, volunteer_id: toVolunteerId, taken_over_from: item.taken_over_from ?? fromVolunteerId })
+      n++
+    }
+    notify()
+    await drain()
+    return n
+  }
+
+  /**
+   * A photo check-in queued while Unico worked, sent when it no longer does: it becomes the check-in
+   * without biometrics (path C, `person_id` = its `id`) and a late biometrics `PUT` after it that carries
+   * the photo, still encrypted (spec 5.7, 4.12). False when the item is not such a check-in.
+   */
+  async function degradeCheckin(item: QueueItem): Promise<boolean> {
+    const body = item.body as { id?: string; capture_id?: unknown; no_biometrics?: unknown } | null
+    const photos = await db.get('blobs', item.id)
+    if (item.method !== 'POST' || !CHECKIN_PATH.test(item.path) || !photos || !body?.id || body.capture_id || body.no_biometrics) return false
+    const fields = await decryptPhotoFields(db, photos).catch(() => null)
+    if (!fields?.photo_base64) return false
+
+    const late: QueueItem = {
+      id: crypto.randomUUID(),
+      method: 'PUT',
+      path: `/v1/people/${body.id}/biometrics`,
+      body: {},
+      volunteer_id: item.volunteer_id,
+      shelter_id: item.shelter_id,
+      created_at: Math.max(now(), lastCreatedAt + 1),
+      attempts: 0,
+      next_attempt_at: 0,
+      state: 'pending',
+      error: 'unico_degraded',
+    }
+    lastCreatedAt = late.created_at
+    const { photo_base64, ...rest } = fields
+    await db.put('blobs', await encryptPhotoFields(db, late.id, { photo_base64 }))
+    if (rest.thumbnail_base64) await db.put('blobs', await encryptPhotoFields(db, item.id, rest))
+    else await db.delete('blobs', item.id)
+    await db.put('queue', late)
+    const { error: _e, ...registration } = item
+    await db.put('queue', { ...registration, body: { ...(item.body as object), no_biometrics: true }, attempts: 0, next_attempt_at: 0 })
+    notify()
+    return true
+  }
+
+  /** Throws away an item that waits for a person (and its photo). */
+  async function discard(id: string): Promise<void> {
+    const item = await db.get('queue', id)
+    if (item) await undoPhase3Local(db, item)
+    await remove(id)
+    notify()
+  }
+
+  /** Sends an item that waited for a person again, with the same idempotency key. */
+  async function retry(id: string): Promise<void> {
+    const item = await db.get('queue', id)
+    if (!item) return
+    const { error: _e, detail: _d, ...rest } = item
+    await db.put('queue', { ...rest, state: 'pending', attempts: 0, next_attempt_at: 0 })
+    notify()
+    await drain()
+  }
+
   async function pass(): Promise<void> {
     let statusOk: boolean | undefined
     const degradedGateOpen = async () => (statusOk ??= (await deps.getStatus())?.unico === 'ok')
+    // Ids of items that wait for the status: whatever mentions them waits too (spec 9.3).
+    const waiting = new Set<string>()
 
     for (const snapshot of await sortedItems()) {
       // Read again: an earlier item of this pass may have held this one (spec 9.3).
       const item = await db.get('queue', snapshot.id)
       if (!item || item.state !== 'pending') continue // held / needs_action wait for a person
-      if (item.error === 'unico_degraded') {
+      if (mentions(item, waiting)) continue
+      if (isUnicoOut(item.error)) {
         // Retried only once GET /status is ok again; does not block the rest of the queue.
-        if (!(await degradedGateOpen())) continue
+        if (!(await degradedGateOpen())) {
+          idsOf(item).forEach((id) => waiting.add(id))
+          continue
+        }
       } else if (item.next_attempt_at > now()) {
         break // FIFO: later items may depend on this one
       }
 
       const secret = await deps.secretFor?.(item.volunteer_id)
+      let body = item.body
+      const photos = await db.get('blobs', item.id)
+      if (photos) {
+        try {
+          body = { ...(item.body as object), ...(await decryptPhotoFields(db, photos)) }
+        } catch {
+          // The browser lost the key: the photo cannot be read any more, a person has to take it again.
+          await db.put('queue', { ...item, state: 'needs_action', error: 'photo_unreadable' })
+          notify()
+          continue
+        }
+      }
       let res: Response
       try {
         res = await deps.fetch(item.path, {
@@ -121,8 +244,9 @@ export function createQueue(deps: QueueDeps) {
             'Idempotency-Key': item.id,
             'X-Device-Id': await deps.deviceId(),
             ...(secret ? { Authorization: `Bearer ${secret}` } : {}),
+            ...(item.taken_over_from ? { [TAKEN_OVER_HEADER]: item.taken_over_from } : {}),
           },
-          body: item.body === undefined ? undefined : JSON.stringify(item.body),
+          body: body === undefined ? undefined : JSON.stringify(body),
         })
       } catch {
         await scheduleRetry(item, 'network', null)
@@ -130,9 +254,10 @@ export function createQueue(deps: QueueDeps) {
       }
 
       if (res.ok) {
-        const body = res.status === 204 ? null : await res.json().catch(() => null)
+        const reply = res.status === 204 ? null : await res.json().catch(() => null)
         await remove(item.id)
-        await deps.onSynced?.(item, body)
+        await applyPhase3Synced(db, item, reply)
+        await deps.onSynced?.(item, reply)
         notify()
         continue
       }
@@ -145,14 +270,21 @@ export function createQueue(deps: QueueDeps) {
 
       if (res.status === 409 && errorCode === 'shelter_nearby') {
         await holdShelter(item.shelter_id, errorCode, item, failure?.detail)
-      } else if (res.status === 503 && errorCode === 'unico_degraded') {
+      } else if (res.status === 503 && isUnicoOut(errorCode)) {
+        if (await degradeCheckin(item)) {
+          // Registered by path C now; the photo became a late biometrics item that waits (spec 5.7).
+          rerun = true
+          continue
+        }
         await db.put('queue', { ...item, error: errorCode })
+        idsOf(item).forEach((id) => waiting.add(id))
       } else if (res.status === 429 || res.status >= 500) {
         await scheduleRetry(item, errorCode ?? `http_${res.status}`, parseRetryAfter(res.headers.get('Retry-After'), now()))
         notify()
         break
       } else {
-        await db.put('queue', { ...item, state: 'needs_action', error: errorCode ?? `http_${res.status}` })
+        // Conflicts of spec 9.4 (`person_in_other_household`, `household_has_card`, ...) keep what the server said.
+        await db.put('queue', { ...item, state: 'needs_action', error: errorCode ?? `http_${res.status}`, detail: failure?.detail })
       }
       notify()
     }
@@ -188,6 +320,9 @@ export function createQueue(deps: QueueDeps) {
     enqueue,
     drain,
     release,
+    takeOver,
+    discard,
+    retry,
     list: sortedItems,
     count: () => db.count('queue'),
     subscribe(listener: () => void) {

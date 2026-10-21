@@ -20,3 +20,15 @@ it('reads the parameters of the shelter, invite and endorse paths', () => {
   expect(resolveRoute('/invite/Xy-_9')).toEqual({ name: 'invite', code: 'Xy-_9' })
   expect(resolveRoute('/endorse/Qq')).toEqual({ name: 'endorse', code: 'Qq' })
 })
+
+it('reads the phase 3 paths', () => {
+  expect(resolveRoute('/shelter/s1/checkin')).toEqual({ name: 'shelter_checkin', id: 's1' })
+  expect(resolveRoute('/shelter/s1/people')).toEqual({ name: 'shelter_people', id: 's1' })
+  expect(resolveRoute('/shelter/s1/exit')).toEqual({ name: 'shelter_exit', id: 's1' })
+  expect(resolveRoute('/shelter/s1/households/h1')).toEqual({ name: 'shelter_household', id: 's1', household_id: 'h1' })
+  expect(resolveRoute('/person/p1')).toEqual({ name: 'person', id: 'p1' })
+  expect(resolveRoute('/privacy')).toEqual({ name: 'privacy' })
+  for (const bad of ['/shelter/s1/checkin/x', '/shelter/s1/households', '/shelter/s1/households/h1/x', '/person', '/person/a/b', '/privacy/x']) {
+    expect(resolveRoute(bad), bad).toEqual({ name: 'not_found' })
+  }
+})

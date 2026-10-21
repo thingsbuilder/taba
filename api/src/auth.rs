@@ -42,6 +42,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub unico: Arc<Unico>,
     hmac_key: Arc<[u8]>,
+    thumbnail_key: Arc<[u8]>,
     domain: Arc<str>,
     /// Serializes shelter creation (spec 6.2.4).
     pub shelter_lock: Arc<tokio::sync::Mutex<()>>,
@@ -73,16 +74,42 @@ impl AppState {
         if hmac_key.len() != 32 {
             bail!("HMAC_KEY must be 32 bytes in base64");
         }
+        let thumbnail_key = STANDARD
+            .decode(
+                config
+                    .thumbnail_key
+                    .as_ref()
+                    .context("THUMBNAIL_KEY is required to serve")?
+                    .0
+                    .trim(),
+            )
+            .context("THUMBNAIL_KEY is not valid base64")?;
+        if thumbnail_key.len() != 32 {
+            bail!("THUMBNAIL_KEY must be 32 bytes in base64");
+        }
+        let status_db = db.clone();
         Ok(Self {
             db,
             config: Arc::new(config),
-            unico: Arc::new(unico),
+            // Every call obeys and feeds the degraded mode (spec 5.5, 5.7).
+            unico: Arc::new(unico.with_status(status_db)),
             hmac_key: hmac_key.into(),
+            thumbnail_key: thumbnail_key.into(),
             domain: domain.into(),
             shelter_lock: Arc::default(),
             event_activity: Arc::default(),
             idempotency_locks: Arc::default(),
         })
+    }
+
+    /// The AES-256-GCM key of the thumbnails (spec 4.6); used by `thumbnail.rs`.
+    pub fn thumbnail_key(&self) -> &[u8] {
+        &self.thumbnail_key
+    }
+
+    /// The `people` id of a Human Token: its HMAC (spec 6.3.2); the token is not kept.
+    pub fn person_id_for_token(&self, token: &str) -> String {
+        derive_id(&self.hmac_key, token)
     }
 
     pub fn domain(&self) -> &str {
@@ -125,7 +152,6 @@ pub fn device_id(headers: &HeaderMap) -> Result<String, ApiError> {
 
 // ---- documents ----
 
-#[allow(dead_code)] // only `login` and `invite` are created before phase 3
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Purpose {
@@ -155,6 +181,14 @@ pub struct CaptureDoc {
     /// HMAC of the token; the token itself is never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub person_id: Option<String>,
+    /// Who asked for the capture (session purposes only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volunteer_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shelter_id: Option<String>,
+    /// The person a revalidation must turn out to be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_person_id: Option<String>,
     pub consumed: bool,
     #[serde(with = "firestore::serialize_as_timestamp")]
     pub created_at: FirestoreInstant,
@@ -183,21 +217,52 @@ pub fn days(n: u32) -> SignedDuration {
 #[derive(Debug, Deserialize)]
 pub struct CreateCapture {
     purpose: Purpose,
+    #[serde(default)]
+    shelter_id: Option<String>,
+    #[serde(default)]
+    expected_person_id: Option<String>,
 }
 
 pub async fn post_captures(
     State(state): State<AppState>,
     headers: HeaderMap,
+    volunteer: Option<Volunteer>,
     Json(request): Json<CreateCapture>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let device = device_id(&headers)?;
-    // Public purposes only (spec 10.4); the others need a session and arrive in phase 3.
-    if !matches!(request.purpose, Purpose::Login | Purpose::Invite) {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "unsupported_purpose",
-        ));
-    }
+    // `login` and `invite` are public (spec 10.4). The captures of phase 3 need a session and say
+    // what they are for, so a capture can only be used for that shelter and that person:
+    // `checkin` for a shelter the caller belongs to, `biometrics` for one person, `revalidation`
+    // for one person in a shelter.
+    let (volunteer_id, shelter_id, expected_person_id) = match request.purpose {
+        Purpose::Login | Purpose::Invite => (None, None, None),
+        purpose => {
+            let volunteer = volunteer.ok_or_else(unauthorized)?;
+            let target_required =
+                || ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "capture_target_required");
+            let needs_shelter = matches!(purpose, Purpose::Checkin | Purpose::Revalidation);
+            let needs_person = matches!(purpose, Purpose::Biometrics | Purpose::Revalidation);
+            if (needs_shelter && request.shelter_id.is_none())
+                || (needs_person && request.expected_person_id.is_none())
+            {
+                return Err(target_required());
+            }
+            if let Some(shelter_id) = &request.shelter_id {
+                let may = volunteer.role_in(shelter_id).is_some()
+                    || (purpose == Purpose::Revalidation
+                        && (volunteer.has_global(GlobalRole::CivilDefense)
+                            || volunteer.has_global(GlobalRole::Protection)));
+                if !may {
+                    return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden"));
+                }
+            }
+            (
+                Some(volunteer.id),
+                request.shelter_id,
+                request.expected_person_id,
+            )
+        }
+    };
     let capture_id = uuid::Uuid::new_v4().to_string();
     let callback = format!("https://{}/return?capture={capture_id}", state.domain);
     let journey = state.unico.create_journey(&callback).await?;
@@ -209,6 +274,9 @@ pub async fn post_captures(
         device_id: device.clone(),
         status: CaptureStatus::Created,
         person_id: None,
+        volunteer_id,
+        shelter_id,
+        expected_person_id,
         consumed: false,
         created_at: now,
         expires_at: now + CAPTURE_TTL,
@@ -597,6 +665,23 @@ fn unauthorized() -> ApiError {
     ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized")
 }
 
+impl axum::extract::OptionalFromRequestParts<AppState> for Volunteer {
+    type Rejection = ApiError;
+
+    /// `None` without an `Authorization` header; a bad session is still an error.
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Option<Self>, ApiError> {
+        if !parts.headers.contains_key("authorization") {
+            return Ok(None);
+        }
+        <Self as FromRequestParts<AppState>>::from_request_parts(parts, state)
+            .await
+            .map(Some)
+    }
+}
+
 impl FromRequestParts<AppState> for Volunteer {
     type Rejection = ApiError;
 
@@ -767,6 +852,20 @@ mod tests {
             ))
             .is_err()
         );
+        // The thumbnail key is required too, with the same shape (spec 6.2.2).
+        assert!(try_state(build(&|c| c.thumbnail_key = None)).is_err());
+        assert!(
+            try_state(build(
+                &|c| c.thumbnail_key = Some(crate::config::Secret("not base64!".into()))
+            ))
+            .is_err()
+        );
+        assert!(
+            try_state(build(
+                &|c| c.thumbnail_key = Some(crate::config::Secret(short.clone()))
+            ))
+            .is_err()
+        );
     }
 
     // ---- POST /v1/captures ----
@@ -806,7 +905,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capture_needs_a_device_and_the_login_purpose() {
+    async fn capture_needs_a_device_and_the_session_purposes_a_session() {
         let app = TestApp::new().await;
         let (status, _, body) = app
             .request(
@@ -821,14 +920,11 @@ mod tests {
             (StatusCode::BAD_REQUEST, Some("device_id_required"))
         );
         let (status, body) = app
-            .post("/v1/captures", DEVICE, json!({ "purpose": "checkin" }))
+            .post("/v1/captures", DEVICE, json!({ "purpose": "revalidation" }))
             .await;
         assert_eq!(
             (status, body["error"].as_str()),
-            (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Some("unsupported_purpose")
-            )
+            (StatusCode::UNAUTHORIZED, Some("unauthorized"))
         );
         assert_eq!(app.unico.post_count(), 0);
         assert!(all_docs(&app.state.db, CAPTURES).await.is_empty());
