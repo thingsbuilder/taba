@@ -1300,3 +1300,75 @@ mod tests {
         assert_eq!(patched["shelter"]["vacancies"], 0);
     }
 }
+
+#[cfg(test)]
+mod capture_tests {
+    use super::*;
+    use crate::test_support::{ORIGIN, TestApp, new_id};
+
+    #[tokio::test]
+    async fn a_revalidation_capture_needs_a_session_a_target_and_a_member() {
+        let app = TestApp::new().await;
+        let admin = app.actor("Admin").await;
+        let shelter = app.create_shelter(&admin, "Ginasio", ORIGIN).await;
+        let stranger = app.actor("Stranger").await;
+        let body =
+            json!({ "purpose": "revalidation", "shelter_id": shelter, "expected_person_id": "g1" });
+        let call = |who: Option<&crate::test_support::Actor>, body: Value| {
+            let app = app.clone();
+            let who = who.cloned();
+            async move {
+                let auth = who.as_ref().map(|a| format!("Bearer {}", a.secret));
+                let device = who
+                    .as_ref()
+                    .map_or("dev-anon".to_string(), |a| a.device.clone());
+                let mut headers = vec![("x-device-id", device.as_str())];
+                if let Some(auth) = auth.as_deref() {
+                    headers.push(("authorization", auth));
+                }
+                let (status, _, json) = app
+                    .request("POST", "/v1/captures", &headers, Some(body))
+                    .await;
+                (status, json)
+            }
+        };
+        assert_eq!(call(None, body.clone()).await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            call(Some(&stranger), body.clone()).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, answer) = call(
+            Some(&admin),
+            json!({ "purpose": "revalidation", "shelter_id": shelter }),
+        )
+        .await;
+        assert_eq!(
+            (status, answer["error"].as_str()),
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Some("capture_target_required")
+            )
+        );
+        let (status, answer) = call(Some(&admin), body).await;
+        assert_eq!(status, StatusCode::CREATED, "{answer}");
+        let stored: CaptureDoc = store::get(
+            &app.state.db,
+            CAPTURES,
+            answer["capture_id"].as_str().unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(stored.purpose, Purpose::Revalidation);
+        assert_eq!(stored.volunteer_id.as_deref(), Some(admin.id.as_str()));
+        assert_eq!(stored.shelter_id.as_deref(), Some(shelter.as_str()));
+        assert_eq!(stored.expected_person_id.as_deref(), Some("g1"));
+        // Purposes of other owners stay closed here.
+        let (status, _) = call(
+            Some(&admin),
+            json!({ "purpose": "bogus_", "shelter_id": new_id() }),
+        )
+        .await;
+        assert!(status.is_client_error());
+    }
+}
