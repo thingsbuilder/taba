@@ -526,6 +526,13 @@ Unico's terms allow sending a photo that did not come from the SDK [dec. k, Q6].
 
 **Journey instead of SDK** [dec. i, Q4]. **First implementation task** [dec. k, Q13]: test the journey from the PWA installed on iPhone (navigation outside the app scope in standalone mode, camera permission, return via `callbackUri`); then, login → create shelter → check-in. Plan B: Unico's web SDK.
 
+**Test result (2026-10-21, iPhone, installed PWA): validated; plan B is not needed.**
+- The journey opens in a Safari window over the app (iOS behavior for out-of-scope URLs). Same window and new window give the same result: the PWA uses the same window.
+- The camera works inside that window, and the liveness capture ends with `PROCESS_STATE_FINISHED` and a token.
+- A `callbackUri` inside the PWA scope closes the Safari window and returns to **the app itself**, as a fresh page load.
+- So the `callbackUri` carries its own identifier (nonce) and the return screen looks the process up by it, without relying on in-memory state or `localStorage`.
+- The journey shows the organization name registered in the Unico console ("<organization> needs the following information"). The installation should use the name "Taba" and, if possible, the logo, to avoid distrust.
+
 ### 5.2 Journey (`humantoken`)
 1. `POST /v1/captures` → server calls `POST {UNICO_URL}/process` with `{"flow": "humantoken", "callbackUri": "https://<domain>/return?capture=<capture_id>"}`. Stores `process_id = id` and returns `link`. Capture expires in 15 min.
 2. The endpoint that consumes the capture calls `GET {UNICO_URL}/process/{process_id}` if it has not been resolved yet (polling does not create a process, costs nothing).

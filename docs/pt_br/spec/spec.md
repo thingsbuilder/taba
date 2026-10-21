@@ -526,6 +526,13 @@ Os termos da Unico permitem enviar foto que não veio do SDK [dec. k, Q6].
 
 **Jornada em vez de SDK** [dec. i, Q4]. **Primeira tarefa da implementação** [dec. k, Q13]: testar a jornada a partir da PWA instalada no iPhone (navegação para fora do escopo do app em modo standalone, permissão de câmera, volta pelo `callbackUri`); depois, login → criar abrigo → check-in. Plano B: SDK web da Unico.
 
+**Resultado do teste (2026-10-21, iPhone, PWA instalada): validado; o plano B não é necessário.**
+- A jornada abre numa janela do Safari por cima do app (comportamento do iOS para endereço fora do escopo). Abrir na mesma janela e em janela nova dá o mesmo resultado: a PWA usa a mesma janela.
+- A câmera funciona dentro dessa janela, e a captura com liveness termina com `PROCESS_STATE_FINISHED` e token.
+- O `callbackUri` dentro do escopo da PWA fecha a janela do Safari e volta para o **próprio app**, numa carga nova da página.
+- Por isso o `callbackUri` carrega um identificador próprio (nonce) e a tela de retorno busca o processo por ele, sem depender do estado em memória nem do `localStorage`.
+- A jornada mostra o nome da organização cadastrada no console da Unico ("O <organização> precisa das seguintes informações"). A instalação deve usar o nome "Taba" e, se possível, o logotipo, para não gerar desconfiança.
+
 ### 5.2 Jornada (`humantoken`)
 1. `POST /v1/captures` → servidor chama `POST {UNICO_URL}/process` com `{"flow": "humantoken", "callbackUri": "https://<domain>/return?capture=<capture_id>"}`. Guarda `process_id = id` e devolve `link`. Captura expira em 15 min.
 2. O endpoint que consome a captura chama `GET {UNICO_URL}/process/{process_id}` se ela ainda não foi resolvida (polling não cria processo, não custa).
