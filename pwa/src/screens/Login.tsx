@@ -4,6 +4,7 @@ import { errorKey } from '../app-context'
 import { useOnline } from '../hooks'
 import { t } from '../i18n'
 import { loginBlock, startLogin } from '../login'
+import { InviteCodeField } from './InviteCodeField'
 
 export function Login({ ctx }: { ctx: AppContext }) {
   const online = useOnline()
@@ -33,6 +34,7 @@ export function Login({ ctx }: { ctx: AppContext }) {
       <button type="button" class="button" disabled={busy || blocked !== null} onClick={() => void enter()}>
         {busy ? t('login.starting') : t('login.action')}
       </button>
+      <InviteCodeField />
     </main>
   )
 }

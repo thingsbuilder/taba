@@ -196,5 +196,13 @@
   "error.invalid_event": "Confira o nome e os telefones do evento.",
   "error.invalid_reason": "Escreva um motivo.",
   "error.invalid_role": "Esse nível não é permitido.",
-  "error.contention": "Muita gente usando ao mesmo tempo. Tente de novo em instantes."
+  "error.contention": "Muita gente usando ao mesmo tempo. Tente de novo em instantes.",
+  "invite.handoff_body": "Abra o Taba pelo ícone na tela de início e cole este convite lá. Toque no botão para copiá-lo.",
+  "invite.copy": "Copiar convite",
+  "invite.copied": "Copiado. Agora abra o Taba pela tela de início.",
+  "invite.copy_failed": "Não deu para copiar. Selecione o endereço na barra acima e copie.",
+  "invite.have_code": "Tenho um convite",
+  "invite.code_placeholder": "Cole o link ou o código",
+  "invite.code_go": "Abrir convite",
+  "invite.code_invalid": "Isso não parece um convite. Cole o link inteiro ou o código."
 }

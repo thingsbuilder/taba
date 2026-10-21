@@ -4,6 +4,7 @@ import { useOnline } from '../hooks'
 import { navigate } from '../nav'
 import { t } from '../i18n'
 import { pendingViews } from '../pending'
+import { InviteCodeField } from './InviteCodeField'
 import { signOut } from './signout'
 import type { QueueItem } from '../db'
 
@@ -27,6 +28,7 @@ export function Home({ ctx }: { ctx: AppContext }) {
         <h1 class="display">{t('home.title')}</h1>
         <p class="body">{t('home.body')}</p>
         <button type="button" class="button" onClick={() => navigate('/login')}>{t('home.login')}</button>
+        <InviteCodeField />
       </main>
     )
   }
@@ -45,6 +47,7 @@ export function Home({ ctx }: { ctx: AppContext }) {
           </li>
         ))}
       </ul>
+      <InviteCodeField />
       <button type="button" class="button" onClick={() => navigate('/shelters/new')}>{t('home.new_shelter')}</button>
       <button type="button" class="button button-secondary" onClick={() => navigate('/inbox')}>
         {t('home.inbox')}{alerts ? ` (${alerts})` : ''}
