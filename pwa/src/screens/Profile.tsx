@@ -3,6 +3,7 @@ import type { AppContext } from '../app-context'
 import { navigate } from '../nav'
 import { t } from '../i18n'
 import { updateProfile } from '../sessions'
+import { BackLink } from './BackLink'
 import { ProfileForm } from './ProfileForm'
 import { signOut } from './signout'
 
@@ -26,9 +27,11 @@ export function Profile({ ctx }: { ctx: AppContext }) {
 
   return (
     <main class="screen">
+      <BackLink />
       <h1 class="title">{t('profile.title')}</h1>
       <ProfileForm initial={active.profile} submitLabel={t('profile.save')} onSubmit={(p) => void save(p)} />
       {saved && <p class="notice" role="status">{t('profile.saved')}</p>}
+      <button type="button" class="button button-secondary" onClick={() => navigate('/switch-operator')}>{t('home.switch')}</button>
       <button type="button" class="button button-secondary" onClick={() => void signOut(ctx)}>{t('home.logout')}</button>
     </main>
   )

@@ -5,6 +5,7 @@ import { t } from '../i18n'
 import { isValidPin } from '../pin'
 import { type LocalSession, hasPin, switchOperator } from '../sessions'
 import { switchFailure } from '../switch-message'
+import { BackLink } from './BackLink'
 
 /** `/switch-operator`: pick a volunteer with a session on this device and confirm with the PIN. Works offline. */
 export function SwitchOperator({ ctx }: { ctx: AppContext }) {
@@ -31,6 +32,7 @@ export function SwitchOperator({ ctx }: { ctx: AppContext }) {
 
   return (
     <main class="screen">
+      <BackLink />
       <h1 class="title">{t('switch.title')}</h1>
       {message && <p class="notice notice-error" role="alert">{message}</p>}
       {chosen ? (
