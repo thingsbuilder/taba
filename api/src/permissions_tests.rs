@@ -500,9 +500,6 @@ const PHASE_3_ROUTES: &[(&str, &str, &str)] = &[
     ("B", "POST", "/v1/households/h1/cards"),
     ("B", "GET", "/v1/cards/ABCD2345"),
     ("B", "POST", "/v1/cards/ABCD2345/cancel"),
-    // owner C: children and exits
-    ("C", "POST", "/v1/people/p1/guardians"),
-    ("C", "POST", "/v1/shelters/s1/exits"),
 ];
 
 #[tokio::test]

@@ -13,6 +13,7 @@ use crate::audit::{self, AuditEntry};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::events::{self, EventDoc};
+use crate::exits;
 use crate::geo;
 use crate::members::{self, MembershipDoc, ShelterRole};
 use crate::store::{self, tx_create, tx_replace};
@@ -187,6 +188,7 @@ pub fn full_view(
     shelter: &ShelterDoc,
     event: Option<(&str, &EventDoc)>,
     role: Option<ShelterRole>,
+    occupancy: u32,
 ) -> Value {
     json!({
         "id": id,
@@ -198,9 +200,8 @@ pub fn full_view(
         "event_id": shelter.event_id,
         "event": event.map(|(event_id, event)| event.view(event_id)),
         "capacity": shelter.capacity,
-        // Stays arrive with check-in in phase 3.
-        "occupancy": 0,
-        "vacancies": shelter.capacity,
+        "occupancy": occupancy,
+        "vacancies": exits::vacancies(shelter.capacity, occupancy),
         "status": shelter.status,
         "confirmation": shelter.confirmation,
         "confirmation_type": shelter.confirmation_type,
@@ -212,14 +213,14 @@ pub fn full_view(
 }
 
 /// What any other volunteer sees: name, confirmation and vacancies (spec 8.2).
-fn public_view(id: &str, shelter: &ShelterDoc) -> Value {
+fn public_view(id: &str, shelter: &ShelterDoc, occupancy: u32) -> Value {
     json!({
         "id": id,
         "name": shelter.name,
         "confirmation": shelter.confirmation,
         "capacity": shelter.capacity,
-        "occupancy": 0,
-        "vacancies": shelter.capacity,
+        "occupancy": occupancy,
+        "vacancies": exits::vacancies(shelter.capacity, occupancy),
     })
 }
 
@@ -243,8 +244,9 @@ pub async fn view_for(
     shelter: &ShelterDoc,
 ) -> Result<Value, ApiError> {
     let role = volunteer.role_in(id);
+    let occupancy = exits::occupancy(db, id).await?;
     if role.is_none() && !volunteer.is_validator_or_civil_defense() {
-        return Ok(public_view(id, shelter));
+        return Ok(public_view(id, shelter, occupancy));
     }
     let event = event_of(db, shelter).await?;
     Ok(full_view(
@@ -254,6 +256,7 @@ pub async fn view_for(
             .as_ref()
             .map(|(event_id, event)| (event_id.as_str(), event)),
         role,
+        occupancy,
     ))
 }
 
@@ -545,6 +548,7 @@ pub async fn post_shelters(
         &created.shelter,
         Some((&created.event_id, &created.event)),
         Some(ShelterRole::Admin),
+        0,
     );
     Ok((
         StatusCode::CREATED,
@@ -645,23 +649,25 @@ pub async fn patch_shelter(
     .await?;
     events::touch(&state, shelter.event_id.as_deref()).await;
     Ok(Json(
-        json!({ "shelter": respond(&id, &shelter, event.as_ref(), &volunteer) }),
+        json!({ "shelter": respond(&state.db, &id, &shelter, event.as_ref(), &volunteer).await? }),
     ))
 }
 
 /// The full view for a caller who is allowed to change the shelter.
-fn respond(
+async fn respond(
+    db: &FirestoreDb,
     id: &str,
     shelter: &ShelterDoc,
     event: Option<&(String, EventDoc)>,
     volunteer: &Volunteer,
-) -> Value {
-    full_view(
+) -> Result<Value, ApiError> {
+    Ok(full_view(
         id,
         shelter,
         event.map(|(event_id, event)| (event_id.as_str(), event)),
         volunteer.role_in(id),
-    )
+        exits::occupancy(db, id).await?,
+    ))
 }
 
 /// What `update` does to a shelter.
@@ -752,7 +758,7 @@ async fn update(
     .await?;
     events::touch(state, shelter.event_id.as_deref()).await;
     Ok(Json(
-        json!({ "shelter": respond(id, &shelter, event.as_ref(), volunteer) }),
+        json!({ "shelter": respond(&state.db, id, &shelter, event.as_ref(), volunteer).await? }),
     ))
 }
 
