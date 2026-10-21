@@ -718,6 +718,7 @@ O banco é o `(default)`, em modo nativo, na região da instalação — o únic
 | `searches` | `person_ids` ARRAY_CONTAINS, `status` ASC |
 | `searches` | `event_id` ASC, `status` ASC |
 | `matches` | `mediator_kind` ASC, `mediator_shelter_id` ASC, `status` ASC, `created_at` DESC |
+| `matches` | `mediator_kind` ASC, `status` ASC, `created_at` DESC (filas `central` e `protection`, sem `mediator_shelter_id`) |
 | `memberships` | `volunteer_id` ASC, `status` ASC |
 | `memberships` | `shelter_id` ASC, `status` ASC |
 | `alerts` | `resolved` ASC, `informational` ASC, `created_at` DESC |
@@ -835,7 +836,7 @@ Base `https://<domain>/v1`. JSON. Autenticação `Authorization: Bearer <session
 |---|---|---|
 | `POST /shelters` | `{id, name, lat, lon, accuracy, address?, capacity?, other_site_reason?, client_created_at}` | `201 {shelter, event?}`; `409 shelter_nearby {shelter_id, name, distance_m, contact}`; `422 insufficient_accuracy` |
 | `GET /shelters/{id}` | — | abrigo (membros ativos; outros voluntários veem só nome, confirmação e vagas) |
-| `GET /shelters/nearby?lat&lon` | — (qualquer voluntário) | `[{shelter_id, name, distance_m, capacity, occupancy}]` (abertos, a ≤ `EVENT_RADIUS_KM`) |
+| `GET /shelters/nearby?lat&lon` | — (qualquer voluntário) | `{shelters: [{id, name, distance_m, capacity, occupancy, vacancies, confirmation}]}`, do mais perto ao mais longe (abertos, de evento ativo, a ≤ `EVENT_RADIUS_KM`) |
 | `PATCH /shelters/{id}` | `{name?, address?, capacity?}` (admin; DC para `capacity`) | `200` |
 | `POST /shelters/{id}/close` | — (admin ou DC) | `200` |
 | `PUT /shelters/{id}/items` | `{items: {<name>: {scope, period_days?, once_per_event, high_value}}}` (admin) | `200` |
