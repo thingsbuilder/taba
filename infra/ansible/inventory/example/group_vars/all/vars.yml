@@ -1,0 +1,14 @@
+# Valores de exemplo. Copie inventory/example/ para inventory/prod/ e troque pelos seus.
+gcp_project: "meu-projeto-123456"
+# e2-micro gratuita só em us-east1/us-central1/us-west1; us-east1 é a mais perto do Brasil
+gcp_region: us-east1
+gcp_zone: us-east1-b
+
+taba_domain: "taba.example.org"
+
+vm_name: taba
+vm_ssh_user: taba
+ssh_pubkey: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+
+# segredos: só por referência ao vault (ver vault.yml.example)
+unico_access_key: "{{ vault_taba_unico_access_key }}"

@@ -1,0 +1,4 @@
+# Copie para inventory/prod/group_vars/all/vault.yml, preencha e criptografe:
+#   ansible-vault encrypt inventory/prod/group_vars/all/vault.yml
+# Nunca commite este arquivo preenchido, nem criptografado: inventory/prod/ está no .gitignore.
+vault_taba_unico_access_key: "chave-de-acesso-da-unico"

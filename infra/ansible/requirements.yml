@@ -1,0 +1,2 @@
+collections:
+  - name: google.cloud   # módulos GCP; requer `pip install google-auth requests` no python do ansible

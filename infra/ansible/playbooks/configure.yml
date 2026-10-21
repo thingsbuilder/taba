@@ -1,0 +1,57 @@
+# Configura a VM: atualizações automáticas, Caddy (HTTPS automático) e o arquivo
+# de ambiente com os segredos. Idempotente — rodar de novo aplica só o que mudou.
+# Pré-requisito: o registro DNS de taba_domain já aponta para a VM (o Caddy
+# precisa dele para emitir o certificado).
+- name: Configurar a VM do Taba
+  hosts: taba_prod
+  become: true
+  gather_facts: true
+  handlers:
+    - name: reload caddy
+      ansible.builtin.systemd:
+        name: caddy
+        state: reloaded
+  tasks:
+    - name: Pacotes base
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, gnupg, unattended-upgrades]
+        update_cache: true
+
+    - name: Repositório do Caddy
+      ansible.builtin.deb822_repository:
+        name: caddy-stable
+        uris: https://dl.cloudsmith.io/public/caddy/stable/deb/debian
+        suites: any-version
+        components: main
+        signed_by: https://dl.cloudsmith.io/public/caddy/stable/gpg.key
+
+    - name: Caddy
+      ansible.builtin.apt:
+        name: caddy
+        update_cache: true
+
+    - name: Caddyfile
+      ansible.builtin.template:
+        src: ../templates/Caddyfile.j2
+        dest: /etc/caddy/Caddyfile
+        mode: "0644"
+      notify: reload caddy
+
+    - name: Caddy habilitado e rodando
+      ansible.builtin.systemd:
+        name: caddy
+        enabled: true
+        state: started
+
+    # Lido pelo serviço da API (EnvironmentFile do systemd), que ainda não existe.
+    - name: Diretório de configuração
+      ansible.builtin.file:
+        path: /etc/taba
+        state: directory
+        mode: "0700"
+
+    - name: Arquivo de ambiente com os segredos
+      ansible.builtin.template:
+        src: ../templates/env.j2
+        dest: /etc/taba/env
+        mode: "0600"

@@ -1,0 +1,149 @@
+# Cria (ou garante) a infraestrutura do Taba no GCP. Idempotente pelos nomes fixos.
+# Autentica com o gcloud de quem roda (`gcloud auth login`): sem chave de conta de
+# serviço em disco.
+#
+# Tudo dentro da camada gratuita, menos o IPv4 externo (~US$ 3/mês, não há isenção).
+- name: Provisionar a infraestrutura do Taba no GCP
+  hosts: localhost
+  gather_facts: false
+  vars:
+    gcp_auth: &gcp_auth
+      project: "{{ gcp_project }}"
+      auth_kind: accesstoken
+      access_token: "{{ gcp_token }}"
+    vm_service_account: "taba-vm@{{ gcp_project }}.iam.gserviceaccount.com"
+  tasks:
+    - name: Token do gcloud de quem roda
+      ansible.builtin.command: gcloud auth print-access-token
+      register: gcp_token_out
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Guardar o token
+      ansible.builtin.set_fact:
+        gcp_token: "{{ gcp_token_out.stdout }}"
+      no_log: true
+
+    - name: APIs do Compute Engine, Firestore e IAM
+      google.cloud.gcp_serviceusage_service:
+        <<: *gcp_auth
+        name: "{{ item }}"
+        state: present
+      loop:
+        - compute.googleapis.com
+        - firestore.googleapis.com
+        - iam.googleapis.com
+
+    # ── Firestore: não há módulo para criar o banco; vai pela API REST.
+    # O (default) é o único banco que usa a cota gratuita.
+    - name: Ver se o banco (default) existe
+      ansible.builtin.uri:
+        url: "https://firestore.googleapis.com/v1/projects/{{ gcp_project }}/databases/(default)"
+        headers:
+          Authorization: "Bearer {{ gcp_token }}"
+        status_code: [200, 404]
+      register: firestore_db
+      check_mode: false
+
+    - name: Criar o banco Firestore (modo nativo) em {{ gcp_region }}
+      when: firestore_db.status == 404
+      ansible.builtin.uri:
+        url: "https://firestore.googleapis.com/v1/projects/{{ gcp_project }}/databases?databaseId=(default)"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ gcp_token }}"
+        body_format: json
+        body:
+          type: FIRESTORE_NATIVE
+          locationId: "{{ gcp_region }}"
+        status_code: [200]
+
+    # ── Conta de serviço própria da VM, só com acesso ao Firestore. A conta padrão
+    # do Compute Engine tem papel de Editor no projeto inteiro.
+    - name: Conta de serviço da VM
+      google.cloud.gcp_iam_service_account:
+        <<: *gcp_auth
+        name: "{{ vm_service_account }}"
+        display_name: Taba VM
+        state: present
+
+    - name: Ver se a conta já tem o papel datastore.user
+      ansible.builtin.command: >-
+        gcloud projects get-iam-policy {{ gcp_project }}
+        --flatten=bindings[].members
+        --filter="bindings.role=roles/datastore.user AND bindings.members=serviceAccount:{{ vm_service_account }}"
+        --format=value(bindings.members)
+      register: sa_binding
+      changed_when: false
+      check_mode: false
+
+    # Não há módulo para binding de IAM no projeto; o gcloud resolve.
+    - name: Dar à conta o papel datastore.user
+      when: sa_binding.stdout == ""
+      ansible.builtin.command: >-
+        gcloud projects add-iam-policy-binding {{ gcp_project }}
+        --member=serviceAccount:{{ vm_service_account }}
+        --role=roles/datastore.user
+        --condition=None --quiet
+
+    - name: IP externo estático
+      google.cloud.gcp_compute_address:
+        <<: *gcp_auth
+        name: "{{ vm_name }}-ip"
+        region: "{{ gcp_region }}"
+        state: present
+      register: vm_address
+
+    - name: Rede default
+      google.cloud.gcp_compute_network_info:
+        <<: *gcp_auth
+        filters:
+          - name = default
+      register: default_network
+
+    - name: Firewall (SSH e HTTP/HTTPS para o Caddy)
+      google.cloud.gcp_compute_firewall:
+        <<: *gcp_auth
+        name: "{{ vm_name }}-web"
+        network: "{{ default_network.resources[0] }}"
+        allowed:
+          - ip_protocol: tcp
+            ports: ["22", "80", "443"]
+        target_tags: ["{{ vm_name }}"]
+        state: present
+
+    - name: VM e2-micro (Debian 13, disco padrão de 30 GB)
+      google.cloud.gcp_compute_instance:
+        <<: *gcp_auth
+        name: "{{ vm_name }}"
+        zone: "{{ gcp_zone }}"
+        machine_type: e2-micro
+        disks:
+          - auto_delete: true
+            boot: true
+            initialize_params:
+              source_image: projects/debian-cloud/global/images/family/debian-13
+              disk_size_gb: 30
+              # pd-standard: o pd-balanced (padrão do console) não entra na camada gratuita
+              disk_type: pd-standard
+        network_interfaces:
+          - network: "{{ default_network.resources[0] }}"
+            access_configs:
+              - name: External NAT
+                nat_ip: "{{ vm_address }}"
+                type: ONE_TO_ONE_NAT
+        service_accounts:
+          - email: "{{ vm_service_account }}"
+            scopes: [https://www.googleapis.com/auth/cloud-platform]
+        tags:
+          items: ["{{ vm_name }}"]
+        metadata:
+          ssh-keys: "{{ vm_ssh_user }}:{{ ssh_pubkey }}"
+        state: present
+
+    - name: Próximo passo
+      ansible.builtin.debug:
+        msg: >-
+          VM no ar com o IP {{ vm_address.address }}. Crie o registro DNS
+          A {{ taba_domain }} → {{ vm_address.address }} e depois rode configure.yml.
