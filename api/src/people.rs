@@ -182,6 +182,10 @@ pub struct PersonDoc {
     pub child_status: Option<ChildStatus>,
     #[serde(default)]
     pub guardians: Vec<Guardian>,
+    /// `guardians[].person_id` as a flat list, so a query can find every child of a guardian (the
+    /// late biometrics move them to the new id). Kept in step with `guardians`: see `sync_guardian_ids`.
+    #[serde(default)]
+    pub guardian_ids: Vec<String>,
     #[serde(default)]
     pub needs: Needs,
     #[serde(default)]
@@ -526,6 +530,7 @@ fn new_person(id: &str, level: Level, basis: LegalBasis, now: FirestoreInstant) 
         is_child: false,
         child_status: None,
         guardians: vec![],
+        guardian_ids: vec![],
         needs: Needs::default(),
         vulnerabilities: Vulnerabilities::default(),
         household_id: None,
@@ -1039,6 +1044,13 @@ pub async fn repoint_person_refs(
     Ok(())
 }
 
+impl PersonDoc {
+    /// Makes `guardian_ids` match `guardians`; call it after any change to the guardians.
+    pub fn sync_guardian_ids(&mut self) {
+        self.guardian_ids = self.guardians.iter().map(|g| g.person_id.clone()).collect();
+    }
+}
+
 /// `old` replaced by `new` in the guardians list; returns whether anything changed.
 fn repoint_guardians(guardians: &mut [Guardian], old: &str, new: &str) -> bool {
     let mut changed = false;
@@ -1220,22 +1232,28 @@ async fn migrate_in(
             tx_replace(db, tx, households::COLLECTION, id, &household)?;
         }
     }
-    // A child whose guardian was the old record, among the people of the same household.
-    if let Some(household_id) = &old.household_id {
-        if let Some(household) =
-            store::get::<HouseholdDoc>(db, households::COLLECTION, household_id).await?
-        {
-            for member in household
-                .member_ids
-                .iter()
-                .filter(|id| **id != m.old_id && **id != m.new_id)
-            {
-                if let Some(mut other) = store::get::<PersonDoc>(db, COLLECTION, member).await? {
-                    if repoint_guardians(&mut other.guardians, &m.old_id, &m.new_id) {
-                        tx_replace(db, tx, COLLECTION, member, &other)?;
-                    }
-                }
-            }
+    // Every child who lists the old record as guardian, in any household or none (spec 4.12).
+    let children: Vec<PersonDoc> = db
+        .fluent()
+        .select()
+        .from(COLLECTION)
+        .filter(|q| {
+            q.for_all([q
+                .field(path!(PersonDoc::guardian_ids))
+                .array_contains(&m.old_id)])
+        })
+        .obj()
+        .query()
+        .await
+        .map_err(fs_error)?;
+    for mut child in children {
+        let Some(id) = child.id.take() else { continue };
+        if id == m.old_id || id == m.new_id {
+            continue;
+        }
+        if repoint_guardians(&mut child.guardians, &m.old_id, &m.new_id) {
+            child.sync_guardian_ids();
+            tx_replace(db, tx, COLLECTION, &id, &child)?;
         }
     }
     repoint_person_refs(db, tx, &m.old_id, &m.new_id).await?;

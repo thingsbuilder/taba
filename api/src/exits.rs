@@ -411,6 +411,7 @@ pub(crate) mod fixtures {
             is_child: false,
             child_status: None,
             guardians: vec![],
+            guardian_ids: vec![],
             needs: Needs::default(),
             vulnerabilities: Vulnerabilities::default(),
             household_id: None,
@@ -457,6 +458,7 @@ pub(crate) mod fixtures {
                 checked_at: None,
             })
             .collect();
+        doc.sync_guardian_ids();
         doc
     }
 
@@ -953,6 +955,82 @@ mod tests {
                 .exit(self.w.actor(who), &self.w.unconfirmed, body)
                 .await
         }
+    }
+
+    #[tokio::test]
+    async fn a_guardian_without_a_household_who_gets_a_selfie_later_still_releases_the_child() {
+        // The guardian was registered without biometrics, belongs to no household, and the child
+        // is in no household either. The late selfie moves the guardian to the id of the token
+        // (spec 4.12); the child's guardian entry must follow, or the exit would never match.
+        let (token, new_guardian) = guardian_token();
+        let w = World::new().await;
+        let old_guardian = new_id();
+        put(
+            &w.app,
+            &old_guardian,
+            &person(Level::NoBiometrics, Some(&w.unconfirmed)),
+        )
+        .await;
+        let child_id = new_id();
+        put(
+            &w.app,
+            &child_id,
+            &child(
+                &w.unconfirmed,
+                ChildStatus::WithGuardian,
+                vec![(&old_guardian, GuardianLink::DocumentChecked)],
+            ),
+        )
+        .await;
+        let admin = w.actor(Who::AdminUnconfirmed).unwrap();
+        let auth = format!("Bearer {}", admin.secret);
+        let headers = [
+            ("authorization", auth.as_str()),
+            ("x-device-id", admin.device.as_str()),
+        ];
+        let (status, _, made) = w
+            .app
+            .request(
+                "POST",
+                "/v1/captures",
+                &headers,
+                Some(json!({ "purpose": "biometrics", "expected_person_id": old_guardian })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        let capture_id = made["capture_id"].as_str().unwrap();
+        let stored: CaptureDoc = store::get(&w.app.state.db, CAPTURES, capture_id)
+            .await
+            .unwrap()
+            .unwrap();
+        w.app.unico.finish_with_token(&stored.process_id, &token);
+        let (status, _, body) = w
+            .app
+            .request(
+                "PUT",
+                &format!("/v1/people/{old_guardian}/biometrics"),
+                &headers,
+                Some(json!({ "capture_id": capture_id })),
+            )
+            .await;
+        assert_eq!(
+            (status, body["person_id"].as_str()),
+            (StatusCode::OK, Some(new_guardian.as_str())),
+            "{body}"
+        );
+        let moved = load(&w.app, &child_id).await;
+        assert_eq!(moved.guardians[0].person_id, new_guardian);
+        assert_eq!(moved.guardian_ids, vec![new_guardian.clone()]);
+
+        let s = Scene {
+            w,
+            child_id,
+            guardian_id: new_guardian,
+            token,
+        };
+        let capture = s.capture(Who::AdminUnconfirmed, &s.token).await;
+        let (status, body) = s.exit_as(Who::AdminUnconfirmed, s.body(&capture)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     #[tokio::test]

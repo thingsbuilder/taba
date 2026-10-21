@@ -124,6 +124,7 @@ pub async fn post_guardian(
                 Some(existing) => *existing = entry,
                 None => child.guardians.push(entry),
             }
+            child.sync_guardian_ids();
             child.updated_at = store::now();
             tx_replace(&db, tx, people::COLLECTION, &person_id, &child)?;
             let mut audit_entry = AuditEntry::new("person.guardian", "person", &person_id)

@@ -489,6 +489,7 @@ pub(crate) mod tests {
             is_child: false,
             child_status: None,
             guardians: vec![],
+            guardian_ids: vec![],
             needs: Default::default(),
             vulnerabilities: Default::default(),
             household_id: None,
