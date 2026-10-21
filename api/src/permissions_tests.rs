@@ -480,32 +480,3 @@ async fn anyone_signed_in_creates_a_shelter_and_reads_the_basics_of_any() {
         StatusCode::UNAUTHORIZED
     );
 }
-
-/// Every route of phase 3 (doc da fase 3, "O que a fase cria"). At stage 0 each answers `401`
-/// without a session and `501 not_implemented` with one. Each owner replaces the rows of their
-/// routes with the real permission matrix (2.3) and moves them to their own test.
-const PHASE_3_ROUTES: &[(&str, &str, &str)] = &[
-    // owner B: households and cards
-    ("B", "POST", "/v1/shelters/s1/households"),
-    ("B", "GET", "/v1/households/h1"),
-    ("B", "PATCH", "/v1/households/h1"),
-    ("B", "POST", "/v1/households/h1/cards"),
-    ("B", "GET", "/v1/cards/ABCD2345"),
-    ("B", "POST", "/v1/cards/ABCD2345/cancel"),
-];
-
-#[tokio::test]
-async fn phase_3_routes_exist_need_a_session_and_are_not_built_yet() {
-    let app = TestApp::new().await;
-    let volunteer = app.actor("Anyone").await;
-    for &(owner, method, path) in PHASE_3_ROUTES {
-        let (status, _, _) = app.request(method, path, &[], None).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{owner} {method} {path}");
-        let (status, body) = app.send(method, path, &volunteer.secret, None).await;
-        assert_eq!(
-            (status, body["error"].as_str()),
-            (StatusCode::NOT_IMPLEMENTED, Some("not_implemented")),
-            "{owner} {method} {path}"
-        );
-    }
-}
