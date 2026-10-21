@@ -5,11 +5,29 @@
 //! (ring and aws-lc-rs) in the dependency tree and none installed. The unit tests never opened a
 //! TLS connection, so they could not see it.
 
-use std::io::Read;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const WATCH: Duration = Duration::from_secs(5);
+/// The address `taba serve` listens on (Caddy proxies `/v1/*` here).
+const LISTEN: &str = "127.0.0.1:8080";
+
+/// One raw HTTP/1.1 request; returns the status line and the rest of the response.
+fn request(method: &str, path: &str) -> Option<(String, String)> {
+    let mut stream = TcpStream::connect(LISTEN).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: taba\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    let (head, body) = response.split_once("\r\n\r\n")?;
+    Some((head.lines().next()?.to_string(), body.to_string()))
+}
 
 #[test]
 fn serve_starts_without_a_rustls_panic() {
@@ -37,8 +55,24 @@ fn serve_starts_without_a_rustls_panic() {
         .unwrap();
 
     // Either it keeps running (listening) or it exits with an ordinary error; never a panic.
+    // When it listens, the routes of every phase must answer: building the route table
+    // panics on a conflicting path, and that happens only once the server starts.
     let start = Instant::now();
+    let mut answered = Vec::new();
     while start.elapsed() < WATCH && child.try_wait().unwrap().is_none() {
+        if answered.is_empty() && TcpStream::connect(LISTEN).is_ok() {
+            // No session is sent, so the extractor refuses before Firestore is needed.
+            for (method, path) in [
+                ("GET", "/v1/nope"),
+                ("POST", "/v1/shelters"),
+                ("PATCH", "/v1/events/e1"),
+                ("POST", "/v1/endorsements/in-person"),
+                ("GET", "/v1/alerts"),
+                ("DELETE", "/v1/shelters/s1/members/v1"),
+            ] {
+                answered.push((method, path, request(method, path)));
+            }
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
     let _ = child.kill();
@@ -56,4 +90,15 @@ fn serve_starts_without_a_rustls_panic() {
         !stderr.contains("panicked"),
         "the binary panicked at start-up:\n{stderr}"
     );
+    eprintln!("boot: {} routes answered", answered.len());
+    for (method, path, response) in answered {
+        let (status, body) = response.unwrap_or_else(|| panic!("no answer to {method} {path}"));
+        let (code, error) = if path == "/v1/nope" {
+            ("404", "not_found")
+        } else {
+            ("401", "unauthorized")
+        };
+        assert!(status.contains(code), "{method} {path}: {status}");
+        assert!(body.contains(error), "{method} {path}: {body}");
+    }
 }

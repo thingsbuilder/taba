@@ -184,6 +184,62 @@ describe('queue state transitions', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2) // the 409, then the other shelter's item
   })
 
+  it('holds a dependent item that was already queued before the 409 (spec 9.3)', async () => {
+    const queue = make()
+    const base = { volunteer_id: 'v1', shelter_id: 's1', attempts: 0, next_attempt_at: 0, state: 'pending' as const }
+    await db.put('queue', { ...base, id: 'create', method: 'POST', path: '/v1/shelters', body: {}, created_at: 1 })
+    await db.put('queue', { ...base, id: 'address', method: 'PATCH', path: '/v1/shelters/s1', body: {}, created_at: 2 })
+    fetchMock.mockResolvedValueOnce(json(409, { error: 'shelter_nearby' })).mockResolvedValue(json(200))
+    await queue.drain()
+    expect(fetchMock).toHaveBeenCalledTimes(1) // the dependent is never sent
+    expect((await queue.list()).map((i) => [i.id, i.state])).toEqual([['create', 'held'], ['address', 'held']])
+  })
+
+  it('keeps the conflict detail on the held item', async () => {
+    const detail = { shelter_id: 'x', name: 'Ginásio', distance_m: 80, contact: { first_name: 'Rui' } }
+    fetchMock.mockResolvedValueOnce(json(409, { error: 'shelter_nearby', detail }))
+    const queue = make()
+    await queue.enqueue(post('s1'))
+    await queue.drain()
+    expect((await queue.list())[0]).toMatchObject({ state: 'held', error: 'shelter_nearby', detail })
+  })
+
+  it('release amends the creation body, frees the held items and sends them again with the same key', async () => {
+    fetchMock.mockResolvedValueOnce(json(409, { error: 'shelter_nearby', detail: {} })).mockResolvedValue(json(201))
+    const queue = make()
+    const create = await queue.enqueue({ method: 'POST', path: '/v1/shelters', body: { id: 's1', name: 'A' }, volunteer_id: null, shelter_id: 's1' })
+    await queue.enqueue({ method: 'PATCH', path: '/v1/shelters/s1', body: { address: {} }, volunteer_id: null, shelter_id: 's1' })
+    await queue.drain()
+    expect((await queue.list()).map((i) => i.state)).toEqual(['held', 'held'])
+
+    await queue.release('s1', { other_site_reason: 'different building' })
+    expect(await db.count('queue')).toBe(0)
+    const [, init] = fetchMock.mock.calls[1]
+    expect(JSON.parse(init?.body as string)).toEqual({ id: 's1', name: 'A', other_site_reason: 'different building' })
+    expect(init?.headers).toMatchObject({ 'Idempotency-Key': create.id })
+    expect(JSON.parse(fetchMock.mock.calls[2][1]?.body as string)).toEqual({ address: {} }) // dependent body untouched
+  })
+
+  it('release leaves other shelters and non-held items alone', async () => {
+    fetchMock.mockResolvedValue(json(500))
+    const queue = make()
+    await queue.enqueue(post('s2'))
+    await queue.release('s1', { x: 1 })
+    expect(fetchMock).toHaveBeenCalledTimes(1) // only the normal drain of s2
+    expect((await queue.list())[0].body).toEqual({ a: 1 })
+  })
+
+  it('onSynced gets the item and the response body after a 2xx (null for 204)', async () => {
+    const onSynced = vi.fn()
+    fetchMock.mockResolvedValueOnce(json(201, { shelter: { id: 's1' } })).mockResolvedValueOnce(new Response(null, { status: 204 }))
+    const queue = createQueue({ db, fetch: fetchMock, deviceId: async () => 'd', getStatus, onSynced })
+    await queue.enqueue(post('s1'))
+    await queue.enqueue(post('s1'))
+    await queue.drain()
+    expect(onSynced).toHaveBeenNthCalledWith(1, expect.objectContaining({ shelter_id: 's1' }), { shelter: { id: 's1' } })
+    expect(onSynced).toHaveBeenNthCalledWith(2, expect.anything(), null)
+  })
+
   it('503 unico_degraded keeps the item pending until /v1/status is ok again', async () => {
     fetchMock.mockResolvedValueOnce(json(503, { error: 'unico_degraded' })).mockResolvedValue(json(200))
     getStatus.mockResolvedValue({ unico: 'degraded', reason: 'limit' })

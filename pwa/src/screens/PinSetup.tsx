@@ -6,7 +6,7 @@ import { isValidPin } from '../pin'
 import { setPin } from '../sessions'
 
 /** First login on this device: the volunteer creates the local PIN (spec 3.1.1). */
-export function PinSetup({ ctx, volunteerId }: { ctx: AppContext; volunteerId: string }) {
+export function PinSetup({ ctx, volunteerId, next = '/' }: { ctx: AppContext; volunteerId: string; next?: string }) {
   const [pin, setPinValue] = useState('')
   const [again, setAgain] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -17,7 +17,7 @@ export function PinSetup({ ctx, volunteerId }: { ctx: AppContext; volunteerId: s
     if (pin !== again) return setError(t('pin.mismatch'))
     await setPin(ctx.db, volunteerId, pin)
     await ctx.refresh()
-    navigate('/', true)
+    navigate(next, true)
   }
 
   return (

@@ -30,6 +30,8 @@ export interface QueueDeps {
   secretFor?: (volunteerId: string | null) => Promise<string | null>
   /** Called on `401`: the drain stops and the app asks for login. */
   onUnauthorized?: (volunteerId: string | null) => void
+  /** Called after a `2xx` with the JSON body (null when empty), to refresh local caches. */
+  onSynced?: (item: QueueItem, body: unknown) => Promise<void>
   now?: () => number
   random?: () => number
 }
@@ -73,20 +75,35 @@ export function createQueue(deps: QueueDeps) {
     await Promise.all([tx.objectStore('queue').delete(id), tx.objectStore('blobs').delete(id), tx.done])
   }
 
-  async function holdShelter(shelterId: string | undefined, error: string, failed: QueueItem): Promise<void> {
+  async function holdShelter(shelterId: string | undefined, error: string, failed: QueueItem, detail: unknown): Promise<void> {
     const items = await db.getAll('queue')
     for (const item of items) {
       const sameShelter = shelterId !== undefined && item.shelter_id === shelterId
-      if (item.id === failed.id || sameShelter) await db.put('queue', { ...item, state: 'held', error })
+      if (item.id === failed.id || sameShelter) await db.put('queue', { ...item, state: 'held', error, detail })
     }
+  }
+
+  /** The admin explained a shelter conflict (spec 3.2.1): amend the creation body and release what was held. */
+  async function release(shelterId: string, patchBody: Record<string, unknown>): Promise<void> {
+    for (const item of await sortedItems()) {
+      if (item.shelter_id !== shelterId || item.state !== 'held') continue
+      const isCreate = item.method === 'POST' && item.path === '/v1/shelters'
+      const body = isCreate ? { ...(item.body as object), ...patchBody } : item.body
+      const { error: _e, detail: _d, ...rest } = item
+      await db.put('queue', { ...rest, body, state: 'pending', attempts: 0, next_attempt_at: 0 })
+    }
+    notify()
+    await drain()
   }
 
   async function pass(): Promise<void> {
     let statusOk: boolean | undefined
     const degradedGateOpen = async () => (statusOk ??= (await deps.getStatus())?.unico === 'ok')
 
-    for (const item of await sortedItems()) {
-      if (item.state !== 'pending') continue // held / needs_action wait for a person
+    for (const snapshot of await sortedItems()) {
+      // Read again: an earlier item of this pass may have held this one (spec 9.3).
+      const item = await db.get('queue', snapshot.id)
+      if (!item || item.state !== 'pending') continue // held / needs_action wait for a person
       if (item.error === 'unico_degraded') {
         // Retried only once GET /status is ok again; does not block the rest of the queue.
         if (!(await degradedGateOpen())) continue
@@ -113,7 +130,9 @@ export function createQueue(deps: QueueDeps) {
       }
 
       if (res.ok) {
+        const body = res.status === 204 ? null : await res.json().catch(() => null)
         await remove(item.id)
+        await deps.onSynced?.(item, body)
         notify()
         continue
       }
@@ -121,10 +140,11 @@ export function createQueue(deps: QueueDeps) {
         deps.onUnauthorized?.(item.volunteer_id)
         break
       }
-      const errorCode = ((await res.json().catch(() => null)) as { error?: string } | null)?.error
+      const failure = (await res.json().catch(() => null)) as { error?: string; detail?: unknown } | null
+      const errorCode = failure?.error
 
       if (res.status === 409 && errorCode === 'shelter_nearby') {
-        await holdShelter(item.shelter_id, errorCode, item)
+        await holdShelter(item.shelter_id, errorCode, item, failure?.detail)
       } else if (res.status === 503 && errorCode === 'unico_degraded') {
         await db.put('queue', { ...item, error: errorCode })
       } else if (res.status === 429 || res.status >= 500) {
@@ -167,6 +187,7 @@ export function createQueue(deps: QueueDeps) {
   return {
     enqueue,
     drain,
+    release,
     list: sortedItems,
     count: () => db.count('queue'),
     subscribe(listener: () => void) {

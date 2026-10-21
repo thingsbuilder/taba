@@ -1,8 +1,17 @@
+mod alerts;
 mod audit;
 mod auth;
 mod config;
+mod endorsements;
 mod error;
+mod events;
+mod geo;
+mod idempotency;
+mod invites;
 mod members;
+#[cfg(test)]
+mod permissions_tests;
+mod shelters;
 mod status;
 mod store;
 #[cfg(test)]
@@ -15,7 +24,8 @@ use std::net::SocketAddr;
 use anyhow::{Context, bail};
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{delete, get, post};
+use axum::middleware;
+use axum::routing::{delete, get, patch, post};
 use firestore::FirestoreDb;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
@@ -40,7 +50,43 @@ fn router(state: AppState) -> Router {
             "/v1/me",
             get(volunteers::get_me).patch(volunteers::patch_me),
         )
+        .route("/v1/shelters", post(shelters::post_shelters))
+        .route(
+            "/v1/shelters/{id}",
+            get(shelters::get_shelter).patch(shelters::patch_shelter),
+        )
+        .route("/v1/shelters/{id}/close", post(shelters::close_shelter))
+        .route("/v1/shelters/{id}/confirm", post(shelters::confirm_shelter))
+        .route("/v1/shelters/{id}/revoke", post(shelters::revoke_shelter))
+        .route("/v1/events/{id}", patch(events::patch_event))
+        .route(
+            "/v1/shelters/{id}/endorsements/in-person/code",
+            post(endorsements::create_code),
+        )
+        .route("/v1/endorsements/in-person", post(endorsements::endorse))
+        .route(
+            "/v1/shelters/{id}/invites",
+            post(invites::create_invite).get(invites::list_invites),
+        )
+        .route(
+            "/v1/invites/{code}",
+            get(invites::get_invite).delete(invites::cancel_invite),
+        )
+        .route("/v1/invites/{code}/accept", post(invites::accept_invite))
+        .route("/v1/shelters/{id}/members", get(members::list_members))
+        .route(
+            "/v1/shelters/{id}/members/{volunteer_id}",
+            patch(members::promote_member).delete(members::remove_member),
+        )
+        .route("/v1/shelters/{id}/leave", post(members::leave_shelter))
+        .route("/v1/volunteers/{id}/ban", post(members::ban_volunteer))
+        .route("/v1/alerts", get(alerts::get_alerts))
+        .route("/v1/alerts/{id}/resolve", post(alerts::resolve_alert))
         .fallback(error::not_found)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            idempotency::layer,
+        ))
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT_BYTES))
         .layer(TraceLayer::new_for_http())

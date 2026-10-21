@@ -5,7 +5,9 @@ import { openTabaDb } from './db'
 import { SESSIONS_CHANGED } from './events'
 import { getOrCreateDeviceId } from './device'
 import { loadLanguage, setLanguage } from './i18n'
+import { createNominatim } from './nominatim'
 import { createQueue, startAutoDrain } from './queue'
+import { applySynced } from './shelters'
 import { getSession, removeSession } from './sessions'
 import { watchForUpdates } from './update'
 import './fonts.css'
@@ -24,14 +26,19 @@ async function main() {
     getStatus,
     // Each queued write goes out with the session of the volunteer who signed it (spec 9.2).
     secretFor: async (id) => (id ? ((await getSession(db, id, Date.now()))?.secret ?? null) : null),
+    onSynced: (item, body) => applySynced(db, item, body),
     onUnauthorized: (id) => {
       if (id) void removeSession(db, id).then(() => window.dispatchEvent(new Event(SESSIONS_CHANGED)))
     },
   })
   startAutoDrain(queue, window)
+  // Spec 6.1.6: addresses that waited for signal are looked up when the app opens and when the signal returns.
+  const nominatim = createNominatim({ db, queue, fetch: (input, init) => fetch(input, init) })
+  void nominatim.retryPending()
+  window.addEventListener('online', () => void nominatim.retryPending())
 
   const root = document.getElementById('app')!
-  const draw = (updateApply: (() => void) | null) => render(<App db={db} api={api} queue={queue} updateApply={updateApply} />, root)
+  const draw = (updateApply: (() => void) | null) => render(<App db={db} api={api} queue={queue} nominatim={nominatim} updateApply={updateApply} />, root)
   draw(null)
   watchForUpdates((apply) => draw(apply))
 }

@@ -13,7 +13,7 @@ export async function getStatus(fetchFn: typeof fetch = fetch): Promise<ApiStatu
   }
 }
 
-export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string }
+export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string; detail?: unknown }
 
 export interface VolunteerView {
   id: string
@@ -29,10 +29,109 @@ export interface SessionResponse {
   volunteer: VolunteerView
 }
 
+export interface Membership {
+  shelter_id: string
+  name: string
+  role: 'admin' | 'volunteer'
+  confirmation: 'unconfirmed' | 'confirmed'
+}
+
 export interface Me {
   volunteer: VolunteerView
   global_roles: string[]
-  memberships: unknown[]
+  memberships: Membership[]
+}
+
+export interface AddressInput {
+  text?: string
+  city?: string
+  state?: string
+}
+
+export interface ReferenceContacts {
+  civil_defense_phone?: string
+  child_protection_phone?: string
+}
+
+export interface EventView {
+  id: string
+  name: string
+  auto_named: boolean
+  reference_contacts: ReferenceContacts
+}
+
+/** Full view (members, validators, DC); non-members only get the first six fields (spec 8.2). */
+export interface ShelterView {
+  id: string
+  name: string
+  confirmation: 'unconfirmed' | 'confirmed'
+  capacity: number | null
+  occupancy: number
+  vacancies: number | null
+  lat?: number
+  lon?: number
+  accuracy_m?: number
+  address?: AddressInput & { pending: boolean }
+  event_id?: string | null
+  event?: EventView | null
+  status?: 'open' | 'closed'
+  confirmation_type?: 'validator' | 'in_person' | null
+  can_endorse?: boolean
+  flagged?: boolean
+  created_at?: string
+  role?: 'admin' | 'volunteer' | null
+}
+
+export interface InviteInfo {
+  valid: boolean
+  shelter_name: string | null
+  role: 'admin' | 'volunteer' | null
+  kind: 'qr' | 'link' | null
+  confirmed: boolean | null
+}
+
+export interface InviteView {
+  code: string
+  url: string
+  kind: 'qr' | 'link'
+  role: 'admin' | 'volunteer'
+  created_at: string
+  expires_at: string
+}
+
+export interface MemberView {
+  volunteer_id: string
+  name: string
+  role: 'admin' | 'volunteer'
+  via: 'creator' | 'qr' | 'link'
+  joined_at: string
+  phone?: string
+}
+
+export interface AlertView {
+  id: string
+  kind: string
+  informational: boolean
+  target_kind: string
+  target_id: string
+  event_id: string | null
+  shelter_ids: string[]
+  volunteer_ids: string[]
+  detail: Record<string, unknown>
+  created_at: string
+  resolved: boolean
+}
+
+export interface AcceptResponse extends SessionResponse {
+  membership: Membership
+}
+
+export type CapturePurpose = 'login' | 'invite'
+
+export interface GeoBody {
+  lat: number
+  lon: number
+  accuracy: number
 }
 
 export interface ProfileInput {
@@ -57,15 +156,53 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
     const body = res.status === 204 ? null : await res.json().catch(() => null)
     // 202 is "capture_pending": a 2xx that is not a result yet.
     if (res.ok && res.status !== 202) return { ok: true, data: body as T }
-    return { ok: false, status: res.status, error: (body as { error?: string } | null)?.error ?? `http_${res.status}` }
+    const failure = body as { error?: string; detail?: unknown } | null
+    return { ok: false, status: res.status, error: failure?.error ?? `http_${res.status}`, detail: failure?.detail }
   }
 
   return {
-    createCapture: () => call<{ capture_id: string; link: string; expires_at: string }>('POST', '/v1/captures', { body: { purpose: 'login' } }),
+    createCapture: (purpose: CapturePurpose = 'login') =>
+      call<{ capture_id: string; link: string; expires_at: string }>('POST', '/v1/captures', { body: { purpose } }),
     createSession: (captureId: string, profile?: ProfileInput) =>
       call<SessionResponse>('POST', '/v1/sessions', { body: { capture_id: captureId, ...(profile ? { profile } : {}) } }),
     getMe: (secret: string) => call<Me>('GET', '/v1/me', { secret }),
     deleteSession: (secret: string) => call<null>('DELETE', '/v1/sessions/current', { secret }),
+
+    // Shelters and events (spec 8.2, 8.3)
+    getShelter: (secret: string, id: string) => call<{ shelter: ShelterView }>('GET', `/v1/shelters/${id}`, { secret }),
+    patchShelter: (secret: string, id: string, body: { name?: string; address?: AddressInput; capacity?: number | null }) =>
+      call<{ shelter: ShelterView }>('PATCH', `/v1/shelters/${id}`, { secret, body }),
+    closeShelter: (secret: string, id: string) => call<{ shelter: ShelterView }>('POST', `/v1/shelters/${id}/close`, { secret }),
+    confirmShelter: (secret: string, id: string) => call<{ shelter: ShelterView }>('POST', `/v1/shelters/${id}/confirm`, { secret }),
+    revokeShelter: (secret: string, id: string, reason: string) =>
+      call<{ shelter: ShelterView }>('POST', `/v1/shelters/${id}/revoke`, { secret, body: { reason } }),
+    patchEvent: (secret: string, id: string, body: { name?: string; reference_contacts?: ReferenceContacts }) =>
+      call<{ event: EventView }>('PATCH', `/v1/events/${id}`, { secret, body }),
+    createEndorsementCode: (secret: string, id: string, body: GeoBody) =>
+      call<{ code: string; url: string; expires_at: string }>('POST', `/v1/shelters/${id}/endorsements/in-person/code`, { secret, body }),
+    endorse: (secret: string, body: GeoBody & { code: string; endorser_shelter_id: string }) =>
+      call<{ shelter: ShelterView }>('POST', '/v1/endorsements/in-person', { secret, body }),
+
+    // Invites and members (spec 8.4)
+    createInvite: (secret: string, id: string, body: { kind: 'qr' | 'link'; role: 'admin' | 'volunteer' }) =>
+      call<{ code: string; url: string; expires_at: string }>('POST', `/v1/shelters/${id}/invites`, { secret, body }),
+    listInvites: (secret: string, id: string) =>
+      call<{ invites: InviteView[]; joined_by_link: { volunteer_id: string; name: string; invite_code: string; joined_at: string }[] }>(
+        'GET', `/v1/shelters/${id}/invites`, { secret }),
+    cancelInvite: (secret: string, code: string) => call<null>('DELETE', `/v1/invites/${code}`, { secret }),
+    getInvite: (code: string) => call<InviteInfo>('GET', `/v1/invites/${code}`),
+    acceptInvite: (code: string, captureId: string, profile?: ProfileInput) =>
+      call<AcceptResponse>('POST', `/v1/invites/${code}/accept`, { body: { capture_id: captureId, ...(profile ? { profile } : {}) } }),
+    listMembers: (secret: string, id: string) => call<{ members: MemberView[] }>('GET', `/v1/shelters/${id}/members`, { secret }),
+    promoteMember: (secret: string, id: string, volunteerId: string) =>
+      call<{ member: MemberView }>('PATCH', `/v1/shelters/${id}/members/${volunteerId}`, { secret, body: { role: 'admin' } }),
+    removeMember: (secret: string, id: string, volunteerId: string) =>
+      call<null>('DELETE', `/v1/shelters/${id}/members/${volunteerId}`, { secret }),
+    leaveShelter: (secret: string, id: string) => call<null>('POST', `/v1/shelters/${id}/leave`, { secret }),
+
+    // Alerts (spec 8.8)
+    listAlerts: (secret: string) => call<{ alerts: AlertView[] }>('GET', '/v1/alerts', { secret }),
+    resolveAlert: (secret: string, id: string) => call<Record<string, never>>('POST', `/v1/alerts/${id}/resolve`, { secret }),
   }
 }
 

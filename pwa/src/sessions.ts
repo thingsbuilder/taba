@@ -1,5 +1,5 @@
 import type { Db } from './db'
-import type { SessionResponse, VolunteerView } from './api'
+import type { Membership, SessionResponse, VolunteerView } from './api'
 import { type Language } from './i18n'
 import { type PinRecord, createPinRecord, verifyPin } from './pin'
 
@@ -23,6 +23,8 @@ export interface LocalSession extends Partial<PinRecord> {
   ttl_ms: number // lifetime the server gave at login, to follow its renewal
   profile: Profile
   global_roles: string[]
+  /** Shelters the volunteer belongs to, from the last `GET /v1/me` (spec 8.1). */
+  memberships?: Membership[]
   failed_pins: number
 }
 
@@ -83,6 +85,7 @@ export async function addLoginSession(db: Db, response: SessionResponse, now: nu
     ttl_ms: expiresAt - now,
     profile: profileOf(response.volunteer),
     global_roles: previous?.global_roles ?? [],
+    memberships: previous?.memberships,
     pin_hash: previous?.pin_hash,
     pin_salt: previous?.pin_salt,
     failed_pins: 0,
@@ -143,9 +146,13 @@ export async function updateProfile(db: Db, volunteerId: string, profile: Partia
   if (session) await saveSession(db, { ...session, profile: { ...session.profile, ...profile } })
 }
 
-/** Roles from `GET /v1/me`, plus the same renewal mirror as `touchSession`. */
-export async function applyMe(db: Db, volunteerId: string, globalRoles: string[], now: number): Promise<void> {
+/** Roles and memberships from `GET /v1/me`, plus the same renewal mirror as `touchSession`. */
+export async function applyMe(db: Db, volunteerId: string, globalRoles: string[], now: number, memberships?: Membership[]): Promise<void> {
   await touchSession(db, volunteerId, now)
   const session = (await readAll(db))[volunteerId]
-  if (session) await saveSession(db, { ...session, global_roles: globalRoles })
+  if (session) await saveSession(db, { ...session, global_roles: globalRoles, ...(memberships ? { memberships } : {}) })
 }
+
+/** The volunteer's role in a shelter, from the last known memberships. */
+export const roleIn = (session: LocalSession, shelterId: string): 'admin' | 'volunteer' | null =>
+  session.memberships?.find((m) => m.shelter_id === shelterId)?.role ?? null

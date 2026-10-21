@@ -8,9 +8,15 @@ import { type Language, saveLanguage, setLanguage, t } from './i18n'
 import { SESSIONS_CHANGED } from './events'
 import { useLocation } from './nav'
 import type { Queue } from './queue'
-import { resolveRoute } from './routes'
+import { type Route, resolveRoute } from './routes'
 import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession, updateProfile } from './sessions'
+import { Endorse } from './screens/Endorse'
 import { Home } from './screens/Home'
+import { Inbox } from './screens/Inbox'
+import { Invite } from './screens/Invite'
+import { Members } from './screens/Members'
+import { NewShelter } from './screens/NewShelter'
+import { Shelter } from './screens/Shelter'
 import { InstallIos } from './screens/InstallIos'
 import { Login } from './screens/Login'
 import { NotFound } from './screens/NotFound'
@@ -66,7 +72,7 @@ function NetworkChip({ queue }: { queue: Queue }) {
   return <div class="chip chip-warning" role="status">{text}</div>
 }
 
-export function App({ db, api, queue, updateApply }: { db: Db; api: Api; queue: Queue; updateApply: (() => void) | null }) {
+export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: Api; queue: Queue; nominatim: AppContext['nominatim']; updateApply: (() => void) | null }) {
   useLanguage() // re-render on language change
   const online = useOnline()
   const [status, setStatus] = useState<ApiStatus | null>(null)
@@ -89,7 +95,7 @@ export function App({ db, api, queue, updateApply }: { db: Db; api: Api; queue: 
   useEffect(() => {
     if (!online || !active) return
     void api.getMe(active.secret).then(async (me) => {
-      if (me.ok) await applyMe(db, active.volunteer_id, me.data.global_roles, Date.now())
+      if (me.ok) await applyMe(db, active.volunteer_id, me.data.global_roles, Date.now(), me.data.memberships)
       else if (me.status === 401 || me.status === 403) await removeSession(db, active.volunteer_id)
       else return
       await refresh()
@@ -109,7 +115,7 @@ export function App({ db, api, queue, updateApply }: { db: Db; api: Api; queue: 
 
   const { pathname, search } = useLocation()
   const route = resolveRoute(pathname)
-  const ctx: AppContext = { db, api, queue, active, sessions, status, refresh }
+  const ctx: AppContext = { db, api, queue, nominatim, active, sessions, status, refresh }
   return (
     <>
       <header class="topbar">
@@ -124,13 +130,13 @@ export function App({ db, api, queue, updateApply }: { db: Db; api: Api; queue: 
       {!blocked && <NetworkChip queue={queue} />}
       {!blocked && status?.unico === 'degraded' && <div class="banner" role="status">{t('degraded.banner')}</div>}
       {!blocked && !persisted && <div class="banner" role="alert">{t('persist.warning')}</div>}
-      {blocked ? <InstallIos /> : ready && (needsPin(active) && route !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
+      {blocked ? <InstallIos /> : ready && (needsPin(active) && route.name !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
     </>
   )
 }
 
-function Screen({ route, ctx, search }: { route: ReturnType<typeof resolveRoute>; ctx: AppContext; search: string }) {
-  switch (route) {
+function Screen({ route, ctx, search }: { route: Route; ctx: AppContext; search: string }) {
+  switch (route.name) {
     case 'home':
       return <Home ctx={ctx} />
     case 'login':
@@ -141,6 +147,18 @@ function Screen({ route, ctx, search }: { route: ReturnType<typeof resolveRoute>
       return <SwitchOperator ctx={ctx} />
     case 'profile':
       return <Profile ctx={ctx} />
+    case 'shelter_new':
+      return <NewShelter ctx={ctx} />
+    case 'shelter':
+      return <Shelter ctx={ctx} shelterId={route.id!} key={route.id} />
+    case 'shelter_members':
+      return <Members ctx={ctx} shelterId={route.id!} />
+    case 'invite':
+      return <Invite ctx={ctx} code={route.code!} />
+    case 'endorse':
+      return <Endorse ctx={ctx} code={route.code!} />
+    case 'inbox':
+      return <Inbox ctx={ctx} />
     default:
       return <NotFound />
   }
