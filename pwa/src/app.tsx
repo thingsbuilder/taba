@@ -5,12 +5,13 @@ import type { Db } from './db'
 import { isDegraded } from './degraded'
 import { INSTALL_PROMPT_SNOOZE_MS, isIosOutsideStandalone, requestPersistence } from './device'
 import { useLanguage, useOnline } from './hooks'
-import { type Language, saveLanguage, setLanguage, t } from './i18n'
+import { type Language, t } from './i18n'
+import { chooseLanguage } from './language'
 import { SESSIONS_CHANGED } from './events'
 import { navigate, useLocation } from './nav'
 import type { Queue } from './queue'
 import { type Route, resolveRoute } from './routes'
-import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession, updateProfile } from './sessions'
+import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession } from './sessions'
 import { Checkin } from './screens/Checkin'
 import { Endorse } from './screens/Endorse'
 import { Exit } from './screens/Exit'
@@ -47,15 +48,7 @@ function LanguageSwitch({ db, active, queue, refresh }: { db: Db; active: LocalS
           type="button"
           class="lang-option"
           aria-pressed={current === id}
-          onClick={() => {
-            setLanguage(id)
-            void saveLanguage(db, id)
-            // Logged in: the profile follows the choice (spec 11.1), through the queue so it works offline.
-            if (active) {
-              void updateProfile(db, active.volunteer_id, { language: id }).then(refresh)
-              void queue.enqueue({ method: 'PATCH', path: '/v1/me', body: { language: id }, volunteer_id: active.volunteer_id })
-            }
-          }}
+          onClick={() => void chooseLanguage(db, queue, active, id).then(refresh)}
         >
           {label}
         </button>
