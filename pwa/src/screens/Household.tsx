@@ -7,7 +7,7 @@ import type { CardRecord, HouseholdRecord, PersonRecord } from '../db'
 import { cancelCard, createHousehold, findLocalCard, issueCard, updateHousehold } from '../households'
 import { useOnline } from '../hooks'
 import { t } from '../i18n'
-import { navigate } from '../nav'
+import { navigate, useLocation } from '../nav'
 import { qrSvg } from '../qr'
 import { BackLink } from './BackLink'
 import { QrScanner } from './QrScanner'
@@ -22,7 +22,9 @@ export function Household({ ctx, shelterId, householdId }: { ctx: AppContext; sh
   const [names, setNames] = useState<Record<string, string>>({})
   const [card, setCard] = useState<CardRecord | null>(null)
   const [svg, setSvg] = useState('')
-  const [picked, setPicked] = useState<string[]>([])
+  // `?person=` marks the person who was just registered.
+  const preselected = new URLSearchParams(useLocation().search).get('person')
+  const [picked, setPicked] = useState<string[]>(preselected ? [preselected] : [])
   const [head, setHead] = useState('')
   const [pet, setPet] = useState({ species: '', count: '1' })
   const [scanning, setScanning] = useState(false)
@@ -31,7 +33,7 @@ export function Household({ ctx, shelterId, householdId }: { ctx: AppContext; sh
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (householdId === 'new') navigate(`/shelter/${shelterId}/households/${crypto.randomUUID()}`, true)
+    if (householdId === 'new') navigate(`/shelter/${shelterId}/households/${crypto.randomUUID()}${location.search}`, true)
   }, [householdId])
 
   async function load() {

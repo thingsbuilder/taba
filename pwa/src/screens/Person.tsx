@@ -5,6 +5,7 @@ import { finishCapture, pollCapture, readDraft, startCapture } from '../captures
 import { type PersonForm, checkinErrorKey, dataToForm, formToData, validateForm } from '../checkin'
 import { CHILD_STATUSES } from '../checkin'
 import { isProtectionOrDc } from '../exit'
+import { householdOf } from '../households'
 import { useOnline } from '../hooks'
 import { t } from '../i18n'
 import { photoForToken } from '../image'
@@ -13,6 +14,7 @@ import { displayName } from '../people'
 import { applyEdit, recordFromView, viewFromRecord } from '../person-cache'
 import { BackLink } from './BackLink'
 import { CameraCapture } from './CameraCapture'
+import { HouseholdOptions } from './HouseholdOptions'
 import { PersonFields } from './PersonFields'
 import { nameText } from './People'
 
@@ -32,6 +34,7 @@ export function Person({ ctx, personId }: { ctx: AppContext; personId: string })
   const [camera, setCamera] = useState(false)
   const [guardianNames, setGuardianNames] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
+  const [localPerson, setLocalPerson] = useState<{ household_id?: string }>()
   const resumed = useRef(false)
 
   // Without signal, or while the server does not answer, the phone's own copy opens (spec 9.1).
@@ -54,6 +57,11 @@ export function Person({ ctx, personId }: { ctx: AppContext; personId: string })
     void loadCached()
     if (online) void load()
   }, [online, personId])
+
+  // A household made on this phone and not synced yet is only in the phone's copy.
+  useEffect(() => {
+    void db.get('people', personId).then(setLocalPerson)
+  }, [person])
 
   useEffect(() => {
     if (!active || !person?.has_thumbnail || !online) return
@@ -235,11 +243,13 @@ export function Person({ ctx, personId }: { ctx: AppContext; personId: string })
               />
             )}
 
-            {person.household_id && shelterId && (
-              <button type="button" class="button button-secondary" onClick={() => navigate(`/shelter/${shelterId}/households/${person.household_id}`)}>
+            {shelterId && (householdOf(person, localPerson) ? (
+              <button type="button" class="button button-secondary" onClick={() => navigate(`/shelter/${shelterId}/households/${householdOf(person, localPerson)}`)}>
                 {t('person.household')}
               </button>
-            )}
+            ) : (
+              <section class="card"><HouseholdOptions ctx={ctx} shelterId={shelterId} personId={person.id} /></section>
+            ))}
             {shelterId && (
               <button type="button" class="button" onClick={() => navigate(`/shelter/${shelterId}/exit?person=${person.id}`)}>{t('person.exit')}</button>
             )}
