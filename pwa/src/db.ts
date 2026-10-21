@@ -1,7 +1,7 @@
 import { type DBSchema, type IDBPDatabase, openDB } from 'idb'
 
-// IndexedDB `taba`, version 1 (spec 6.1.1). Every store is created now so later phases
-// need no migration.
+// IndexedDB `taba` (spec 6.1.1). Version 1 created every store; version 2 (phase 3) adds the
+// indexes the offline lists need and types the stores of people, households, cards and photos.
 
 export type QueueState = 'pending' | 'held' | 'needs_action'
 
@@ -36,14 +36,59 @@ export interface ShelterRecord {
   pending?: boolean
 }
 
+/** `blobs` store: a photo waiting in the queue, always encrypted (spec 6.1.7). `iv` is the AES-GCM
+ *  nonce; `data` the ciphertext. The key is `config.photo_key`, a non-extractable `CryptoKey`. */
+export interface BlobRecord {
+  queue_id: string
+  iv: Uint8Array
+  data: ArrayBuffer
+  /** What the photo is for, so the queue knows which field of the request to fill. */
+  kind?: 'checkin' | 'biometrics' | 'thumbnail'
+}
+
+/** `people` store: the shelter's people, for the offline list and search by name or wristband. */
+export interface PersonRecord {
+  id: string
+  current_shelter_id?: string
+  name?: string
+  social_name?: string
+  wristband?: string
+  level?: 'verified' | 'assisted' | 'no_biometrics'
+  is_child?: boolean
+  child_status?: 'with_guardian' | 'separated' | 'unaccompanied'
+  household_id?: string
+  /** Made on this phone and not confirmed by the server yet. */
+  pending?: boolean
+  updated_at?: string
+}
+
+/** `households` store: a household and its members (offline). */
+export interface HouseholdRecord {
+  id: string
+  shelter_id?: string
+  member_ids: string[]
+  head_id?: string
+  pets?: { species: string; count: number }[]
+  card_code?: string
+  pending?: boolean
+}
+
+/** `cards` store: the cards of the current shelter's households (offline reading). */
+export interface CardRecord {
+  code: string
+  household_id: string
+  status: 'active' | 'canceled'
+  pending?: boolean
+}
+
 export interface TabaDB extends DBSchema {
   config: { key: string; value: unknown }
   queue: { key: string; value: QueueItem }
-  blobs: { key: string; value: { queue_id: string } }
+  blobs: { key: string; value: BlobRecord }
   shelters: { key: string; value: ShelterRecord }
-  people: { key: string; value: { id: string } }
-  households: { key: string; value: { id: string } }
-  cards: { key: string; value: { code: string } }
+  people: { key: string; value: PersonRecord; indexes: { by_shelter: string; by_household: string } }
+  households: { key: string; value: HouseholdRecord; indexes: { by_shelter: string } }
+  cards: { key: string; value: CardRecord; indexes: { by_household: string } }
   captures: { key: string; value: { capture_id: string; created_at: number; purpose?: 'invite'; invite_code?: string } }
   addresses: { key: string; value: { shelter_id: string; lat: number; lon: number; volunteer_id: string | null } }
 }
@@ -51,20 +96,28 @@ export interface TabaDB extends DBSchema {
 export type Db = IDBPDatabase<TabaDB>
 
 export const DB_NAME = 'taba'
-export const DB_VERSION = 1
+export const DB_VERSION = 2
 
 export function openTabaDb(name = DB_NAME): Promise<Db> {
   return openDB<TabaDB>(name, DB_VERSION, {
-    upgrade(db) {
-      db.createObjectStore('config') // keyed by name
-      db.createObjectStore('queue', { keyPath: 'id' })
-      db.createObjectStore('blobs', { keyPath: 'queue_id' })
-      db.createObjectStore('shelters', { keyPath: 'id' })
-      db.createObjectStore('people', { keyPath: 'id' })
-      db.createObjectStore('households', { keyPath: 'id' })
-      db.createObjectStore('cards', { keyPath: 'code' })
-      db.createObjectStore('captures', { keyPath: 'capture_id' })
-      db.createObjectStore('addresses', { keyPath: 'shelter_id' })
+    upgrade(db, oldVersion, _newVersion, tx) {
+      if (oldVersion < 1) {
+        db.createObjectStore('config') // keyed by name
+        db.createObjectStore('queue', { keyPath: 'id' })
+        db.createObjectStore('blobs', { keyPath: 'queue_id' })
+        db.createObjectStore('shelters', { keyPath: 'id' })
+        db.createObjectStore('people', { keyPath: 'id' })
+        db.createObjectStore('households', { keyPath: 'id' })
+        db.createObjectStore('cards', { keyPath: 'code' })
+        db.createObjectStore('captures', { keyPath: 'capture_id' })
+        db.createObjectStore('addresses', { keyPath: 'shelter_id' })
+      }
+      if (oldVersion < 2) {
+        tx.objectStore('people').createIndex('by_shelter', 'current_shelter_id')
+        tx.objectStore('people').createIndex('by_household', 'household_id')
+        tx.objectStore('households').createIndex('by_shelter', 'shelter_id')
+        tx.objectStore('cards').createIndex('by_household', 'household_id')
+      }
     },
   })
 }

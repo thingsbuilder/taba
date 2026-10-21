@@ -10,7 +10,13 @@ import { navigate, useLocation } from './nav'
 import type { Queue } from './queue'
 import { type Route, resolveRoute } from './routes'
 import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession, updateProfile } from './sessions'
+import { Checkin } from './screens/Checkin'
 import { Endorse } from './screens/Endorse'
+import { Exit } from './screens/Exit'
+import { Household } from './screens/Household'
+import { People } from './screens/People'
+import { Person } from './screens/Person'
+import { Privacy } from './screens/Privacy'
 import { Home } from './screens/Home'
 import { Inbox } from './screens/Inbox'
 import { Invite } from './screens/Invite'
@@ -172,6 +178,18 @@ function Screen({ route, ctx, search }: { route: Route; ctx: AppContext; search:
       return <Endorse ctx={ctx} code={route.code!} />
     case 'inbox':
       return <Inbox ctx={ctx} />
+    case 'shelter_checkin':
+      return <Checkin ctx={ctx} shelterId={route.id!} />
+    case 'shelter_people':
+      return <People ctx={ctx} shelterId={route.id!} />
+    case 'shelter_household':
+      return <Household ctx={ctx} shelterId={route.id!} householdId={route.household_id!} />
+    case 'shelter_exit':
+      return <Exit ctx={ctx} shelterId={route.id!} />
+    case 'person':
+      return <Person ctx={ctx} personId={route.id!} />
+    case 'privacy':
+      return <Privacy />
     default:
       return <NotFound />
   }

@@ -66,7 +66,7 @@ describe('queue state transitions', () => {
     fetchMock.mockResolvedValue(json(201))
     const queue = make()
     const item = await queue.enqueue(post())
-    await db.put('blobs', { queue_id: item.id })
+    await db.put('blobs', { queue_id: item.id, iv: new Uint8Array(12), data: new ArrayBuffer(8) })
     await queue.drain()
 
     expect(await db.count('queue')).toBe(0)
