@@ -204,5 +204,7 @@
   "invite.have_code": "I have an invite",
   "invite.code_placeholder": "Paste the link or the code",
   "invite.code_go": "Open invite",
-  "invite.code_invalid": "That does not look like an invite. Paste the whole link or the code."
+  "invite.code_invalid": "That does not look like an invite. Paste the whole link or the code.",
+  "nav.back": "Back",
+  "nav.home": "Home screen"
 }

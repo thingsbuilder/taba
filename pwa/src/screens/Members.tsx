@@ -4,6 +4,7 @@ import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
 import { useOnline } from '../hooks'
 import { t } from '../i18n'
+import { BackLink } from './BackLink'
 import { navigate } from '../nav'
 import { roleIn } from '../sessions'
 import { QrBlock } from './QrBlock'
@@ -61,6 +62,7 @@ export function Members({ ctx, shelterId }: { ctx: AppContext; shelterId: string
 
   return (
     <main class="screen">
+      <BackLink />
       <h1 class="title">{t('members.title')}</h1>
       <button type="button" class="button button-secondary" onClick={() => navigate(`/shelter/${shelterId}`)}>{t('members.back')}</button>
       {!online && <p class="notice" role="status">{t('members.offline')}</p>}

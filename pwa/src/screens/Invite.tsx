@@ -4,6 +4,7 @@ import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
 import { useOnline } from '../hooks'
 import { t } from '../i18n'
+import { BackLink } from './BackLink'
 import { loginBlock, startLogin } from '../login'
 
 /** `/invite/:code` (spec 3.3 step 3-4): what the invite is for, then the selfie that accepts it. Public. */
@@ -33,6 +34,7 @@ export function Invite({ ctx, code }: { ctx: AppContext; code: string }) {
   const blocked = reason ? t(`login.${reason}`) : null
   return (
     <main class="screen">
+      <BackLink />
       <h1 class="title">{t('invite.title')}</h1>
       {!info && !error && online && <p class="body" role="status">{t('invite.loading')}</p>}
       {info && !info.valid && <p class="notice notice-error" role="alert">{t('invite.expired')}</p>}

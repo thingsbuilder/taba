@@ -3,6 +3,7 @@ import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
 import { type Position, accuracyOk, getPosition } from '../geo'
 import { t } from '../i18n'
+import { BackLink } from './BackLink'
 import { navigate } from '../nav'
 import { setReturnTo } from '../return-to'
 import { saveView } from '../shelters'
@@ -47,6 +48,7 @@ export function Endorse({ ctx, code }: { ctx: AppContext; code: string }) {
 
   return (
     <main class="screen">
+      <BackLink />
       <h1 class="title">{t('endorse.title')}</h1>
       {done && <p class="notice" role="status">{t('endorse.done')}</p>}
       {!done && eligible.length === 0 && <p class="notice notice-warning" role="alert">{t('endorse.no_shelter')}</p>}

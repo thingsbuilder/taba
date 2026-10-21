@@ -3,6 +3,7 @@ import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
 import { type Position, accuracyOk, getPosition } from '../geo'
 import { t } from '../i18n'
+import { BackLink } from './BackLink'
 import { navigate } from '../nav'
 import { createShelter } from '../shelters'
 
@@ -50,6 +51,7 @@ export function NewShelter({ ctx }: { ctx: AppContext }) {
 
   return (
     <main class="screen">
+      <BackLink />
       <h1 class="title">{t('shelter_new.title')}</h1>
       {!position && !gpsFailed && <p class="body" role="status">{t('shelter_new.locating')}</p>}
       {gpsFailed && <p class="notice notice-error" role="alert">{t('shelter_new.gps_failed')}</p>}

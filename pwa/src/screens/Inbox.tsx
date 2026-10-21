@@ -5,6 +5,7 @@ import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
 import { useOnline } from '../hooks'
 import { t } from '../i18n'
+import { BackLink } from './BackLink'
 import { navigate } from '../nav'
 
 /** `/inbox` (spec 8.8): the alerts this volunteer receives. Needs signal. */
@@ -34,6 +35,7 @@ export function Inbox({ ctx }: { ctx: AppContext }) {
 
   return (
     <main class="screen">
+      <BackLink />
       <h1 class="title">{t('inbox.title')}</h1>
       {!online && <p class="notice" role="status">{t('inbox.offline')}</p>}
       {error && <p class="notice notice-error" role="alert">{t(errorKey(error))}</p>}

@@ -9,6 +9,7 @@ import { navigate } from '../nav'
 import { pendingViews } from '../pending'
 import { roleIn } from '../sessions'
 import { actionsFor, conflictOf, saveView } from '../shelters'
+import { BackLink } from './BackLink'
 import { EndorseRequest } from './EndorseRequest'
 
 /** `/shelter/:id` (design: shelter bar). Online it shows the server's view; offline, the phone's copy. */
@@ -89,6 +90,7 @@ export function Shelter({ ctx, shelterId }: { ctx: AppContext; shelterId: string
   if (!name) {
     return (
       <main class="screen">
+        <BackLink />
         <p class="body" role="status">{online ? t('shelter.loading') : t('shelter.not_cached')}</p>
         {error && <p class="notice notice-error" role="alert">{t(errorKey(error))}</p>}
       </main>
@@ -98,6 +100,9 @@ export function Shelter({ ctx, shelterId }: { ctx: AppContext; shelterId: string
   const place = [address?.city, address?.state].filter(Boolean).join('/')
   return (
     <>
+      <div class="screen back-bar">
+        <BackLink />
+      </div>
       <div class="shelter-bar">
         <img class="brand-mark" src="/favicon.svg" alt="" width="32" height="32" />
         <div class="shelter-bar-text">

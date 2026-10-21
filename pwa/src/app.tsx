@@ -6,7 +6,7 @@ import { isIosOutsideStandalone, requestPersistence } from './device'
 import { useLanguage, useOnline } from './hooks'
 import { type Language, saveLanguage, setLanguage, t } from './i18n'
 import { SESSIONS_CHANGED } from './events'
-import { useLocation } from './nav'
+import { navigate, useLocation } from './nav'
 import type { Queue } from './queue'
 import { type Route, resolveRoute } from './routes'
 import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession, updateProfile } from './sessions'
@@ -122,7 +122,16 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
   return (
     <>
       <header class="topbar">
-        <img class="brand-mark" src="/favicon.svg" alt="Taba" width="32" height="32" />
+        <a
+          href="/"
+          aria-label={t('nav.home')}
+          onClick={(e) => {
+            e.preventDefault()
+            navigate('/')
+          }}
+        >
+          <img class="brand-mark" src="/favicon.svg" alt="Taba" width="32" height="32" />
+        </a>
         <LanguageSwitch db={db} active={active} queue={queue} refresh={refresh} />
       </header>
       {updateApply && (

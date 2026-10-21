@@ -204,5 +204,7 @@
   "invite.have_code": "Tenho um convite",
   "invite.code_placeholder": "Cole o link ou o código",
   "invite.code_go": "Abrir convite",
-  "invite.code_invalid": "Isso não parece um convite. Cole o link inteiro ou o código."
+  "invite.code_invalid": "Isso não parece um convite. Cole o link inteiro ou o código.",
+  "nav.back": "Voltar",
+  "nav.home": "Tela principal"
 }
