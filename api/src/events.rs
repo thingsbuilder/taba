@@ -15,7 +15,7 @@ use crate::audit::{self, AuditEntry};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::geo;
-use crate::shelters::Address;
+use crate::shelters::{self, Address, ShelterDoc};
 use crate::store::{self, tx_replace};
 use crate::volunteers::GlobalRole;
 
@@ -25,7 +25,7 @@ const MAX_PHONE_CHARS: usize = 30;
 /// `last_activity_at` is written at most this often per event (spec 4.3.3).
 const ACTIVITY_INTERVAL: Duration = Duration::from_secs(3600);
 
-#[allow(dead_code)] // `closed` and `purged` are written by the hourly task of phase 4
+#[allow(dead_code)] // `purged` is written by the discard of phase 6
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventStatus {
@@ -34,7 +34,6 @@ pub enum EventStatus {
     Purged,
 }
 
-#[allow(dead_code)] // written by the hourly task of phase 4
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClosureReason {
@@ -175,11 +174,27 @@ pub async fn assign(
 }
 
 /// Gate for the writes of a shelter (spec 4.3 item 5): an event that is closed takes no writes, so
-/// the shelters of a closed event answer `409 event_closed`. Phase 4, owner D, writes the body;
-/// stage 0 lets everything through. Every write route that names a shelter calls it first.
-#[allow(dead_code)] // stage 0 scaffold: owner D wires the write routes
-pub async fn ensure_open(_db: &FirestoreDb, _event_id: Option<&str>) -> Result<(), ApiError> {
-    Ok(())
+/// the shelters of a closed event answer `409 event_closed`. Every write route that names a
+/// shelter calls it first; inside a transaction, pass the transaction's `db` so the read conflicts
+/// with the task that closes the event. An event that is missing does not block.
+pub async fn ensure_open(db: &FirestoreDb, event_id: Option<&str>) -> Result<(), ApiError> {
+    let Some(event_id) = event_id else {
+        return Ok(());
+    };
+    let event: Option<EventDoc> = store::get(db, COLLECTION, event_id).await?;
+    match event {
+        Some(event) if event.status != EventStatus::Active => Err(ApiError::event_closed()),
+        _ => Ok(()),
+    }
+}
+
+/// `ensure_open` for the event of a shelter; a shelter that is missing does not block.
+pub async fn ensure_shelter_open(db: &FirestoreDb, shelter_id: &str) -> Result<(), ApiError> {
+    if shelter_id.is_empty() {
+        return Ok(());
+    }
+    let shelter: Option<ShelterDoc> = store::get(db, shelters::COLLECTION, shelter_id).await?;
+    ensure_open(db, shelter.and_then(|s| s.event_id).as_deref()).await
 }
 
 /// Whether the event's activity should be written now, and if so, remembers it.
@@ -679,5 +694,159 @@ mod patch_tests {
                 .is_none()
         );
         touch(&app.state, None).await;
+    }
+
+    /// Closes the event of `shelter_id` the way the hourly task does.
+    async fn close_event_of(app: &crate::test_support::TestApp, shelter_id: &str) -> String {
+        let shelter: ShelterDoc = store::get(&app.state.db, shelters::COLLECTION, shelter_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let event_id = shelter.event_id.unwrap();
+        let mut event: EventDoc = store::get(&app.state.db, COLLECTION, &event_id)
+            .await
+            .unwrap()
+            .unwrap();
+        event.status = EventStatus::Closed;
+        event.closed_at = Some(store::now());
+        store::replace(&app.state.db, COLLECTION, &event_id, &event)
+            .await
+            .unwrap();
+        event_id
+    }
+
+    #[tokio::test]
+    async fn every_write_of_a_shelter_of_a_closed_event_is_409_and_reads_still_work() {
+        use crate::exits::fixtures::{child, person, put};
+        use crate::people::{ChildStatus, Level};
+        use crate::test_support::{ORIGIN, TestApp, new_id};
+
+        let app = TestApp::new().await;
+        let admin = app.actor("Admin").await;
+        let shelter = app.create_shelter(&admin, "A", ORIGIN).await;
+
+        let (adult, kid, guardian) = (new_id(), new_id(), new_id());
+        put(&app, &adult, &person(Level::Assisted, Some(&shelter))).await;
+        put(&app, &guardian, &person(Level::Verified, Some(&shelter))).await;
+        put(
+            &app,
+            &kid,
+            &child(&shelter, ChildStatus::Unaccompanied, vec![]),
+        )
+        .await;
+        let household = new_id();
+        let (status, body) = app
+            .send(
+                "POST",
+                &format!("/v1/shelters/{shelter}/households"),
+                &admin.secret,
+                Some(json!({ "id": household, "member_ids": [adult], "client_created_at": "2026-10-21T10:00:00Z" })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let card = "ABCD2345";
+        let issue = json!({ "code": card, "client_issued_at": "2026-10-21T10:00:00Z" });
+        let (status, body) = app
+            .send(
+                "POST",
+                &format!("/v1/households/{household}/cards"),
+                &admin.secret,
+                Some(issue),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+
+        close_event_of(&app, &shelter).await;
+
+        let at = "2026-10-21T11:00:00Z";
+        let writes = [
+            (
+                "POST",
+                format!("/v1/shelters/{shelter}/checkins"),
+                json!({ "id": new_id(), "legal_basis": "consent", "client_created_at": at, "data": {}, "no_biometrics": true }),
+            ),
+            (
+                "PATCH",
+                format!("/v1/people/{adult}"),
+                json!({ "data": {}, "client_edited_at": at }),
+            ),
+            (
+                "PUT",
+                format!("/v1/people/{adult}/biometrics"),
+                json!({ "photo_base64": "AAAA" }),
+            ),
+            (
+                "POST",
+                format!("/v1/people/{kid}/guardians"),
+                json!({ "guardian_id": guardian, "link": "declared" }),
+            ),
+            (
+                "POST",
+                format!("/v1/shelters/{shelter}/exits"),
+                json!({ "person_id": adult, "exit_destination": "own_home" }),
+            ),
+            (
+                "POST",
+                format!("/v1/shelters/{shelter}/households"),
+                json!({ "id": new_id(), "member_ids": [guardian], "client_created_at": at }),
+            ),
+            (
+                "PATCH",
+                format!("/v1/households/{household}"),
+                json!({ "add_member_ids": [guardian] }),
+            ),
+            (
+                "POST",
+                format!("/v1/households/{household}/cards"),
+                json!({ "code": "EFGH6789", "client_issued_at": at }),
+            ),
+            ("POST", format!("/v1/cards/{card}/cancel"), json!({})),
+        ];
+        for (method, path, body) in writes {
+            let (status, answer) = app.send(method, &path, &admin.secret, Some(body)).await;
+            assert_eq!(
+                (status, answer["error"].as_str()),
+                (StatusCode::CONFLICT, Some("event_closed")),
+                "{method} {path}"
+            );
+        }
+        let (status, _) = app
+            .send("GET", &format!("/v1/people/{adult}"), &admin.secret, None)
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = app
+            .send(
+                "GET",
+                &format!("/v1/households/{household}"),
+                &admin.secret,
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn ensure_open_lets_active_missing_and_absent_events_through() {
+        let db = crate::test_support::test_db().await;
+        let mut doc = EventDoc::new(
+            &Address {
+                text: None,
+                city: None,
+                state: None,
+                pending: false,
+            },
+            store::now(),
+        );
+        store::replace(&db, COLLECTION, "open", &doc).await.unwrap();
+        doc.status = EventStatus::Closed;
+        store::replace(&db, COLLECTION, "shut", &doc).await.unwrap();
+        assert!(ensure_open(&db, None).await.is_ok());
+        assert!(ensure_open(&db, Some("open")).await.is_ok());
+        assert!(ensure_open(&db, Some("ghost")).await.is_ok());
+        let err = ensure_open(&db, Some("shut")).await.unwrap_err();
+        assert_eq!(
+            (err.status, err.code),
+            (StatusCode::CONFLICT, "event_closed")
+        );
     }
 }

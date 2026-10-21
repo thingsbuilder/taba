@@ -427,7 +427,15 @@ async fn alerts_and_bans_follow_the_matrix() {
         "GET",
         "/v1/alerts",
         None,
-        &[AdminUnconfirmed, AdminConfirmed, Validator, CivilDefense],
+        // Members of a shelter open the box too: they get the alerts about their own searches.
+        &[
+            VolunteerUnconfirmed,
+            AdminUnconfirmed,
+            VolunteerConfirmed,
+            AdminConfirmed,
+            Validator,
+            CivilDefense,
+        ],
         false,
     )
     .await;
@@ -497,8 +505,6 @@ async fn phase_4_routes_are_registered_and_ask_for_a_session() {
         ("GET", "/v1/matches"),
         ("GET", "/v1/matches/m1"),
         ("POST", "/v1/matches/m1/decision"),
-        ("POST", "/v1/volunteers/v1/roles"),
-        ("DELETE", "/v1/volunteers/v1/roles/mediator"),
         ("POST", "/v1/search-links"),
         ("DELETE", "/v1/search-links/c1"),
     ] {

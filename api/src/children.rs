@@ -98,6 +98,9 @@ pub async fn post_guardian(
             if !in_shelter && !can_change_status(&volunteer) {
                 return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden"));
             }
+            if let Some(shelter_id) = child.current_shelter_id.as_deref() {
+                crate::events::ensure_shelter_open(&db, shelter_id).await?;
+            }
             if !child.is_child {
                 return Err(ApiError::new(
                     StatusCode::UNPROCESSABLE_ENTITY,
@@ -504,7 +507,8 @@ mod tests {
                 assert!(empty, "{label}: {listed}");
             }
         }
-        let (status, _) = w
+        // A plain volunteer opens the box (for their own search alerts) and finds it empty.
+        let (status, listed) = w
             .app
             .send(
                 "GET",
@@ -513,7 +517,10 @@ mod tests {
                 None,
             )
             .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            (status, listed["alerts"].as_array().map(Vec::len)),
+            (StatusCode::OK, Some(0))
+        );
     }
 
     #[tokio::test]

@@ -49,9 +49,18 @@ Compartilhado e já pronto (ninguém mexe): `error.rs` (`search_limit` 429, `mat
 1. **Aviso "a família enviou":** `AlertKind::FamilySearchReceived` (`family_search_received`), informativo, `volunteer_ids = [quem gerou o link]`; mostra só "a família enviou" e `usable_photos`, nunca o conteúdo.
 2. **Modelo de dados** (já na spec 7, pt_br e en): `searches.created_by` + `via: volunteer|family_link`; `search_links/{code}` com `created_by`, `shelter_id`, `event_id?`, `status`, `created_at`, `expires_at` (TTL), `used_at?`, `search_id?`, `attempts`.
 
-## Para o dono D
+## Entregue pelo dono D (contrato com A, B, E e a PWA)
 
-Em `alerts.rs`, `GET /v1/alerts` hoje recusa (`403`) quem não é admin, `protection` ou DC; quem registra buscas e não é admin precisa receber `search_expiring` e `family_search_received`.
+**Alertas pessoais** (`alerts.rs`): `search_expiring` e `family_search_received` são informativos e chegam **só** a quem está em `volunteer_ids` (nem a DC os vê); quem os resolve é o mesmo voluntário. `GET /v1/alerts` deixou de dar `403` a membro de abrigo e a `mediator`: abre a caixa e devolve só os alertas dele (estranho sem abrigo nem papel continua `403`).
+
+- `search_expiring` (criado pela tarefa horária, `jobs.rs`): `target_kind = "search"`, `target_id = <search_id>`, `event_id`, `volunteer_ids = [created_by]`, `detail = {"purge_at": "<ISO 8601>"}`. A orientação (delegacia e Cruz Vermelha) é texto da PWA; o `detail` não leva conteúdo da busca.
+- `family_search_received` (criado por **E** no submit do link): `target_kind = "search"`, `target_id = <search_id>`, `volunteer_ids = [quem gerou o link]`, `detail = {"usable_photos": <inteiro>}`; nada mais.
+- Use `AlertDoc::personal(kind, "search", &search_id, &volunteer_id, detail)` (já em `alerts.rs`): ela marca `informational = true` e `for_civil_defense = false`. `alerts::add(db, tx, &alert)` na transação que grava a busca.
+
+**`events::ensure_open`** já está nas rotas de check-in, edição de pessoa, biometria tardia, responsável de criança, saída, núcleo e cartão. Quem escreve rotas novas chama:
+- **A** (`rescues.rs`): `events::ensure_open(&state.db, event_id.as_deref())` em `POST /v1/rescues` e `PATCH /v1/rescues/{id}` quando o resgate tem `event_id` (antes de qualquer chamada à Unico); `events::ensure_shelter_open(&db, shelter_id)` para `destination_shelter_id`.
+- **B** (`searches.rs`): `events::ensure_shelter_open(&state.db, origin_shelter_id)` em `POST /v1/searches` (antes da Unico); **E** o mesmo no `POST /v1/search-links` (abrigo do link) e no submit.
+- Dentro de transação, passe o `db` da transação; fora, `&state.db`. Evento ausente ou abrigo ausente não bloqueia; evento `closed`/`purged` dá `409 event_closed`.
 
 ## Regras de convivência
 

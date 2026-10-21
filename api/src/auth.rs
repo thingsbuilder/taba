@@ -653,12 +653,6 @@ impl Volunteer {
     pub fn is_admin_of(&self, shelter_id: &str) -> bool {
         self.role_in(shelter_id) == Some(ShelterRole::Admin)
     }
-
-    pub fn has_admin_membership(&self) -> bool {
-        self.memberships
-            .iter()
-            .any(|m| m.role == ShelterRole::Admin)
-    }
 }
 
 fn unauthorized() -> ApiError {

@@ -13,6 +13,7 @@ use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{self, AppState, CaptureDoc, Purpose, Volunteer, resolve_person, usable_capture};
 use crate::children::can_change_status;
 use crate::error::ApiError;
+use crate::events;
 use crate::members;
 use crate::people::{self, ChildStatus, ExitDestination, ExitReason, GuardianLink, PersonDoc};
 use crate::shelters::{self, ShelterDoc};
@@ -336,9 +337,10 @@ pub async fn post_exit(
     if !member && !privileged {
         return Err(forbidden());
     }
-    store::get::<ShelterDoc>(&state.db, shelters::COLLECTION, &shelter_id)
+    let shelter = store::get::<ShelterDoc>(&state.db, shelters::COLLECTION, &shelter_id)
         .await?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "shelter_not_found"))?;
+    events::ensure_open(&state.db, shelter.event_id.as_deref()).await?;
     let destination = request
         .exit_destination
         .ok_or_else(|| invalid("exit_destination_required"))?;
