@@ -89,7 +89,17 @@ export interface TabaDB extends DBSchema {
   people: { key: string; value: PersonRecord; indexes: { by_shelter: string; by_household: string } }
   households: { key: string; value: HouseholdRecord; indexes: { by_shelter: string } }
   cards: { key: string; value: CardRecord; indexes: { by_household: string } }
-  captures: { key: string; value: { capture_id: string; created_at: number; purpose?: 'invite'; invite_code?: string } }
+  captures: {
+    key: string
+    value: {
+      capture_id: string
+      created_at: number
+      purpose?: 'invite' | 'checkin' | 'revalidation' | 'biometrics'
+      invite_code?: string
+      /** In-app path the journey returns to (check-in, revalidation and biometrics screens). */
+      return_to?: string
+    }
+  }
   addresses: { key: string; value: { shelter_id: string; lat: number; lon: number; volunteer_id: string | null } }
 }
 

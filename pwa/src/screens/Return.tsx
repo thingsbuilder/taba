@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
 import type { ProfileInput } from '../api'
+import { returnPathOf } from '../captures'
 import { type LoginOutcome, finishLogin } from '../login'
 import { navigate } from '../nav'
 import { takeReturnTo } from '../return-to'
@@ -24,6 +25,9 @@ export function Return({ ctx, search }: { ctx: AppContext; search: string }) {
   async function run(profile?: ProfileInput) {
     if (!captureId) return navigate('/login', true)
     setStep({ name: 'waiting' })
+    // A capture made for a check-in, a revalidation or late biometrics goes back to that screen (phase 3).
+    const back = await returnPathOf(ctx.db, captureId)
+    if (back) return navigate(back, true)
     // A capture made for an invite is accepted through the invite (spec 3.3).
     const inviteCode = (await ctx.db.get('captures', captureId))?.invite_code
     const outcome: LoginOutcome = await finishLogin({ db: ctx.db, api: ctx.api }, captureId, profile, inviteCode)
