@@ -46,6 +46,11 @@ export interface QueuePhotos {
   thumbnail?: Blob
 }
 
+/** The two answers of a Unico that is out: the first request after the monthly limit, and the ones after it (spec 5.5, 5.7). */
+const isUnicoOut = (code: string | undefined): boolean => code === 'unico_degraded' || code === 'unico_limit'
+
+const CHECKIN_PATH = /^\/v1\/shelters\/[^/]+\/checkins$/
+
 /** Header that tells the server who signed the item before an admin took it over (spec 9.2, audit `taken_over_from`). */
 export const TAKEN_OVER_HEADER = 'X-Taken-Over-From'
 
@@ -141,6 +146,43 @@ export function createQueue(deps: QueueDeps) {
     return n
   }
 
+  /**
+   * A photo check-in queued while Unico worked, sent when it no longer does: it becomes the check-in
+   * without biometrics (path C, `person_id` = its `id`) and a late biometrics `PUT` after it that carries
+   * the photo, still encrypted (spec 5.7, 4.12). False when the item is not such a check-in.
+   */
+  async function degradeCheckin(item: QueueItem): Promise<boolean> {
+    const body = item.body as { id?: string; capture_id?: unknown; no_biometrics?: unknown } | null
+    const photos = await db.get('blobs', item.id)
+    if (item.method !== 'POST' || !CHECKIN_PATH.test(item.path) || !photos || !body?.id || body.capture_id || body.no_biometrics) return false
+    const fields = await decryptPhotoFields(db, photos).catch(() => null)
+    if (!fields?.photo_base64) return false
+
+    const late: QueueItem = {
+      id: crypto.randomUUID(),
+      method: 'PUT',
+      path: `/v1/people/${body.id}/biometrics`,
+      body: {},
+      volunteer_id: item.volunteer_id,
+      shelter_id: item.shelter_id,
+      created_at: Math.max(now(), lastCreatedAt + 1),
+      attempts: 0,
+      next_attempt_at: 0,
+      state: 'pending',
+      error: 'unico_degraded',
+    }
+    lastCreatedAt = late.created_at
+    const { photo_base64, ...rest } = fields
+    await db.put('blobs', await encryptPhotoFields(db, late.id, { photo_base64 }))
+    if (rest.thumbnail_base64) await db.put('blobs', await encryptPhotoFields(db, item.id, rest))
+    else await db.delete('blobs', item.id)
+    await db.put('queue', late)
+    const { error: _e, ...registration } = item
+    await db.put('queue', { ...registration, body: { ...(item.body as object), no_biometrics: true }, attempts: 0, next_attempt_at: 0 })
+    notify()
+    return true
+  }
+
   /** Throws away an item that waits for a person (and its photo). */
   async function discard(id: string): Promise<void> {
     await remove(id)
@@ -168,7 +210,7 @@ export function createQueue(deps: QueueDeps) {
       const item = await db.get('queue', snapshot.id)
       if (!item || item.state !== 'pending') continue // held / needs_action wait for a person
       if (mentions(item, waiting)) continue
-      if (item.error === 'unico_degraded') {
+      if (isUnicoOut(item.error)) {
         // Retried only once GET /status is ok again; does not block the rest of the queue.
         if (!(await degradedGateOpen())) {
           idsOf(item).forEach((id) => waiting.add(id))
@@ -226,7 +268,12 @@ export function createQueue(deps: QueueDeps) {
 
       if (res.status === 409 && errorCode === 'shelter_nearby') {
         await holdShelter(item.shelter_id, errorCode, item, failure?.detail)
-      } else if (res.status === 503 && errorCode === 'unico_degraded') {
+      } else if (res.status === 503 && isUnicoOut(errorCode)) {
+        if (await degradeCheckin(item)) {
+          // Registered by path C now; the photo became a late biometrics item that waits (spec 5.7).
+          rerun = true
+          continue
+        }
         await db.put('queue', { ...item, error: errorCode })
         idsOf(item).forEach((id) => waiting.add(id))
       } else if (res.status === 429 || res.status >= 500) {
