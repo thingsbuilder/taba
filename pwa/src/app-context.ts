@@ -92,6 +92,7 @@ const KNOWN_ERRORS = new Set([
   'wrong_capture_target',
   'invalid_destination_municipality',
   'event_closed',
+  'photo_rejected',
 ])
 
 /** i18n key for a stable server error code; unknown codes get the generic message. */

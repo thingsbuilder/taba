@@ -201,6 +201,7 @@
   "error.invalid_reason": "Write a reason.",
   "error.invalid_role": "That level is not allowed.",
   "error.contention": "Many people are using this at once. Try again in a moment.",
+  "error.photo_rejected": "We could not see a face in this photo.",
   "error.guardian_not_verified": "The guardian must have done the verified selfie.",
   "error.protection_role_required": "Only protection or the Civil Defense can do this.",
   "error.photo_too_big": "The photo is too big. Take another.",
@@ -358,6 +359,9 @@
   "checkin.household_question": "Does this person have family here?",
   "checkin.household_new": "New household",
   "checkin.household_join": "Join an existing household",
+  "checkin.error.photo_rejected": "We could not see a face in this photo. Take another, or register without a photo.",
+  "checkin.camera_hint": "Face to the camera, in good light.",
+  "checkin.camera_bad_frame": "We could not get the image, please try again.",
   "__person__": "",
   "person.title": "Person",
   "person.list_title": "People in the shelter",
@@ -529,5 +533,8 @@
   "queue.error_guardian_not_verified": "The guardian must have done the selfie.",
   "queue.error_event_closed": "The event of this shelter has ended.",
   "queue.title": "Pending items",
+  "queue.photo_again": "Take another photo",
+  "queue.photo_without": "Register without a photo",
+  "queue.photo_last": "We already tried two photos. Register without a photo; the selfie can be done later.",
   "__end__": ""
 }

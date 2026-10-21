@@ -1,6 +1,7 @@
 import type { ApiStatus } from './api'
-import { decryptPhotoFields, encryptPhotoFields, blobToBase64 } from './crypto'
+import { type PhotoFields, blobToBase64, decryptPhotoFields, encryptPhotoFields } from './crypto'
 import type { Db, QueueItem } from './db'
+import { PHOTO_ERRORS } from './queue-errors'
 import { applyPhase3Synced, undoPhase3Local } from './sync'
 
 // Generic offline write queue (spec 9.2). Strict FIFO, one item at a time.
@@ -183,6 +184,38 @@ export function createQueue(deps: QueueDeps) {
     return true
   }
 
+  /** A new photo for an item whose photo Unico refused: it goes out again with the same data and key. */
+  async function replacePhoto(id: string, photo: Blob): Promise<void> {
+    const item = await db.get('queue', id)
+    if (!item) return
+    const old = await db.get('blobs', id)
+    const kept = old ? await decryptPhotoFields(db, old).catch(() => ({})) : {}
+    await db.put('blobs', await encryptPhotoFields(db, id, { ...kept, photo_base64: await blobToBase64(photo) }))
+    const { error: _e, detail: _d, ...rest } = item
+    await db.put('queue', { ...rest, state: 'pending', attempts: 0, next_attempt_at: 0 })
+    notify()
+    await drain()
+  }
+
+  /**
+   * Gives up the photo and registers the person by name or wristband, with the same data (path C, the
+   * selfie may come later). A late biometrics item has nothing else to do and goes away.
+   */
+  async function registerWithoutPhoto(id: string): Promise<void> {
+    const item = await db.get('queue', id)
+    if (!item) return
+    if (item.method === 'PUT') return discard(id)
+    const old = await db.get('blobs', id)
+    const kept = old ? await decryptPhotoFields(db, old).catch(() => ({}) as PhotoFields) : ({} as PhotoFields)
+    const { photo_base64: _photo, ...rest } = kept
+    if (rest.thumbnail_base64) await db.put('blobs', await encryptPhotoFields(db, id, rest))
+    else await db.delete('blobs', id)
+    const { error: _e, detail: _d, ...open } = item
+    await db.put('queue', { ...open, body: { ...(item.body as object), no_biometrics: true }, state: 'pending', attempts: 0, next_attempt_at: 0 })
+    notify()
+    await drain()
+  }
+
   /** Throws away an item that waits for a person (and its photo). */
   async function discard(id: string): Promise<void> {
     const item = await db.get('queue', id)
@@ -284,7 +317,15 @@ export function createQueue(deps: QueueDeps) {
         break
       } else {
         // Conflicts of spec 9.4 (`person_in_other_household`, `household_has_card`, ...) keep what the server said.
-        await db.put('queue', { ...item, state: 'needs_action', error: errorCode ?? `http_${res.status}`, detail: failure?.detail })
+        // A refused photo is never sent again as it is: the item keeps its data and waits for a person.
+        const refused = errorCode !== undefined && PHOTO_ERRORS.has(errorCode)
+        await db.put('queue', {
+          ...item,
+          state: 'needs_action',
+          error: errorCode ?? `http_${res.status}`,
+          detail: failure?.detail,
+          ...(refused ? { photo_refusals: (item.photo_refusals ?? 0) + 1 } : {}),
+        })
       }
       notify()
     }
@@ -323,6 +364,8 @@ export function createQueue(deps: QueueDeps) {
     takeOver,
     discard,
     retry,
+    replacePhoto,
+    registerWithoutPhoto,
     list: sortedItems,
     count: () => db.count('queue'),
     subscribe(listener: () => void) {

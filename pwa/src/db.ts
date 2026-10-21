@@ -20,6 +20,8 @@ export interface QueueItem {
   /** Body of the error that held the item (the `shelter_nearby` conflict details). */
   detail?: unknown
   taken_over_from?: string
+  /** How many photos of this registration Unico refused (at most 2 are offered again). */
+  photo_refusals?: number
 }
 
 /** `shelters` store: the phone's copy of a shelter (spec 6.1.1). `pending` until the server confirmed the creation. */

@@ -14,7 +14,7 @@ const SERVER = [
   'invalid_household', 'invalid_card', 'invalid_guardian', 'household_exists', 'card_not_found', 'thumbnail_not_found', 'invalid_thumbnail',
   'person_changed', 'person_in_other_household', 'household_has_card', 'code_taken', 'exit_destination_required', 'guardian_required',
   'guardian_not_linked', 'capture_required', 'exception_for_child_only', 'exception_reason_required', 'invalid_destination_municipality',
-  'event_closed', 'no_face', 'invalid_image', 'image_too_large', 'unico_degraded', 'unico_limit', 'forbidden', 'shelter_not_found',
+  'event_closed', 'photo_rejected', 'no_face', 'invalid_image', 'image_too_large', 'unico_degraded', 'unico_limit', 'forbidden', 'shelter_not_found',
   'capture_consumed', 'capture_expired', 'capture_not_found', 'capture_wrong_device',
 ]
 const LOCAL = ['photo_too_big', 'selfie_timeout', 'destination_required', 'invalid_reason']

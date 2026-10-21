@@ -162,7 +162,7 @@ export async function enqueueCheckin(queue: Pick<Queue, 'enqueue'>, i: QueuedInp
   )
 }
 
-const OWN_ERRORS = new Set(['no_face', 'invalid_image', 'image_too_large'])
+const OWN_ERRORS = new Set(['no_face', 'invalid_image', 'image_too_large', 'photo_rejected'])
 
 /** Errors the screens raise themselves while taking the selfie or the photo. */
 const LOCAL_ERRORS: Record<string, string> = { selfie_timeout: 'checkin.selfie_timeout', photo_too_big: 'checkin.photo_too_big' }
