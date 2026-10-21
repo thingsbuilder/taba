@@ -53,6 +53,12 @@ Compartilhado e já pronto (ninguém mexe): `error.rs` (`search_limit` 429, `mat
 
 Em `alerts.rs`, `GET /v1/alerts` hoje recusa (`403`) quem não é admin, `protection` ou DC; quem registra buscas e não é admin precisa receber `search_expiring` e `family_search_received`.
 
+## Limites conhecidos da PWA de matches e papéis (G)
+
+- `/roles` não tem busca de voluntário (não há rota para isso): quem concede cola o código do voluntário, que o próprio voluntário vê no Perfil ("Meu código de voluntário"). Uma busca por nome é trabalho futuro.
+- A conferência `/matches/:id` não mostra a miniatura: `MatchDetail` só traz `has_thumbnail` e não há rota para a imagem de um match (`GET /v1/people/{id}/thumbnail` pede o `person_id`, que o match não expõe). Pendente de decisão: uma rota `GET /v1/matches/{id}/thumbnail` em `matches.rs`.
+- Os textos dos alertas leem `detail.purge_at` (`search_expiring`) e `detail.usable_photos` (`family_search_received`); sem o campo, a data fica em branco e a contagem em 0. D confirma os nomes.
+
 ## Regras de convivência
 
 As mesmas da fase 3: arquivos disjuntos, nada de refatoração fora da sua linha, commits pequenos em inglês, testes de concorrência onde a spec 6.2.4 pede, testes automáticos nunca chamam a Unico, nada da instalação no repo.

@@ -7,10 +7,25 @@ const KNOWN = new Set([
   'child_separated', 'revalidation_failed', 'exceptional_exit', 'household_conflict', 'unico_limit',
 ])
 
-export const alertTextKey = (kind: string): string => (KNOWN.has(kind) ? `alert.${kind}` : 'alert.generic')
+export function alertTextKey(kind: string, detail: Record<string, unknown> = {}): string {
+  if (kind === 'search_expiring') return 'inbox.search_expiring'
+  if (kind === 'family_search_received') return detail.usable_photos === 1 ? 'inbox.family_search_received_one' : 'inbox.family_search_received'
+  return KNOWN.has(kind) ? `alert.${kind}` : 'alert.generic'
+}
+
+/** Values the phase 4 alert texts need: the purge date and the count of usable photos. Never the family's content. */
+export function alertParams(alert: AlertView, locale?: string): Record<string, string | number> {
+  const purge = typeof alert.detail.purge_at === 'string' ? new Date(alert.detail.purge_at) : null
+  return {
+    date: purge && !Number.isNaN(purge.getTime()) ? purge.toLocaleDateString(locale) : '',
+    count: typeof alert.detail.usable_photos === 'number' ? alert.detail.usable_photos : 0,
+    kind: alert.kind,
+  }
+}
 
 /** Alerts about a person open the person; those about a shelter, its screen; the others have no destination. */
 export function alertLink(alert: AlertView): string | null {
+  if (alert.kind === 'search_expiring' || alert.kind === 'family_search_received') return null
   if (alert.target_kind === 'person') return `/person/${alert.target_id}`
   if (alert.target_kind === 'shelter') return `/shelter/${alert.target_id}`
   return alert.shelter_ids.length === 1 ? `/shelter/${alert.shelter_ids[0]}` : null
