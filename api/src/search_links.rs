@@ -46,7 +46,8 @@ const TTL: SignedDuration = SignedDuration::from_hours(12);
 /// Failed submissions a link takes before it answers `410`.
 const MAX_ATTEMPTS: u32 = 5;
 /// How long one submit holds the link while Unico is being asked (Unico's own deadline is 60 s).
-const LEASE: SignedDuration = SignedDuration::from_secs(120);
+/// Longer than the pipeline: 5 photos, each up to 60 s at Unico, so the claim does not lapse while it runs.
+const LEASE: SignedDuration = SignedDuration::from_secs(360);
 /// Submits per hour from one device (`X-Device-Id`) on one IP, and from one IP alone.
 const MAX_PER_DEVICE_HOUR: usize = 20;
 const MAX_PER_IP_HOUR: usize = 100;
@@ -185,6 +186,7 @@ pub async fn post_search_link(
         })
     })
     .await?;
+    crate::events::touch(&state, shelter.event_id.as_deref()).await;
     Ok((
         StatusCode::CREATED,
         Json(json!({
@@ -203,7 +205,7 @@ pub async fn delete_search_link(
     volunteer: Volunteer,
     Path(code): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    store::transact(&state.db, |db, tx| {
+    let event_id = store::transact(&state.db, |db, tx| {
         let (code, volunteer) = (code.clone(), volunteer.clone());
         Box::pin(async move {
             let mut link = store::get::<SearchLinkDoc>(&db, COLLECTION, &code)
@@ -222,10 +224,12 @@ pub async fn delete_search_link(
                 &AuditEntry::new("search_link.cancel", "search_link", &code)
                     .by(&volunteer.id)
                     .in_shelter(&link.shelter_id),
-            )
+            )?;
+            Ok(link.event_id.clone())
         })
     })
     .await?;
+    crate::events::touch(&state, event_id.as_deref()).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -341,7 +345,16 @@ where
                 .await?
                 .filter(|l| l.is_valid(now))
                 .ok_or_else(ApiError::search_link_invalid)?;
-            crate::events::ensure_open(&db, link.event_id.as_deref()).await?;
+            // The family is told nothing of the shelter: a link of a closed event is just a dead link.
+            crate::events::ensure_open(&db, link.event_id.as_deref())
+                .await
+                .map_err(|e| {
+                    if e.code == "event_closed" {
+                        ApiError::search_link_invalid()
+                    } else {
+                        e
+                    }
+                })?;
             if link.processing_until.is_some_and(|until| now < until) {
                 return Err(busy());
             }
@@ -403,6 +416,7 @@ where
         })
     })
     .await?;
+    crate::events::touch(state, link.event_id.as_deref()).await;
     Ok(searches::answer(outcome))
 }
 

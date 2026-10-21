@@ -67,6 +67,11 @@ fn plus_days(at: FirestoreInstant, days: u32) -> FirestoreInstant {
         .expect("a date within range")
 }
 
+fn minus_days(at: FirestoreInstant, days: u32) -> FirestoreInstant {
+    FirestoreInstant::from_microsecond(at.as_microsecond() - i64::from(days) * DAY_MICROS)
+        .expect("a date within range")
+}
+
 async fn events_with(
     db: &FirestoreDb,
     status: EventStatus,
@@ -234,7 +239,7 @@ async fn notify_expiring_searches(state: &AppState) -> Result<(), ApiError> {
 // ---- 2. thumbnails (spec 4.6) ----
 
 /// Whether every event in the list is closed; read through `db`. A person with no event yet
-/// (a rescue without shelter) keeps the thumbnail: the landing-point volunteer still needs it.
+/// (a rescue without shelter) is not decided here: see `orphan_expired`.
 async fn all_events_closed(db: &FirestoreDb, event_ids: &[String]) -> Result<bool, ApiError> {
     for id in event_ids {
         let event: Option<EventDoc> = store::get(db, events::COLLECTION, id).await?;
@@ -249,6 +254,22 @@ async fn all_events_closed(db: &FirestoreDb, event_ids: &[String]) -> Result<boo
 struct PersonEvents {
     #[serde(default)]
     event_ids: Vec<String>,
+    #[serde(default)]
+    current_shelter_id: Option<String>,
+    #[serde(with = "firestore::serialize_as_timestamp")]
+    updated_at: FirestoreInstant,
+}
+
+/// A person with no event and no shelter (a rescue the landing point never sent anywhere) has no
+/// event whose end would delete the thumbnail: it goes `PURGE_AFTER_DAYS` after the last change
+/// to the person (spec 4.6), which is as long as an event keeps it after it closes.
+fn orphan_expired(
+    event_ids: &[String],
+    current_shelter_id: Option<&str>,
+    updated_at: FirestoreInstant,
+    cutoff: FirestoreInstant,
+) -> bool {
+    event_ids.is_empty() && current_shelter_id.is_none() && updated_at < cutoff
 }
 
 /// Deletes the thumbnail of every person whose events are all closed.
@@ -264,17 +285,24 @@ async fn delete_thumbnails(state: &AppState) -> Result<(), ApiError> {
         .db
         .fluent()
         .select()
-        .fields(["event_ids"])
+        .fields(["event_ids", "current_shelter_id", "updated_at"])
         .from(people::COLLECTION)
         .filter(|q| q.for_all([q.field(path!(PersonDoc::thumbnail_encrypted)).is_not_null()]))
         .obj()
         .query()
         .await
         .map_err(fs_error)?;
+    let cutoff = minus_days(store::now(), state.config.purge_after_days);
     let due: Vec<String> = with_thumbnail
         .into_iter()
         .filter(|p| {
-            !p.doc.event_ids.is_empty() && p.doc.event_ids.iter().all(|e| !active.contains(e))
+            (!p.doc.event_ids.is_empty() && p.doc.event_ids.iter().all(|e| !active.contains(e)))
+                || orphan_expired(
+                    &p.doc.event_ids,
+                    p.doc.current_shelter_id.as_deref(),
+                    p.doc.updated_at,
+                    cutoff,
+                )
         })
         .map(|p| p.id)
         .collect();
@@ -290,9 +318,16 @@ async fn delete_thumbnails(state: &AppState) -> Result<(), ApiError> {
                         continue;
                     };
                     // The person may have checked in to a new event since the listing.
-                    if person.thumbnail_encrypted.is_none()
-                        || !all_events_closed(&db, &person.event_ids).await?
-                    {
+                    if person.thumbnail_encrypted.is_none() {
+                        continue;
+                    }
+                    let orphan = orphan_expired(
+                        &person.event_ids,
+                        person.current_shelter_id.as_deref(),
+                        person.updated_at,
+                        cutoff,
+                    );
+                    if !orphan && !all_events_closed(&db, &person.event_ids).await? {
                         continue;
                     }
                     person.thumbnail_encrypted = None;
@@ -821,6 +856,27 @@ mod tests {
         assert!(!has_thumbnail(&w.app, &mixed).await);
         assert!(!has_thumbnail(&w.app, &still_open).await);
         assert!(has_thumbnail(&w.app, &no_event).await);
+    }
+
+    #[tokio::test]
+    async fn a_person_with_no_event_and_no_shelter_loses_the_thumbnail_after_the_purge_period() {
+        let w = world().await;
+        let aged = |days: i64, shelter: Option<&str>| {
+            let mut doc = person(Level::NoBiometrics, shelter);
+            doc.thumbnail_encrypted = Some(vec![1, 2, 3]);
+            doc.updated_at = ago(days, 0);
+            doc
+        };
+        let (old, recent, sheltered) = (new_id(), new_id(), new_id());
+        put(&w.app, &old, &aged(31, None)).await;
+        put(&w.app, &recent, &aged(29, None)).await;
+        put(&w.app, &sheltered, &aged(31, Some(&w.shelter))).await;
+
+        run_once(&w.app.state).await.unwrap();
+
+        assert!(!has_thumbnail(&w.app, &old).await);
+        assert!(has_thumbnail(&w.app, &recent).await);
+        assert!(has_thumbnail(&w.app, &sheltered).await);
     }
 
     fn capture(expires_at: FirestoreInstant) -> CaptureDoc {

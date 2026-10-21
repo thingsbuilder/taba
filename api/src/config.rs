@@ -79,7 +79,7 @@ impl Config {
             pilot_responsible: text("PILOT_RESPONSIBLE"),
             shelter_radius_m: number(&get, "SHELTER_RADIUS_M", "100")?,
             event_radius_km: number(&get, "EVENT_RADIUS_KM", "50")?,
-            inactivity_days: number(&get, "INACTIVITY_DAYS", "30")?,
+            inactivity_days: positive(number(&get, "INACTIVITY_DAYS", "30")?, "INACTIVITY_DAYS")?,
             purge_after_days: number(&get, "PURGE_AFTER_DAYS", "30")?,
             delivery_retention_days: number(&get, "DELIVERY_RETENTION_DAYS", "90")?,
             session_days: number(&get, "SESSION_DAYS", "7")?,
@@ -88,6 +88,15 @@ impl Config {
             anomaly_checkins_per_10min: number(&get, "ANOMALY_CHECKINS_PER_10MIN", "30")?,
             anomaly_rescues_per_10min: number(&get, "ANOMALY_RESCUES_PER_10MIN", "100")?,
         })
+    }
+}
+
+/// An event that closes after zero idle days would close the moment it opens.
+fn positive(days: u32, name: &'static str) -> Result<u32, ConfigError> {
+    if days == 0 {
+        Err(ConfigError::Invalid(name))
+    } else {
+        Ok(days)
     }
 }
 
@@ -166,6 +175,10 @@ mod tests {
         assert_eq!(
             load(&[("GCP_PROJECT", "p"), ("SHELTER_RADIUS_M", "-1")]),
             Err(ConfigError::Invalid("SHELTER_RADIUS_M"))
+        );
+        assert_eq!(
+            load(&[("GCP_PROJECT", "p"), ("INACTIVITY_DAYS", "0")]),
+            Err(ConfigError::Invalid("INACTIVITY_DAYS"))
         );
         assert_eq!(
             load(&[("GCP_PROJECT", "p"), ("DELIVERY_SAMPLE_RATE", "1.5")]),

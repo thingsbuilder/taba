@@ -1150,3 +1150,259 @@ async fn a_shelter_of_a_closed_event_takes_no_write_of_phase_4_or_of_its_members
         StatusCode::NO_CONTENT
     );
 }
+
+// ---- event activity (spec 4.3.3: any write of a shelter) and the idempotency of a decision ----
+
+/// How many seconds ago the event of the shelter last had a write, after making it look 31 days idle.
+async fn make_idle(app: &TestApp, shelter: &str) -> String {
+    let shelter: crate::shelters::ShelterDoc =
+        store::get(&app.state.db, crate::shelters::COLLECTION, shelter)
+            .await
+            .unwrap()
+            .unwrap();
+    let event_id = shelter.event_id.unwrap();
+    let mut event: crate::events::EventDoc =
+        store::get(&app.state.db, crate::events::COLLECTION, &event_id)
+            .await
+            .unwrap()
+            .unwrap();
+    event.last_activity_at = crate::store::now() - std::time::Duration::from_secs(31 * 86_400);
+    store::replace(&app.state.db, crate::events::COLLECTION, &event_id, &event)
+        .await
+        .unwrap();
+    // The write of the hour was just made; forget it so the next one is written.
+    app.state.event_activity.lock().unwrap().clear();
+    event_id
+}
+
+async fn last_activity_age_secs(app: &TestApp, event_id: &str) -> i64 {
+    let event: crate::events::EventDoc =
+        store::get(&app.state.db, crate::events::COLLECTION, event_id)
+            .await
+            .unwrap()
+            .unwrap();
+    (crate::store::now().as_microsecond() - event.last_activity_at.as_microsecond()) / 1_000_000
+}
+
+#[tokio::test]
+async fn any_write_of_a_shelter_postpones_the_closing_of_its_event() {
+    let s = scene().await;
+    let person = new_id();
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/shelters/{}/checkins", s.shelter),
+        Some(checkin_body(json!({ "id": person, "no_biometrics": true }))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let household = new_id();
+    let (status, body) = call(&s.app, &s.volunteer, "POST", &format!("/v1/shelters/{}/households", s.shelter), Some(json!({ "id": household, "member_ids": [person], "head_id": person, "client_created_at": store::now().to_string() }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let writes: Vec<(&str, String, Value)> = vec![
+        (
+            "issue a card",
+            format!("/v1/households/{household}/cards"),
+            json!({ "code": "ABCD2345", "client_issued_at": store::now().to_string() }),
+        ),
+        (
+            "change the household",
+            format!("/v1/households/{household}"),
+            json!({ "pets": [{ "species": "dog", "count": 1 }] }),
+        ),
+        (
+            "change the person",
+            format!("/v1/people/{person}"),
+            json!({ "data": { "name": "Ana" }, "client_edited_at": store::now().to_string() }),
+        ),
+        ("register a search", "/v1/searches".to_string(), {
+            let mut b = search_body(1);
+            b["id"] = json!(new_id());
+            b
+        }),
+    ];
+    for (what, path, body) in writes {
+        let event_id = make_idle(&s.app, &s.shelter).await;
+        if what == "register a search" {
+            tokens(&s.app, &["tok-activity"]);
+        }
+        let method = if what.starts_with("change") {
+            "PATCH"
+        } else {
+            "POST"
+        };
+        let (status, answer) = call(&s.app, &s.admin, method, &path, Some(body)).await;
+        assert!(status.is_success(), "{what}: {status} {answer}");
+        assert!(
+            last_activity_age_secs(&s.app, &event_id).await < 60,
+            "{what} did not record activity"
+        );
+        crate::jobs::run_once(&s.app.state).await.unwrap();
+        let event: crate::events::EventDoc =
+            store::get(&s.app.state.db, crate::events::COLLECTION, &event_id)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(event.status, crate::events::EventStatus::Active, "{what}");
+    }
+    // Without a write the same idle event does close.
+    let event_id = make_idle(&s.app, &s.shelter).await;
+    crate::jobs::run_once(&s.app.state).await.unwrap();
+    let event: crate::events::EventDoc =
+        store::get(&s.app.state.db, crate::events::COLLECTION, &event_id)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(event.status, crate::events::EventStatus::Closed);
+}
+
+#[tokio::test]
+async fn the_family_contact_of_an_accept_is_not_kept_for_the_idempotency_replay() {
+    let s = scene().await;
+    let mediator = actor_with(&s.app, "Mediator", GlobalRole::Mediator).await;
+    let (status, _) = register_search(&s.app, &s.admin, "tok-keyed").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, _) = checkin_photo(&s.app, &s.volunteer, &s.shelter, "tok-keyed", json!({})).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = matches_of(&s.app, &mediator).await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let key = new_id();
+    let path = format!("/v1/matches/{id}/decision");
+    let body = json!({ "decision": "accept", "decided_by": "person" });
+    let (status, accepted) = s
+        .app
+        .send_keyed("POST", &path, &mediator.secret, &key, Some(body.clone()))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{accepted}");
+    assert_eq!(accepted["family"]["phone"], FAMILY_PHONE);
+
+    // The retry with the same key does not get the contact again, and nothing keeps it.
+    let (status, replay) = s
+        .app
+        .send_keyed("POST", &path, &mediator.secret, &key, Some(body))
+        .await;
+    assert_eq!(
+        (status, error_of(&replay)),
+        (StatusCode::CONFLICT, Some("match_already_decided"))
+    );
+    let kept = all_docs(&s.app.state.db, "idempotency").await;
+    assert!(
+        !kept
+            .iter()
+            .any(|d| d.to_string().contains("99999") || d.to_string().contains("wa.me")),
+        "{kept:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_volunteer_of_a_rescue_loses_sight_of_the_person_once_a_shelter_has_them() {
+    let s = scene().await;
+    let rescuer = s.app.actor("Rescuer").await;
+    s.app
+        .create_shelter(&rescuer, "Outro abrigo", north_of_origin(300_000.0))
+        .await;
+    tokens(&s.app, &["tok-moved"]);
+    let (status, body) = call(
+        &s.app,
+        &rescuer,
+        "POST",
+        "/v1/rescues",
+        Some(json!({
+            "id": new_id(), "photo_base64": photo(), "lat": ORIGIN.0, "lon": ORIGIN.1, "accuracy": 12.0,
+            "captured_at": store::now().to_string(), "thumbnail_base64": STANDARD.encode(JPEG),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let person = body["person_id"].as_str().unwrap().to_string();
+    let record = format!("/v1/people/{person}");
+    // Before any shelter: the record and the thumbnail are the rescuer's.
+    assert_eq!(
+        call(&s.app, &rescuer, "GET", &record, None).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &s.app,
+            &rescuer,
+            "GET",
+            &format!("{record}/thumbnail"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    // A shelter checks the person in: from then on the shelter rules apply, for both.
+    let (status, body) =
+        checkin_photo(&s.app, &s.volunteer, &s.shelter, "tok-moved", json!({})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(
+        call(&s.app, &rescuer, "GET", &record, None).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &s.app,
+            &rescuer,
+            "GET",
+            &format!("{record}/thumbnail"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(&s.app, &s.volunteer, "GET", &record, None).await.0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn the_family_link_of_a_closed_event_answers_like_any_dead_link() {
+    let s = scene().await;
+    let (status, link) = call(
+        &s.app,
+        &s.admin,
+        "POST",
+        "/v1/search-links",
+        Some(json!({ "shelter_id": s.shelter })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{link}");
+    let event_id = make_idle(&s.app, &s.shelter).await;
+    let mut event: crate::events::EventDoc =
+        store::get(&s.app.state.db, crate::events::COLLECTION, &event_id)
+            .await
+            .unwrap()
+            .unwrap();
+    event.status = crate::events::EventStatus::Closed;
+    store::replace(
+        &s.app.state.db,
+        crate::events::COLLECTION,
+        &event_id,
+        &event,
+    )
+    .await
+    .unwrap();
+
+    let (status, _, answer) = s
+        .app
+        .request(
+            "POST",
+            &format!("/v1/search-links/{}/submit", link["code"].as_str().unwrap()),
+            &[("x-device-id", "dev-family")],
+            Some(search_body(1)),
+        )
+        .await;
+    assert_eq!(
+        (status, error_of(&answer)),
+        (StatusCode::GONE, Some("search_link_invalid"))
+    );
+}

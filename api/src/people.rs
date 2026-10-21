@@ -904,9 +904,7 @@ async fn visible_person(
     }
     // A rescued person with no shelter yet is seen by the volunteer who registered the rescue
     // (spec 4.6); there is no shelter, so the empty string stands for none.
-    if person.current_shelter_id.is_none()
-        && crate::rescues::registered_rescue_of(&state.db, volunteer, &person).await?
-    {
+    if crate::rescues::registered_rescue_of(&state.db, volunteer, &person).await? {
         return Ok((person, String::new()));
     }
     Err(person_not_found())
@@ -1002,6 +1000,9 @@ pub async fn patch_person(
         })
     })
     .await?;
+    if !shelter_id.is_empty() {
+        crate::members::touch_shelter_event(&state, &shelter_id).await;
+    }
     let history = history_for(&person, &volunteer, &shelter_id);
     Ok(Json(
         json!({ "person": person_view(&person_id, &person, history) }),
@@ -1279,7 +1280,6 @@ async fn migrate_in(
         }
     }
     repoint_person_refs(db, tx, &m.old_id, &m.new_id).await?;
-    crate::rescues::repoint_person(db, tx, &m.old_id, &m.new_id).await?;
 
     if let Some((capture_id, capture)) = capture {
         tx_replace(
@@ -1400,6 +1400,7 @@ pub async fn put_biometrics(
     if person.level != Level::NoBiometrics && new_id != person_id {
         return Err(ApiError::new(StatusCode::CONFLICT, "person_mismatch"));
     }
+    let migration_shelter = (!shelter_id.is_empty()).then_some(shelter_id);
     let migration = Migration {
         old_id: person_id,
         new_id: new_id.clone(),
@@ -1407,7 +1408,7 @@ pub async fn put_biometrics(
         capture_id,
         volunteer_id: volunteer.id.clone(),
         device: device.ok(),
-        shelter_id: (!shelter_id.is_empty()).then_some(shelter_id),
+        shelter_id: migration_shelter.clone(),
         taken_over_from: taken_over_from(&headers),
     };
     let person = store::transact(&state.db, |db, tx| {
@@ -1421,6 +1422,9 @@ pub async fn put_biometrics(
         })
     })
     .await?;
+    if let Some(shelter_id) = &migration_shelter {
+        crate::members::touch_shelter_event(&state, shelter_id).await;
+    }
     Ok(Json(json!({ "person_id": new_id, "level": person.level })))
 }
 

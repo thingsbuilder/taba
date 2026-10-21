@@ -452,7 +452,9 @@ pub async fn post_search(
             .map(|v| v.trim().to_string()),
     };
     let limit = state.config.searches_per_day;
+    let event_id = owner.event_id.clone();
     let outcome = register(&state, owner, input, Some(limit)).await?;
+    crate::events::touch(&state, event_id.as_deref()).await;
     Ok(answer(outcome))
 }
 

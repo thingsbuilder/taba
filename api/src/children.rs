@@ -152,6 +152,13 @@ pub async fn post_guardian(
             })
         })
         .collect();
+    if let Ok(Some(child)) =
+        store::get::<PersonDoc>(&state.db, people::COLLECTION, &person_id).await
+    {
+        if let Some(shelter_id) = child.current_shelter_id.as_deref() {
+            crate::members::touch_shelter_event(&state, shelter_id).await;
+        }
+    }
     Ok(Json(json!({ "person_id": person_id, "guardians": view })))
 }
 

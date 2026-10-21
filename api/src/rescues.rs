@@ -31,7 +31,11 @@ const MAX_TEXT_CHARS: usize = 100;
 const MAX_NOTE_CHARS: usize = 500;
 /// What Unico says about a photo that cannot name a person; the rescue is then registered
 /// without biometrics and the photo waits for the late biometrics (spec 3.6 item 6, 4.12).
-const NO_TOKEN_FOR_PHOTO: [&str; 5] = [
+/// A photo over 800 KB is not in the list: it is `413 image_too_large` before Unico is asked, because
+/// the app should have reduced it, and nothing is written. A photo that is not base64 is a
+/// malformed request (`422 invalid_image`); one that Unico cannot read is a rescue without biometrics.
+const NO_TOKEN_FOR_PHOTO: [&str; 6] = [
+    "invalid_image",
     "no_face",
     "capture_inconclusive",
     "photo_rejected",
@@ -62,18 +66,6 @@ pub struct RescueDoc {
     pub destination_shelter_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-}
-
-/// Called by `people::migrate_in` inside its transaction (spec 4.12). Nothing is left to do here:
-/// `people::repoint_person_refs` already points every `rescues.person_id` at the new id, and the
-/// merge of the two people carries `rescue_ids` over.
-pub async fn repoint_person(
-    _db: &FirestoreDb,
-    _tx: &mut FirestoreTransaction<'_>,
-    _old: &str,
-    _new: &str,
-) -> Result<(), ApiError> {
-    Ok(())
 }
 
 fn forbidden() -> ApiError {
@@ -282,10 +274,12 @@ async fn register_in(
     let now = store::now();
     let mut person = existing.unwrap_or_else(|| fresh_person(&r.person_id, r.level, now));
     person.level = person.level.raised_to(r.level);
-    if r.name.is_some() {
+    // A person already registered keeps the name and the wristband they have: a rescue only fills
+    // what is empty, so a second landing point cannot overwrite what a shelter wrote.
+    if person.name.is_none() {
         person.name = r.name.clone();
     }
-    if r.wristband.is_some() {
+    if person.wristband.is_none() {
         person.wristband = r.wristband.clone();
     }
     if let Some(sealed) = &r.thumbnail {
@@ -446,7 +440,7 @@ pub async fn patch_rescue(
     let entry = AuditEntry::new("rescue.update", "rescue", &rescue_id)
         .by(&volunteer.id)
         .basis(LegalBasis::VitalInterest);
-    store::transact(&state.db, |db, tx| {
+    let event_id = store::transact(&state.db, |db, tx| {
         let (rescue_id, landing_point, destination, entry) = (
             rescue_id.clone(),
             landing_point.clone(),
@@ -469,10 +463,12 @@ pub async fn patch_rescue(
                 rescue.destination_shelter_id = destination;
             }
             tx_replace(&db, tx, COLLECTION, &rescue_id, &rescue)?;
-            audit::add(&db, tx, &entry)
+            audit::add(&db, tx, &entry)?;
+            Ok(rescue.event_id.clone())
         })
     })
     .await?;
+    events::touch(&state, event_id.as_deref()).await;
     Ok(Json(json!({})))
 }
 
@@ -499,6 +495,11 @@ pub async fn nearby_shelters(
         let Some(id) = near.shelter.id.as_deref() else {
             continue;
         };
+        // The shelter of a closed event takes no one (spec 4.3 item 5).
+        match events::ensure_open(&state.db, near.shelter.event_id.as_deref()).await {
+            Err(err) if err.code == "event_closed" => continue,
+            other => other?,
+        }
         let occupancy = exits::occupancy(&state.db, id).await?;
         list.push(json!({
             "id": id,
@@ -515,12 +516,21 @@ pub async fn nearby_shelters(
 
 // ---- who may see a rescued person (spec 4.6, 4.12) ----
 
-/// Whether `volunteer` registered a rescue of `person`.
+/// A person who has never been in a shelter and is not in one now: the only case in which the
+/// volunteer of the landing point sees them (one criterion for the record and the thumbnail).
+fn unsheltered(person: &PersonDoc) -> bool {
+    person.current_shelter_id.is_none() && person.stays.is_empty()
+}
+
+/// Whether `volunteer` registered a rescue of `person`, who is still in no shelter.
 pub async fn registered_rescue_of(
     db: &FirestoreDb,
     volunteer: &Volunteer,
     person: &PersonDoc,
 ) -> Result<bool, ApiError> {
+    if !unsheltered(person) {
+        return Ok(false);
+    }
     for rescue_id in &person.rescue_ids {
         let rescue: Option<RescueDoc> = store::get(db, COLLECTION, rescue_id).await?;
         if rescue.is_some_and(|r| r.volunteer_id == volunteer.id) {
@@ -537,7 +547,7 @@ pub async fn can_see_thumbnail(
     volunteer: &Volunteer,
     person: &PersonDoc,
 ) -> Result<bool, ApiError> {
-    if !person.stays.is_empty() || person.rescue_ids.is_empty() {
+    if !unsheltered(person) || person.rescue_ids.is_empty() {
         return Ok(false);
     }
     if volunteer.has_global(GlobalRole::CivilDefense) {
@@ -907,6 +917,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unreadable_photo_registers_without_biometrics_and_a_big_one_is_refused_before_unico()
+     {
+        let w = world().await;
+        w.app.unico.with(|s| {
+            s.post_replies
+                .push_back((400, json!({ "message": "INVALID_IMAGE" })))
+        });
+        let id = new_id();
+        let (status, body) = post(
+            &w.app,
+            &w.volunteer,
+            rescue(json!({ "id": id, "photo_base64": photo() })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(
+            (body["person_id"].as_str(), body["level"].as_str()),
+            (Some(id.as_str()), Some("no_biometrics"))
+        );
+
+        let asked = w.app.unico.post_count();
+        let big = STANDARD.encode(vec![0u8; 800 * 1024 + 1]);
+        let (status, body) =
+            post(&w.app, &w.volunteer, rescue(json!({ "photo_base64": big }))).await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::PAYLOAD_TOO_LARGE, Some("image_too_large"))
+        );
+        assert_eq!(w.app.unico.post_count(), asked);
+        assert_eq!(all_docs(&w.app.state.db, COLLECTION).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_rescue_fills_the_empty_name_and_wristband_but_never_overwrites() {
+        let w = world().await;
+        photos_are(&w.app, "tok-twice", 2);
+        let (status, _) = post(
+            &w.app,
+            &w.volunteer,
+            rescue(json!({ "photo_base64": photo(), "data": { "name": "Ana" } })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, _) = post(
+            &w.app,
+            &w.volunteer,
+            rescue(
+                json!({ "photo_base64": photo(), "data": { "name": "Zed", "wristband": "W1" } }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let known = person(&w.app, &token_id(&w.app, "tok-twice")).await;
+        assert_eq!(
+            (known.name.as_deref(), known.wristband.as_deref()),
+            (Some("Ana"), Some("W1"))
+        );
+    }
+
+    #[tokio::test]
+    async fn nearby_leaves_out_the_shelters_of_a_closed_event() {
+        let w = world().await;
+        let path = format!("/v1/shelters/nearby?lat={}&lon={}", ORIGIN.0, ORIGIN.1);
+        let (status, body) = call(&w.app, &w.volunteer, "GET", &path, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["shelters"].as_array().unwrap().len(), 1);
+        let shelter: ShelterDoc = store::get(&w.app.state.db, shelters::COLLECTION, &w.shelter)
+            .await
+            .unwrap()
+            .unwrap();
+        let event_id = shelter.event_id.unwrap();
+        let mut event: EventDoc = store::get(&w.app.state.db, events::COLLECTION, &event_id)
+            .await
+            .unwrap()
+            .unwrap();
+        event.status = EventStatus::Closed;
+        store::replace(&w.app.state.db, events::COLLECTION, &event_id, &event)
+            .await
+            .unwrap();
+        let (status, body) = call(&w.app, &w.volunteer, "GET", &path, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["shelters"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn the_degraded_mode_registers_the_rescue_without_calling_unico() {
         let w = world().await;
         crate::degraded::enter_unavailable(&w.app.state.db)
@@ -935,20 +1030,6 @@ mod tests {
             &w.app,
             &w.volunteer,
             rescue(json!({ "photo_base64": "not base64!" })),
-        )
-        .await;
-        assert_eq!(
-            (status, body["error"].as_str()),
-            (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_image"))
-        );
-        w.app.unico.with(|s| {
-            s.post_replies
-                .push_back((400, json!({ "message": "INVALID_IMAGE" })))
-        });
-        let (status, body) = post(
-            &w.app,
-            &w.volunteer,
-            rescue(json!({ "photo_base64": photo() })),
         )
         .await;
         assert_eq!(

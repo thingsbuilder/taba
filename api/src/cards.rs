@@ -174,6 +174,7 @@ pub async fn post_card(
         })
     })
     .await?;
+    households::touch_event(&state, &household_id).await;
     Ok((StatusCode::CREATED, Json(issued)))
 }
 
@@ -255,6 +256,9 @@ pub async fn cancel_card(
         })
     })
     .await?;
+    if let Ok(card) = load_card(&state.db, &code).await {
+        households::touch_event(&state, &card.household_id).await;
+    }
     Ok(Json(canceled))
 }
 

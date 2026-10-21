@@ -131,7 +131,7 @@ fn router(state: AppState) -> Router {
         .route("/v1/households/{id}/cards", post(cards::post_card))
         .route("/v1/cards/{code}", get(cards::get_card))
         .route("/v1/cards/{code}/cancel", post(cards::cancel_card))
-        // Phase 4 (501 until each owner writes the handler)
+        // Phase 4
         .route("/v1/rescues", post(rescues::post_rescue))
         .route("/v1/rescues/{id}", patch(rescues::patch_rescue))
         .route("/v1/shelters/nearby", get(rescues::nearby_shelters))
