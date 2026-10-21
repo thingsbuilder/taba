@@ -28,7 +28,7 @@ export interface TabaDB extends DBSchema {
   people: { key: string; value: { id: string } }
   households: { key: string; value: { id: string } }
   cards: { key: string; value: { code: string } }
-  captures: { key: string; value: { capture_id: string } }
+  captures: { key: string; value: { capture_id: string; created_at: number } }
   addresses: { key: string; value: { shelter_id: string } }
 }
 
