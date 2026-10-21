@@ -705,6 +705,7 @@ pub async fn post_checkin(
     let request: CheckinRequest = body(request)?;
     require_member(&volunteer, &shelter_id)?;
     let shelter = load_shelter(&state.db, &shelter_id).await?;
+    crate::events::ensure_open(&state.db, shelter.event_id.as_deref()).await?;
     let data = PersonData::parse(request.data)?;
     let entered_at: FirestoreInstant = request
         .client_created_at
@@ -941,6 +942,7 @@ pub async fn patch_person(
         .parse()
         .map_err(|_| invalid("client_edited_at"))?;
     let (current, shelter_id) = visible_person(&state, &volunteer, &person_id, true).await?;
+    crate::events::ensure_shelter_open(&state.db, &shelter_id).await?;
     // Someone who sees the child only through the alert changes the status and nothing else.
     if viewer_shelter(&current, &volunteer).is_none() && !data.only_child_status() {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden"));
@@ -1348,6 +1350,7 @@ pub async fn put_biometrics(
 ) -> Result<Json<Value>, ApiError> {
     let request: BiometricsRequest = body(request)?;
     let (person, shelter_id) = visible_person(&state, &volunteer, &person_id, false).await?;
+    crate::events::ensure_shelter_open(&state.db, &shelter_id).await?;
     let device = auth::device_id(&headers);
     let (new_id, level, capture_id) = match (&request.capture_id, &request.photo_base64) {
         (Some(capture_id), None) => {

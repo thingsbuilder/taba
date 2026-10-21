@@ -98,6 +98,9 @@ pub async fn post_guardian(
             if !in_shelter && !can_change_status(&volunteer) {
                 return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden"));
             }
+            if let Some(shelter_id) = child.current_shelter_id.as_deref() {
+                crate::events::ensure_shelter_open(&db, shelter_id).await?;
+            }
             if !child.is_child {
                 return Err(ApiError::new(
                     StatusCode::UNPROCESSABLE_ENTITY,

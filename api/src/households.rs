@@ -246,6 +246,7 @@ pub async fn post_household(
                 }
                 return Ok(view(&existing, &load_members(&db, &existing).await?));
             }
+            crate::events::ensure_shelter_open(&db, &shelter_id).await?;
             let mut members = Vec::new();
             for person_id in &new.member_ids {
                 let person = load_person(&db, person_id).await?;
@@ -342,6 +343,7 @@ pub async fn patch_household(
             let mut household = load_household(&db, &id).await?;
             let members = load_members(&db, &household).await?;
             let shelter = shelter_of_access(&volunteer, &members).ok_or_else(forbidden)?;
+            crate::events::ensure_shelter_open(&db, &shelter).await?;
 
             // People whose `household_id` changes, and the added ones as read.
             let mut changed: Vec<PersonDoc> = Vec::new();

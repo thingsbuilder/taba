@@ -143,6 +143,7 @@ pub async fn post_card(
                     Err(ApiError::code_taken())
                 };
             }
+            crate::events::ensure_shelter_open(&db, &shelter).await?;
             if household.card_code.is_some() {
                 return Err(ApiError::household_has_card());
             }
@@ -226,6 +227,7 @@ pub async fn cancel_card(
             if card.status == CardStatus::Canceled {
                 return Ok(view(&card, &members));
             }
+            crate::events::ensure_shelter_open(&db, &shelter).await?;
             let at = now();
             card.status = CardStatus::Canceled;
             card.canceled_at = Some(at);
