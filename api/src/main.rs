@@ -12,6 +12,8 @@ mod exits;
 mod geo;
 mod households;
 mod idempotency;
+#[cfg(test)]
+mod integration_tests;
 mod invites;
 mod members;
 mod people;
@@ -139,8 +141,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let db = FirestoreDb::new(&config.gcp_project)
         .await
         .context("failed to connect to Firestore")?;
-    let unico = Unico::new(&config.unico_url, config.human_token_access_key.clone())
-        .with_status(db.clone());
+    let unico = Unico::new(&config.unico_url, config.human_token_access_key.clone());
     if config.human_token_access_key.is_none() {
         tracing::warn!("HUMAN_TOKEN_ACCESS_KEY is not set: every Unico call will fail");
     }

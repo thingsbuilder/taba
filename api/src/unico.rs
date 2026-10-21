@@ -212,7 +212,6 @@ impl Unico {
 
     /// `api+humantoken` flow (spec 5.3): a photo in, a token out. The image is refused locally
     /// when it is over 800 KB, so no call is made.
-    #[allow(dead_code)] // used from phase 3 (check-in, rescue, search)
     pub async fn token_from_image(&self, image: &[u8]) -> Result<String, UnicoError> {
         if image.len() > MAX_IMAGE_BYTES {
             return Err(UnicoError::ImageTooLarge);
@@ -369,7 +368,6 @@ impl Unico {
 }
 
 /// API-only flow: error `20532` is "no face"; the image errors are "invalid image" (spec 5.3).
-#[allow(dead_code)] // used with `token_from_image`
 fn rejected_image(reply: &Value) -> UnicoError {
     let message = reply
         .get("message")

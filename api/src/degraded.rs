@@ -5,16 +5,12 @@
 //! on the next request. `unico.rs` reads it before every call and calls `enter_limit` and
 //! `enter_unavailable` from the outcome of the calls.
 
-use axum::extract::{Request, State};
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
 use firestore::jiff::SignedDuration;
 use firestore::{FirestoreDb, FirestoreInstant};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::alerts::{self, AlertDoc, AlertKind};
-use crate::auth::AppState;
 use crate::error::ApiError;
 use crate::status::{Reason, Unico};
 use crate::store::{self, tx_replace};
@@ -77,30 +73,6 @@ pub async fn blocking_reason(db: &FirestoreDb) -> Result<Option<Reason>, ApiErro
     Ok(read(db)
         .await?
         .and_then(|doc| doc.active_reason(store::now())))
-}
-
-/// `Err(503 unico_degraded)` while the degraded mode is on. Handlers that reach Unico through
-/// `unico.rs` get this from the client; call it before doing any write that would be wasted.
-#[allow(dead_code)] // used by the handlers of the routes that depend on Unico
-pub async fn ensure_available(db: &FirestoreDb) -> Result<(), ApiError> {
-    match blocking_reason(db).await? {
-        None => Ok(()),
-        Some(_) => Err(ApiError::unico_degraded()),
-    }
-}
-
-/// To be applied (`route_layer`) to the routes that always need Unico: answers
-/// `503 unico_degraded` while the mode is on.
-#[allow(dead_code)] // applied by the owners of the routes that depend on Unico
-pub async fn require_unico(
-    State(state): State<AppState>,
-    request: Request,
-    next: Next,
-) -> Response {
-    match ensure_available(&state.db).await {
-        Ok(()) => next.run(request).await,
-        Err(err) => err.into_response(),
-    }
 }
 
 /// The monthly limit was reached: `degraded`/`limit` until `taba unico resume`, and one
@@ -170,15 +142,11 @@ pub async fn resume(db: &FirestoreDb) -> Result<bool, ApiError> {
 mod tests {
     use std::time::Duration;
 
-    use axum::Router;
-    use axum::body::Body;
-    use axum::http::{HeaderMap, Request as HttpRequest, StatusCode};
-    use axum::middleware;
-    use axum::routing::get;
+    use axum::http::{HeaderMap, StatusCode};
     use serde_json::{Value, json};
-    use tower::ServiceExt;
 
     use super::*;
+    use crate::auth::AppState;
     use crate::test_support::{
         FakeUnico, TEST_ACCESS_KEY, TestApp, all_docs, fast_unico, test_config, test_db,
     };
@@ -547,47 +515,6 @@ mod tests {
         let err = app.state.unico.token_from_image(&big).await.unwrap_err();
         assert_eq!(err, crate::unico::UnicoError::ImageTooLarge);
         assert_eq!(app.unico.post_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn the_gate_answers_503_only_while_the_mode_is_on() {
-        let app = app().await;
-        let router = Router::new()
-            .route("/probe", get(|| async { "reached" }))
-            .route_layer(middleware::from_fn_with_state(
-                app.state.clone(),
-                require_unico,
-            ));
-        let probe = || async {
-            let response = router
-                .clone()
-                .oneshot(HttpRequest::get("/probe").body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            (response.status(), body_json_or_text(response).await)
-        };
-        assert_eq!(probe().await, (StatusCode::OK, json!("reached")));
-        enter_limit(db(&app)).await.unwrap();
-        let (status, body) = probe().await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(body["error"], "unico_degraded");
-        resume(db(&app)).await.unwrap();
-        assert_eq!(probe().await.0, StatusCode::OK);
-        // The same check, for handlers.
-        enter_unavailable(db(&app)).await.unwrap();
-        assert_eq!(
-            ensure_available(db(&app)).await.unwrap_err().code,
-            "unico_degraded"
-        );
-    }
-
-    async fn body_json_or_text(response: Response) -> Value {
-        let bytes = http_body_util::BodyExt::collect(response.into_body())
-            .await
-            .unwrap()
-            .to_bytes();
-        serde_json::from_slice(&bytes)
-            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
     }
 
     #[tokio::test]

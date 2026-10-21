@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use crate::alerts::{self, AlertDoc, AlertKind};
 use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{self, AppState, CaptureDoc, Purpose, Volunteer};
+use crate::children;
 use crate::error::ApiError;
 use crate::households::{self, HouseholdDoc};
 use crate::members::ShelterRole;
@@ -593,6 +594,7 @@ struct Checkin {
     thumbnail: Option<Vec<u8>>,
     capture_id: Option<String>,
     shelter_id: String,
+    shelter: ShelterDoc,
     event_id: Option<String>,
     legal_basis: LegalBasis,
     entered_at: FirestoreInstant,
@@ -645,8 +647,16 @@ async fn checkin_in(
         now,
     );
     person.updated_at = now;
-    // child_separated hook (C): raise the alert here when `child_status` is separated or unaccompanied.
     tx_replace(db, tx, COLLECTION, &c.person_id, &person)?;
+    // A child who arrives separated or alone raises the alert for the protection queue (spec 3.4.1).
+    if let (true, true, Some(status)) = (
+        person.is_child,
+        c.data.child_status.is_some(),
+        person.child_status,
+    ) {
+        children::raise_child_separated(db, tx, &c.person_id, &c.shelter_id, &c.shelter, status)
+            .await?;
+    }
     let mut entry = AuditEntry::new("person.checkin", "person", &c.person_id)
         .by(&c.volunteer_id)
         .in_shelter(&c.shelter_id)
@@ -657,6 +667,11 @@ async fn checkin_in(
     }
     audit::add(db, tx, &entry)?;
     Ok((person, is_new))
+}
+
+/// A capture made for another shelter or another person.
+fn wrong_capture_target() -> ApiError {
+    ApiError::new(StatusCode::FORBIDDEN, "capture_wrong_target")
 }
 
 pub async fn post_checkin(
@@ -692,6 +707,10 @@ pub async fn post_checkin(
             let device = device.clone()?;
             let mut capture =
                 auth::usable_capture(&state, &device, capture_id, Purpose::Checkin).await?;
+            // The capture was asked for one shelter and cannot check anyone in elsewhere.
+            if capture.shelter_id.as_deref() != Some(shelter_id.as_str()) {
+                return Err(wrong_capture_target());
+            }
             let person_id = auth::resolve_person(&state, capture_id, &mut capture).await?;
             (person_id, Level::Verified, Some(capture_id.clone()))
         }
@@ -714,6 +733,7 @@ pub async fn post_checkin(
         capture_id,
         shelter_id: shelter_id.clone(),
         event_id: shelter.event_id.clone(),
+        shelter: shelter.clone(),
         legal_basis: request.legal_basis,
         entered_at,
         volunteer_id: volunteer.id.clone(),
@@ -867,11 +887,27 @@ pub async fn patch_person(
             if person.client_edited_at.is_some_and(|last| last > edited_at) {
                 return Ok(person);
             }
+            let before = person.child_status;
             data.apply(&mut person);
             person.client_edited_at = Some(edited_at);
             person.updated_at = store::now();
-            // child_separated hook (C): raise the alert when `child_status` changed to separated or unaccompanied.
             tx_replace(&db, tx, COLLECTION, &person_id, &person)?;
+            // A change to separated or unaccompanied raises the alert too (spec 3.4.1.4).
+            if let (true, true, Some(status), Some(shelter_id)) = (
+                person.is_child,
+                person.child_status != before,
+                person.child_status,
+                person.current_shelter_id.as_deref(),
+            ) {
+                if let Some(shelter) =
+                    store::get::<ShelterDoc>(&db, shelters::COLLECTION, shelter_id).await?
+                {
+                    children::raise_child_separated(
+                        &db, tx, &person_id, shelter_id, &shelter, status,
+                    )
+                    .await?;
+                }
+            }
             audit::add(&db, tx, &entry)?;
             Ok(person)
         })
@@ -1226,6 +1262,10 @@ pub async fn put_biometrics(
             let device = device.clone()?;
             let mut capture =
                 auth::usable_capture(&state, &device, capture_id, Purpose::Biometrics).await?;
+            // ... and a biometrics capture was asked for one person.
+            if capture.expected_person_id.as_deref() != Some(person_id.as_str()) {
+                return Err(wrong_capture_target());
+            }
             let new_id = auth::resolve_person(&state, capture_id, &mut capture).await?;
             (new_id, Level::Verified, Some(capture_id.clone()))
         }
@@ -1488,6 +1528,7 @@ mod tests {
             member_ids: vec!["x".into(), "old".into(), "new".into()],
             head_id: Some("old".into()),
             pets: vec![],
+            card_code: None,
             created_by: "v".into(),
             created_shelter_id: "s".into(),
             client_created_at: now,
@@ -1587,10 +1628,30 @@ mod tests {
             .with(|s| (0..n).for_each(|_| s.post_replies.push_back(finished(token))));
     }
 
-    /// A finished `checkin`/`biometrics` capture of the actor's device for `token`.
-    async fn capture(app: &TestApp, who: &Actor, purpose: &str, token: &str) -> String {
-        let (status, body) = app
-            .post("/v1/captures", &who.device, json!({ "purpose": purpose }))
+    /// A finished `checkin`/`biometrics` capture of the actor's device for `token`; `target` is
+    /// the shelter (check-in) or the person (biometrics) it is asked for.
+    async fn capture(
+        app: &TestApp,
+        who: &Actor,
+        purpose: &str,
+        token: &str,
+        target: &str,
+    ) -> String {
+        let body = match purpose {
+            "checkin" => json!({ "purpose": purpose, "shelter_id": target }),
+            _ => json!({ "purpose": purpose, "expected_person_id": target }),
+        };
+        let auth = format!("Bearer {}", who.secret);
+        let (status, _, body) = app
+            .request(
+                "POST",
+                "/v1/captures",
+                &[
+                    ("x-device-id", who.device.as_str()),
+                    ("authorization", auth.as_str()),
+                ],
+                Some(body),
+            )
             .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         let id = body["capture_id"].as_str().unwrap().to_string();
@@ -1616,7 +1677,7 @@ mod tests {
     #[tokio::test]
     async fn checkin_with_a_selfie_creates_a_verified_person() {
         let w = world().await;
-        let capture_id = capture(&w.app, &w.volunteer, "checkin", "tok-ana").await;
+        let capture_id = capture(&w.app, &w.volunteer, "checkin", "tok-ana", &w.shelter).await;
         let (status, body) = call(
             &w.app,
             &w.volunteer,
@@ -1823,7 +1884,7 @@ mod tests {
             )),
         )
         .await;
-        let capture_id = capture(&w.app, &w.volunteer, "checkin", "tok-1").await;
+        let capture_id = capture(&w.app, &w.volunteer, "checkin", "tok-1", &w.shelter).await;
         let (status, second) = call(
             &w.app,
             &w.volunteer,
@@ -1967,7 +2028,7 @@ mod tests {
     #[tokio::test]
     async fn one_capture_used_by_concurrent_checkins_is_consumed_once() {
         let w = world().await;
-        let capture_id = capture(&w.app, &w.volunteer, "checkin", "tok-1").await;
+        let capture_id = capture(&w.app, &w.volunteer, "checkin", "tok-1", &w.shelter).await;
         let mut tasks = Vec::new();
         for _ in 0..5 {
             let (app, who, shelter, capture_id) = (
@@ -2388,6 +2449,7 @@ mod tests {
             member_ids: members.iter().map(|m| m.to_string()).collect(),
             head_id: head.map(str::to_string),
             pets: vec![],
+            card_code: None,
             created_by: "v".into(),
             created_shelter_id: "s".into(),
             client_created_at: now,
@@ -2470,7 +2532,7 @@ mod tests {
             .unwrap();
         }
 
-        let capture_id = capture(&w.app, &w.volunteer, "biometrics", "tok-ana").await;
+        let capture_id = capture(&w.app, &w.volunteer, "biometrics", "tok-ana", &old).await;
         let (status, body) = call(
             &w.app,
             &w.volunteer,
@@ -2582,7 +2644,7 @@ mod tests {
         .await;
         let existing = elsewhere["person_id"].as_str().unwrap().to_string();
         let old = register_without_biometrics(&w, "Ana").await;
-        let capture_id = capture(&w.app, &w.volunteer, "biometrics", "tok-ana").await;
+        let capture_id = capture(&w.app, &w.volunteer, "biometrics", "tok-ana", &old).await;
         let (status, body) = call(
             &w.app,
             &w.volunteer,
@@ -2632,7 +2694,7 @@ mod tests {
         let old = register_without_biometrics(&w, "Ana").await;
         put_household(&w.app, "h-token", &household(&[&existing], Some(&existing))).await;
         put_household(&w.app, "h-old", &household(&[&old], Some(&old))).await;
-        let capture_id = capture(&w.app, &w.volunteer, "biometrics", "tok-ana").await;
+        let capture_id = capture(&w.app, &w.volunteer, "biometrics", "tok-ana", &old).await;
         let (status, body) = call(
             &w.app,
             &w.volunteer,
@@ -2705,7 +2767,14 @@ mod tests {
             (StatusCode::CONFLICT, Some("person_mismatch"))
         );
         // and a selfie of the same token only raises it
-        let capture_id = capture(&w.app, &w.volunteer, "biometrics", "tok-1").await;
+        let capture_id = capture(
+            &w.app,
+            &w.volunteer,
+            "biometrics",
+            "tok-1",
+            first["person_id"].as_str().unwrap(),
+        )
+        .await;
         let (status, body) = call(
             &w.app,
             &w.volunteer,

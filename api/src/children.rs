@@ -28,7 +28,6 @@ pub fn can_change_status(volunteer: &Volunteer) -> bool {
 /// `separated` or `unaccompanied`; a no-op for `with_guardian`. The alert reaches the
 /// protection queue, the Civil Defense and the admins of the shelter, and carries the
 /// reference phones of the event (no push, spec 3.4.1.3).
-#[allow(dead_code)] // called by `people.rs` (owner A) when a child checks in or changes status
 pub async fn raise_child_separated(
     db: &FirestoreDb,
     tx: &mut FirestoreTransaction<'_>,

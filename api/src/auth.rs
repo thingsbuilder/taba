@@ -87,10 +87,12 @@ impl AppState {
         if thumbnail_key.len() != 32 {
             bail!("THUMBNAIL_KEY must be 32 bytes in base64");
         }
+        let status_db = db.clone();
         Ok(Self {
             db,
             config: Arc::new(config),
-            unico: Arc::new(unico),
+            // Every call obeys and feeds the degraded mode (spec 5.5, 5.7).
+            unico: Arc::new(unico.with_status(status_db)),
             hmac_key: hmac_key.into(),
             thumbnail_key: thumbnail_key.into(),
             domain: domain.into(),
@@ -101,7 +103,6 @@ impl AppState {
     }
 
     /// The AES-256-GCM key of the thumbnails (spec 4.6); used by `thumbnail.rs`.
-    #[allow(dead_code)]
     pub fn thumbnail_key(&self) -> &[u8] {
         &self.thumbnail_key
     }
@@ -151,7 +152,6 @@ pub fn device_id(headers: &HeaderMap) -> Result<String, ApiError> {
 
 // ---- documents ----
 
-#[allow(dead_code)] // only `login` and `invite` are created before phase 3
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Purpose {
@@ -905,7 +905,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capture_needs_a_device_and_the_login_purpose() {
+    async fn capture_needs_a_device_and_the_session_purposes_a_session() {
         let app = TestApp::new().await;
         let (status, _, body) = app
             .request(
@@ -924,10 +924,7 @@ mod tests {
             .await;
         assert_eq!(
             (status, body["error"].as_str()),
-            (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Some("unsupported_purpose")
-            )
+            (StatusCode::UNAUTHORIZED, Some("unauthorized"))
         );
         assert_eq!(app.unico.post_count(), 0);
         assert!(all_docs(&app.state.db, CAPTURES).await.is_empty());
