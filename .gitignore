@@ -1,1 +1,4 @@
 docs/pt_br/ideias/
+testes/
+.env
+infra/ansible/inventory/prod/
