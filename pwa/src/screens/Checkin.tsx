@@ -99,7 +99,7 @@ export function Checkin({ ctx, shelterId }: { ctx: AppContext; shelterId: string
   if (!active) return null
   const secret = active.secret
 
-  const errorText = error === 'selfie_timeout' ? t('checkin.selfie_timeout') : error === 'photo_too_big' ? t('checkin.photo_too_big') : error ? t(checkinErrorKey(error)) : null
+  const errorText = error ? t(checkinErrorKey(error)) : null
 
   async function enqueueAll(photo?: Frame) {
     setBusy(true)

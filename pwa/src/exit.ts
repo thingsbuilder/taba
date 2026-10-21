@@ -1,6 +1,6 @@
 import type { ExitDestination, ExitRequest, Guardian } from './api-phase3'
 import type { ChildStatus } from './api-phase3'
-import { errorKey } from './app-context'
+import { checkinErrorKey } from './checkin'
 import type { NewQueueItem } from './queue'
 
 // Exit (spec 3.8, 4.2): an adult leaves with a destination; a child leaves with the guardian's selfie, or
@@ -57,4 +57,7 @@ export const queuedExit = (shelterId: string, volunteerId: string | null, body: 
 const OWN_ERRORS = new Set(['protection_role_required', 'revalidation_failed', 'guardian_not_verified'])
 
 /** i18n key for a server error of the exit and child screens. */
-export const exitErrorKey = (code: string): string => (OWN_ERRORS.has(code) ? `child.error.${code}` : errorKey(code))
+export const exitErrorKey = (code: string): string => {
+  if (code === 'destination_required') return 'exit.destination_required'
+  return OWN_ERRORS.has(code) ? `child.error.${code}` : checkinErrorKey(code)
+}

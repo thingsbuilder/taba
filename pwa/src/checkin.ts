@@ -164,5 +164,8 @@ export async function enqueueCheckin(queue: Pick<Queue, 'enqueue'>, i: QueuedInp
 
 const OWN_ERRORS = new Set(['no_face', 'invalid_image', 'image_too_large'])
 
-/** i18n key for a server error of the check-in screens; the rest are the app's common ones. */
-export const checkinErrorKey = (code: string): string => (OWN_ERRORS.has(code) ? `checkin.error.${code}` : errorKey(code))
+/** Errors the screens raise themselves while taking the selfie or the photo. */
+const LOCAL_ERRORS: Record<string, string> = { selfie_timeout: 'checkin.selfie_timeout', photo_too_big: 'checkin.photo_too_big' }
+
+/** i18n key for an error of the check-in and person screens: the server's codes and the screens' own; the rest are the app's common ones. */
+export const checkinErrorKey = (code: string): string => LOCAL_ERRORS[code] ?? (OWN_ERRORS.has(code) ? `checkin.error.${code}` : errorKey(code))

@@ -69,7 +69,7 @@ export function Exit({ ctx, shelterId }: { ctx: AppContext; shelterId: string })
 
   if (!active) return null
   const secret = active.secret
-  const errorText = error === 'selfie_timeout' ? t('checkin.selfie_timeout') : error ? t(exitErrorKey(error)) : null
+  const errorText = error ? t(exitErrorKey(error)) : null
   const isProt = isProtectionOrDc(active.global_roles)
   const request = (extra: { guardianId?: string; exceptionReason?: string } = {}) =>
     personId ? buildExit({ personId, destination, municipality, ...extra }) : null
@@ -150,7 +150,6 @@ export function Exit({ ctx, shelterId }: { ctx: AppContext; shelterId: string })
         <h1 class="title">{t('exit.title')}{header ? `: ${header}` : ''}</h1>
         {missing && <p class="notice notice-error" role="alert">{t('exit.not_found')}</p>}
         {errorText && <p class="notice notice-error" role="alert">{errorText}</p>}
-        {error === 'destination_required' && <p class="notice notice-error" role="alert">{t('exit.destination_required')}</p>}
 
         <fieldset class="card fieldset">
           <legend class="body-strong">{t('exit.destination')}</legend>

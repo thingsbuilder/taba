@@ -83,7 +83,7 @@ export function Person({ ctx, personId }: { ctx: AppContext; personId: string })
   const secret = active.secret
   const shelterId = person?.current_shelter_id
   const isProt = isProtectionOrDc(active.global_roles)
-  const errorText = error === 'selfie_timeout' ? t('checkin.selfie_timeout') : error ? t(checkinErrorKey(error)) : null
+  const errorText = error ? t(checkinErrorKey(error)) : null
 
   async function saveEdit() {
     if (!editing || !person) return
