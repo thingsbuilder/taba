@@ -84,4 +84,16 @@ describe('submitSearch', () => {
     expect(await send(json(400, { error: 'invalid_request' }))).toEqual({ kind: 'error', key: 'error_check' })
     expect(await send(json(500))).toEqual({ kind: 'error', key: 'error_generic' })
   })
+  it('tries again at once when the server is busy with the link, and gives up after a few', async () => {
+    const waits: number[] = []
+    const sleep = async (ms: number) => void waits.push(ms)
+    const busy = () => json(503, { error: 'contention' })
+    const flaky = vi.fn<typeof fetch>().mockImplementationOnce(async () => busy()).mockImplementationOnce(async () => busy()).mockImplementation(async () => json(202, { message: 'search_registered', usable_photos: 2 }))
+    expect(await submitSearch('abc', buildRequest(filled, ['a']), flaky, sleep)).toEqual({ kind: 'done', usable: 2 })
+    expect(flaky).toHaveBeenCalledTimes(3)
+    expect(waits).toEqual([1000, 1000])
+    const stuck = vi.fn<typeof fetch>().mockImplementation(async () => busy())
+    expect(await submitSearch('abc', buildRequest(filled, ['a']), stuck, sleep)).toEqual({ kind: 'error', key: 'error_contention' })
+    expect(stuck).toHaveBeenCalledTimes(4)
+  })
 })

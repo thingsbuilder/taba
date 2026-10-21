@@ -56,7 +56,7 @@ export function routeOf(path: string): string {
   const parts = path.split('?')[0]!.split('/')
   return parts
     .map((part, i) => {
-      if (/^(invites|cards|captures|endorsements)$/.test(parts[i - 1] ?? '')) return ':code'
+      if (/^(invites|cards|captures|endorsements|search-links)$/.test(parts[i - 1] ?? '')) return ':code'
       return /\d/.test(part) && part.length >= 8 ? part.slice(0, 6) : part
     })
     .join('/')

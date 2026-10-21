@@ -33,7 +33,7 @@ describe('rescue request', () => {
 describe('rescue in the queue (spec 3.6)', () => {
   const setup = async (getStatus = async () => null as never) => {
     const db = await freshDb()
-    const fetchMock = vi.fn<typeof fetch>()
+    const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new TypeError('offline'))
     return { db, fetchMock, queue: createQueue({ db, fetch: fetchMock, deviceId: async () => 'd', getStatus, random: () => 0 }) }
   }
 
@@ -73,6 +73,26 @@ describe('rescue in the queue (spec 3.6)', () => {
     const { db, queue } = await setup()
     await enqueueRescue(queue, { body: rescueBody({ id: 'r1', form: form({ name: 'Rui' }), position, capturedAt: at }), degraded: false, volunteerId: 'ana' })
     expect(await db.count('blobs')).toBe(0)
+  })
+
+  it('a rescue queued while Unico worked, refused with unico_degraded, goes again without the photo and the photo waits as a late biometrics item', async () => {
+    const { db, fetchMock, queue } = await setup()
+    fetchMock.mockImplementation(async (path) =>
+      String(path) === '/v1/rescues' && fetchMock.mock.calls.length === 1 ? json(503, { error: 'unico_degraded' }) : json(201, { rescue_id: 'r1', person_id: 'r1', level: 'no_biometrics' }),
+    )
+    await enqueueRescue(queue, { body: rescueBody({ id: 'r1', form: form(), position, capturedAt: at }), photo: jpeg(1), thumbnail: jpeg(2), degraded: false, volunteerId: 'ana' })
+    await queue.drain()
+    const rescues = fetchMock.mock.calls.filter(([path]) => String(path) === '/v1/rescues').map(([, init]) => JSON.parse(init?.body as string))
+    expect(rescues).toHaveLength(2)
+    expect(rescues[0].photo_base64).toBeTruthy()
+    expect(rescues[1]).not.toHaveProperty('photo_base64')
+    expect(rescues[1]).not.toHaveProperty('no_biometrics')
+    expect(rescues[1].thumbnail_base64).toBeTruthy()
+    // The rescue is done; the photo waits, still encrypted, for Unico (the status is not known to be ok).
+    const items = await queue.list()
+    expect(items.map((i) => [i.method, i.path, i.error])).toEqual([['PUT', '/v1/people/r1/biometrics', 'unico_degraded']])
+    const { decryptPhotoFields } = await import('./crypto')
+    expect(Object.keys(await decryptPhotoFields(db, (await db.get('blobs', items[0]!.id))!))).toEqual(['photo_base64'])
   })
 
   it('in degraded mode the rescue goes without the photo, which waits as a late biometrics item', async () => {

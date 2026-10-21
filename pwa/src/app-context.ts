@@ -96,6 +96,9 @@ const KNOWN_ERRORS = new Set([
   'search_limit',
   'match_already_decided',
   'search_link_invalid',
+  'too_many_requests',
+  'rescue_not_found',
+  'search_id_taken',
 ])
 
 /** i18n key for a stable server error code; unknown codes get the generic message. */

@@ -5,6 +5,7 @@ import { navigate } from '../nav'
 import { t } from '../i18n'
 import { useConflictNames } from '../pending-hook'
 import { pendingViews } from '../pending'
+import { openMatches } from '../match'
 import { canSearch } from '../search'
 import { InviteCodeField } from './InviteCodeField'
 import { signOut } from './signout'
@@ -14,6 +15,7 @@ export function Home({ ctx }: { ctx: AppContext }) {
   const { active } = ctx
   const online = useOnline()
   const [alerts, setAlerts] = useState<number | null>(null)
+  const [matches, setMatches] = useState(0)
   const [items, setItems] = useState<QueueItem[]>([])
   const conflicts = useConflictNames(ctx.db, items)
   useEffect(() => {
@@ -22,7 +24,10 @@ export function Home({ ctx }: { ctx: AppContext }) {
     return ctx.queue.subscribe(load)
   }, [])
   useEffect(() => {
-    if (online && active) void ctx.api.listAlerts(active.secret).then((res) => setAlerts(res.ok ? res.data.alerts.length : null))
+    if (!online || !active) return
+    void ctx.api.listAlerts(active.secret).then((res) => setAlerts(res.ok ? res.data.alerts.length : null))
+    // Open matches wait for someone to check them; a volunteer who attends no queue gets none.
+    void ctx.api.listMatches(active.secret).then((res) => setMatches(res.ok ? openMatches(res.data.matches).length : 0))
   }, [online, active?.volunteer_id])
 
   if (!active) {
@@ -53,7 +58,7 @@ export function Home({ ctx }: { ctx: AppContext }) {
       <InviteCodeField />
       <button type="button" class="button" onClick={() => navigate('/shelters/new')}>{t('home.new_shelter')}</button>
       <button type="button" class="button button-secondary" onClick={() => navigate('/inbox')}>
-        {t('home.inbox')}{alerts ? ` (${alerts})` : ''}
+        {t('home.inbox')}{(alerts ?? 0) + matches > 0 ? ` (${(alerts ?? 0) + matches})` : ''}
       </button>
       <button type="button" class="button button-secondary" onClick={() => navigate('/rescue')}>{t('rescue.title')}</button>
       {canSearch(active) && <button type="button" class="button button-secondary" onClick={() => navigate('/search')}>{t('search.title')}</button>}

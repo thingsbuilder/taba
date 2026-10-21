@@ -74,6 +74,7 @@
   "family.error_degraded": "El reconocimiento facial no está disponible ahora. Intenta más tarde.",
   "family.error_too_big": "Las fotos son demasiado grandes. Elige otras.",
   "family.error_busy": "Demasiados intentos. Intenta de nuevo en unos minutos.",
+  "family.error_contention": "Mucha gente lo está usando ahora. Intenta de nuevo en un momento.",
   "family.error_check": "Revisa los datos y las fotos e intenta de nuevo.",
   "family.error_generic": "Algo salió mal. Intenta de nuevo."
 }

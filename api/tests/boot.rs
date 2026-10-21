@@ -71,14 +71,14 @@ fn serve_starts_without_a_rustls_panic() {
                 ("POST", "/v1/endorsements/in-person"),
                 ("GET", "/v1/alerts"),
                 ("DELETE", "/v1/shelters/s1/members/v1"),
-                // Phase 3 routes, registered since stage 0.
+                // Phase 3 routes.
                 ("POST", "/v1/shelters/s1/checkins"),
                 ("PUT", "/v1/people/p1/biometrics"),
                 ("GET", "/v1/people/p1/thumbnail"),
                 ("POST", "/v1/shelters/s1/exits"),
                 ("GET", "/v1/cards/ABCD2345"),
                 ("POST", "/v1/households/h1/cards"),
-                // Phase 4 routes, registered since stage 0. `/v1/shelters/nearby` shares its
+                // Phase 4 routes. `/v1/shelters/nearby` shares its
                 // prefix with `/v1/shelters/{id}`: building the table panics if they conflict.
                 ("POST", "/v1/rescues"),
                 ("GET", "/v1/shelters/nearby"),
@@ -89,7 +89,7 @@ fn serve_starts_without_a_rustls_panic() {
                 ("DELETE", "/v1/volunteers/v1/roles/mediator"),
                 ("POST", "/v1/search-links"),
                 ("DELETE", "/v1/search-links/c1"),
-                // The two public routes of the family link need no session: stage 0 answers 501.
+                // The two public routes of the family link need no session.
                 ("GET", "/v1/search-links/c1"),
                 ("POST", "/v1/search-links/c1/submit"),
             ] {

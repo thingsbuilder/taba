@@ -1,6 +1,6 @@
 // Request and response types of the phase 4 routes (spec 7, 8.2, 8.4, 8.7, doc da fase 4). Types
 // only, no logic. This file is the contract between the API owners and the screens: the API
-// answers these shapes, and a change to one is agreed in `docs/pt_br/fases/fase-4-contrato.md`.
+// answers these shapes, and a change to one changes both sides.
 
 import type { Level } from './api-phase3'
 
@@ -128,6 +128,8 @@ export interface MatchDetail {
   person: { name?: string; social_name?: string; wristband?: string; has_thumbnail: boolean }
   shelter_name?: string
   created_at: string
+  /** Only for `mediator`, `protection` and the Civil Defense, and only while the match is open (4.11). */
+  history?: { stays: { shelter_id: string; entered_at: string; left_at?: string | null; exit_reason?: string | null }[] }
 }
 
 export interface MatchDecisionRequest {

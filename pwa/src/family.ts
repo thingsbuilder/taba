@@ -93,14 +93,27 @@ export async function checkLink(code: string, fetchFn: Fetch = fetch): Promise<L
   return res.status === 410 || res.status === 404 ? 'invalid' : 'network'
 }
 
+const CONTENTION_RETRIES = 3
+const CONTENTION_WAIT_MS = 1000
+
 export type SubmitResult =
   | { kind: 'done'; usable: number }
   | { kind: 'invalid' }
-  | { kind: 'error'; key: 'error_offline' | 'error_degraded' | 'error_too_big' | 'error_busy' | 'error_check' | 'error_generic' }
+  | { kind: 'error'; key: 'error_offline' | 'error_degraded' | 'error_too_big' | 'error_busy' | 'error_contention' | 'error_check' | 'error_generic' }
 
 /** `POST /v1/search-links/{code}/submit`. The answer of a success is the same with or without a match; only `usable_photos` is read. */
-export async function submitSearch(code: string, request: SearchLinkSubmitRequest, fetchFn: Fetch = fetch): Promise<SubmitResult> {
-  const res = await publicCall<SearchResponse>(fetchFn, 'POST', `/v1/search-links/${encodeURIComponent(code)}/submit`, request)
+export async function submitSearch(
+  code: string,
+  request: SearchLinkSubmitRequest,
+  fetchFn: Fetch = fetch,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<SubmitResult> {
+  let res = await publicCall<SearchResponse>(fetchFn, 'POST', `/v1/search-links/${encodeURIComponent(code)}/submit`, request)
+  // `contention`: the server was busy with this same link; it asks to try again at once, so the page does, a few times.
+  for (let retry = 0; retry < CONTENTION_RETRIES && !res.ok && res.status === 503 && res.error === 'contention'; retry++) {
+    await sleep(CONTENTION_WAIT_MS)
+    res = await publicCall<SearchResponse>(fetchFn, 'POST', `/v1/search-links/${encodeURIComponent(code)}/submit`, request)
+  }
   if (res.ok) return { kind: 'done', usable: res.data.usable_photos }
   switch (res.status) {
     case 0: return { kind: 'error', key: 'error_offline' }
@@ -108,7 +121,7 @@ export async function submitSearch(code: string, request: SearchLinkSubmitReques
     case 413: return { kind: 'error', key: 'error_too_big' }
     case 429: return { kind: 'error', key: 'error_busy' }
     case 400: case 422: return { kind: 'error', key: 'error_check' }
-    case 503: return { kind: 'error', key: res.error === 'unico_degraded' ? 'error_degraded' : 'error_generic' }
+    case 503: return { kind: 'error', key: res.error === 'unico_degraded' ? 'error_degraded' : res.error === 'contention' ? 'error_contention' : 'error_generic' }
     default: return { kind: 'error', key: 'error_generic' }
   }
 }

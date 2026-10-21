@@ -27,6 +27,7 @@ export function MatchCheck({ ctx, matchId }: { ctx: AppContext; matchId: string 
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [closed, setClosed] = useState(false)
+  const [thumb, setThumb] = useState<string | null>(null)
   const [done, setDone] = useState<{ decision: MatchDecision; response: MatchDecisionResponse } | null>(null)
 
   useEffect(() => {
@@ -37,6 +38,16 @@ export function MatchCheck({ ctx, matchId }: { ctx: AppContext; matchId: string 
       else setError(res.error)
     })
   }, [online, matchId])
+  useEffect(() => {
+    if (!active || !match?.person.has_thumbnail || !online) return
+    let url: string | null = null
+    void api.getMatchThumbnail(active.secret, matchId).then(async (res) => {
+      if (res.ok) setThumb((url = URL.createObjectURL(await res.blob())))
+    })
+    return () => {
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [match?.person.has_thumbnail, matchId, online])
   if (!active) return null
 
   async function decide(decision: MatchDecision) {
@@ -109,6 +120,20 @@ export function MatchCheck({ ctx, matchId }: { ctx: AppContext; matchId: string 
               <p class="body"><span class="caption">{t('match.r_name')}</span> {match.person.name ?? t('match.r_no_name')}</p>
               {match.person.social_name && <p class="body"><span class="caption">{t('match.r_social_name')}</span> {match.person.social_name}</p>}
               {match.person.wristband && <p class="body"><span class="caption">{t('match.r_wristband')}</span> <span class="code">{match.person.wristband}</span></p>}
+              {thumb && <img class="camera-view" src={thumb} alt={t('match.thumbnail_alt')} />}
+              {match.history && match.history.stays.length > 0 && (
+                <>
+                  <p class="caption">{t('match.history')}</p>
+                  <ul class="list">
+                    {match.history.stays.map((s) => (
+                      <li class="body" key={s.entered_at}>
+                        {new Date(s.entered_at).toLocaleDateString()}
+                        {s.left_at ? ` – ${new Date(s.left_at).toLocaleDateString()}` : ` · ${t('match.history_open')}`}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
             </section>
 
             {open ? (

@@ -55,6 +55,7 @@ export interface QueuePhotos {
 const isUnicoOut = (code: string | undefined): boolean => code === 'unico_degraded' || code === 'unico_limit'
 
 const CHECKIN_PATH = /^\/v1\/shelters\/[^/]+\/checkins$/
+const RESCUE_PATH = '/v1/rescues'
 
 /** Header that tells the server who signed the item before an admin took it over (spec 9.2, audit `taken_over_from`). */
 export const TAKEN_OVER_HEADER = 'X-Taken-Over-From'
@@ -159,14 +160,16 @@ export function createQueue(deps: QueueDeps) {
   }
 
   /**
-   * A photo check-in queued while Unico worked, sent when it no longer does: it becomes the check-in
-   * without biometrics (path C, `person_id` = its `id`) and a late biometrics `PUT` after it that carries
-   * the photo, still encrypted (spec 5.7, 4.12). False when the item is not such a check-in.
+   * A photo check-in or rescue queued while Unico worked, sent when it no longer does: it becomes the
+   * registration without biometrics (`person_id` = its `id`) and a late biometrics `PUT` after it that
+   * carries the photo, still encrypted (spec 5.7, 4.12). A rescue without a photo already is that; a
+   * check-in says so with `no_biometrics`. False when the item is neither.
    */
   async function degradeCheckin(item: QueueItem): Promise<boolean> {
     const body = item.body as { id?: string; capture_id?: unknown; no_biometrics?: unknown } | null
     const photos = await db.get('blobs', item.id)
-    if (item.method !== 'POST' || !CHECKIN_PATH.test(item.path) || !photos || !body?.id || body.capture_id || body.no_biometrics) return false
+    const isCheckin = CHECKIN_PATH.test(item.path)
+    if (item.method !== 'POST' || !(isCheckin || item.path === RESCUE_PATH) || !photos || !body?.id || body.capture_id || body.no_biometrics) return false
     const fields = await decryptPhotoFields(db, photos).catch(() => null)
     if (!fields?.photo_base64) return false
 
@@ -190,7 +193,7 @@ export function createQueue(deps: QueueDeps) {
     else await db.delete('blobs', item.id)
     await db.put('queue', late)
     const { error: _e, ...registration } = item
-    await db.put('queue', { ...registration, body: { ...(item.body as object), no_biometrics: true }, attempts: 0, next_attempt_at: 0 })
+    await db.put('queue', { ...registration, body: isCheckin ? { ...(item.body as object), no_biometrics: true } : item.body, attempts: 0, next_attempt_at: 0 })
     notify()
     return true
   }

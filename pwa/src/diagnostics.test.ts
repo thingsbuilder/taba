@@ -79,6 +79,7 @@ describe('routeOf', () => {
     expect(routeOf('/v1/shelters/abc/checkins')).toBe('/v1/shelters/abc/checkins')
     expect(routeOf('/v1/invites/SECRET-CODE-123')).toBe('/v1/invites/:code')
     expect(routeOf('/v1/cards/ABCD1234?x=1')).toBe('/v1/cards/:code')
+    expect(routeOf('/v1/search-links/AbC_dEf-123456789/submit')).toBe('/v1/search-links/:code/submit')
   })
 })
 

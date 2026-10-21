@@ -12,6 +12,7 @@ export function backTarget(route: Route): string {
     case 'match':
       return '/inbox'
     case 'diagnostics':
+    case 'roles':
       return '/profile'
     default:
       return '/'
