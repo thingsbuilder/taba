@@ -34,7 +34,7 @@ A direção visual se chama **Acolhida**: macia e calma, porque do outro lado da
 - **Outfit** (`display`) em títulos; é a mesma família de formas do logotipo.
 - **Figtree** (`body`) em todo o resto. Texto base de 16 px; nada abaixo de 13 px.
 - **IBM Plex Mono** (`mono`) só em códigos de cartão e pulseira: `K7Q4-M2XR`.
-- As três vêm do Google Fonts.
+- As três são empacotadas com a PWA (licença OFL); não há requisição ao Google Fonts em produção.
 
 ### Espaço, forma e toque
 - Margem lateral da tela: `space-4` (20 px). Entre blocos: `space-3`.

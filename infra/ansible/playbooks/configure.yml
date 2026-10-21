@@ -8,6 +8,8 @@
   hosts: taba_prod
   become: true
   gather_facts: true
+  # Se o play falhar depois de trocar o binário, o restart do taba ainda roda.
+  force_handlers: true
   vars:
     taba_release_url: "https://github.com/{{ taba_release_repo }}/releases/download/{{ taba_version }}"
   handlers:

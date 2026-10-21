@@ -48,6 +48,7 @@ O binário e a PWA são compilados no GitHub Actions, nunca na VM (a e2-micro te
    O runner é o `ubuntu-24.04` (glibc 2.39) e o workflow falha se o binário pedir glibc maior que a do Debian 13 da VM (2.41).
 3. Instale: `ansible-playbook playbooks/configure.yml -e taba_version=v0.1.0`. O playbook baixa os arquivos da release (conferindo o `SHA256SUMS`), instala o binário em `/usr/local/bin/taba`, descompacta a PWA em `/srv/taba/pwa`, instala `taba.service` e reinicia o serviço só se o binário, a unit ou o `/etc/taba/env` mudaram.
    Sem `-e`, vale o `taba_version` do `inventory/prod/group_vars/all/vars.yml`.
+   **Instalação existente:** `inventory/prod` foi copiado antes destas variáveis existirem. Acrescente `taba_release_repo` (e `taba_version`) ao seu `vars.yml`, copiando de `inventory/example`; sem elas o `configure.yml` falha.
 4. Confira: `https://<seu domínio>/v1/status` deve responder `{"unico":"ok"}`.
 
 Para voltar a uma versão anterior, rode o mesmo comando com a tag antiga.
