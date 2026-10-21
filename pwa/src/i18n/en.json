@@ -1,0 +1,17 @@
+{
+  "app.tagline": "Shelter network for disasters",
+  "home.title": "Welcome to Taba",
+  "home.body": "Check-in, donations and the search for people will live here. The app is installed and opens even without signal.",
+  "language.label": "Language",
+  "install.title": "Install Taba on your home screen",
+  "install.body": "So the app can keep your records and work without signal, install it first: tap Share, then \"Add to Home Screen\". Then open Taba from its icon.",
+  "persist.warning": "Data on this phone may be erased by the browser; sync often.",
+  "network.offline": "No signal",
+  "network.offline_queue": "No signal · {n} queued",
+  "network.queue": "{n} queued",
+  "degraded.banner": "Face recognition is unavailable. Registration continues by name and wristband.",
+  "update.available": "New version available",
+  "update.action": "Tap to update",
+  "notfound.title": "Page not found",
+  "notfound.home": "Back to start"
+}

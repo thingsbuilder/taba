@@ -1,0 +1,81 @@
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 24px;
+}
+
+h1, p { margin: 0; }
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-4);
+  padding-top: calc(var(--space-2) + env(safe-area-inset-top));
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.lang { display: flex; gap: var(--space-1); padding: var(--space-1); border-radius: var(--radius-pill); background: var(--surface-sunken); }
+.lang-option {
+  min-width: var(--touch-min);
+  min-height: 40px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--ink-muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lang-option[aria-pressed="true"] { background: var(--primary-soft); color: var(--on-primary-soft); }
+
+button:focus-visible, a:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.screen { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-5) var(--space-4); max-width: 640px; margin: 0 auto; }
+
+.chip {
+  display: block;
+  width: fit-content;
+  margin: var(--space-3) var(--space-4) 0;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  font-size: 14px;
+  font-weight: 600;
+}
+.chip-warning { background: var(--warning-soft); color: var(--on-warning); }
+
+.banner {
+  display: block;
+  width: calc(100% - 2 * var(--space-4));
+  margin: var(--space-3) var(--space-4) 0;
+  padding: var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--warning-soft);
+  color: var(--on-warning);
+  font: inherit;
+  text-align: left;
+}
+.banner-action { min-height: var(--touch-min); cursor: pointer; }
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-height);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-weight: 600;
+  text-decoration: none;
+}

@@ -1,0 +1,6 @@
+/* Self-hosted fonts (SIL OFL 1.1; licenses in public/licenses). Latin subset covers pt-BR, en and es. */
+@font-face { font-family: "Outfit"; font-weight: 600; font-style: normal; font-display: swap; src: url("@fontsource/outfit/files/outfit-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Outfit"; font-weight: 700; font-style: normal; font-display: swap; src: url("@fontsource/outfit/files/outfit-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Figtree"; font-weight: 400; font-style: normal; font-display: swap; src: url("@fontsource/figtree/files/figtree-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "Figtree"; font-weight: 600; font-style: normal; font-display: swap; src: url("@fontsource/figtree/files/figtree-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 500; font-style: normal; font-display: swap; src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2") format("woff2"); }
