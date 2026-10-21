@@ -20,6 +20,7 @@ pub const COLLECTION: &str = "alerts";
 // `shelter_ids` array-contains query per admin shelter if the open alerts ever pass a few hundred.
 const LIST_LIMIT: u32 = 200;
 
+#[allow(dead_code)] // the phase 3 kinds are raised by the modules of their owners
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AlertKind {
@@ -27,6 +28,11 @@ pub enum AlertKind {
     EventOverlap,
     VolunteerRemoved,
     EndorserFlagged,
+    ChildSeparated,
+    RevalidationFailed,
+    ExceptionalExit,
+    HouseholdConflict,
+    UnicoLimit,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

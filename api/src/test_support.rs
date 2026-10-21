@@ -197,6 +197,11 @@ pub fn test_config(unico_url: &str) -> Config {
         ("GCP_PROJECT", "test-project".to_string()),
         ("DOMAIN", TEST_DOMAIN.to_string()),
         ("HMAC_KEY", hmac_key),
+        ("THUMBNAIL_KEY", STANDARD.encode([9u8; 32])),
+        (
+            "PILOT_RESPONSIBLE",
+            "Pilot Team, pilot@example.org".to_string(),
+        ),
         ("UNICO_URL", unico_url.to_string()),
         ("HUMAN_TOKEN_ACCESS_KEY", TEST_ACCESS_KEY.to_string()),
     ]);

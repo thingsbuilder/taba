@@ -42,6 +42,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub unico: Arc<Unico>,
     hmac_key: Arc<[u8]>,
+    thumbnail_key: Arc<[u8]>,
     domain: Arc<str>,
     /// Serializes shelter creation (spec 6.2.4).
     pub shelter_lock: Arc<tokio::sync::Mutex<()>>,
@@ -73,16 +74,36 @@ impl AppState {
         if hmac_key.len() != 32 {
             bail!("HMAC_KEY must be 32 bytes in base64");
         }
+        let thumbnail_key = STANDARD
+            .decode(
+                config
+                    .thumbnail_key
+                    .as_ref()
+                    .context("THUMBNAIL_KEY is required to serve")?
+                    .0
+                    .trim(),
+            )
+            .context("THUMBNAIL_KEY is not valid base64")?;
+        if thumbnail_key.len() != 32 {
+            bail!("THUMBNAIL_KEY must be 32 bytes in base64");
+        }
         Ok(Self {
             db,
             config: Arc::new(config),
             unico: Arc::new(unico),
             hmac_key: hmac_key.into(),
+            thumbnail_key: thumbnail_key.into(),
             domain: domain.into(),
             shelter_lock: Arc::default(),
             event_activity: Arc::default(),
             idempotency_locks: Arc::default(),
         })
+    }
+
+    /// The AES-256-GCM key of the thumbnails (spec 4.6); used by `thumbnail.rs`.
+    #[allow(dead_code)]
+    pub fn thumbnail_key(&self) -> &[u8] {
+        &self.thumbnail_key
     }
 
     pub fn domain(&self) -> &str {
@@ -764,6 +785,20 @@ mod tests {
         assert!(
             try_state(build(
                 &|c| c.hmac_key = Some(crate::config::Secret(short.clone()))
+            ))
+            .is_err()
+        );
+        // The thumbnail key is required too, with the same shape (spec 6.2.2).
+        assert!(try_state(build(&|c| c.thumbnail_key = None)).is_err());
+        assert!(
+            try_state(build(
+                &|c| c.thumbnail_key = Some(crate::config::Secret("not base64!".into()))
+            ))
+            .is_err()
+        );
+        assert!(
+            try_state(build(
+                &|c| c.thumbnail_key = Some(crate::config::Secret(short.clone()))
             ))
             .is_err()
         );

@@ -29,6 +29,48 @@ impl ApiError {
     pub fn internal() -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
     }
+
+    /// A route of a later stage that is registered but not built yet.
+    pub fn not_implemented() -> Self {
+        Self::new(StatusCode::NOT_IMPLEMENTED, "not_implemented")
+    }
+
+    // Phase 3 codes (doc da fase 3, "O que a fase cria"); `no_face`, `invalid_image` and
+    // `image_too_large` already come from `UnicoError`.
+    #[allow(dead_code)]
+    pub fn unico_degraded() -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, "unico_degraded")
+    }
+
+    #[allow(dead_code)]
+    pub fn protection_role_required() -> Self {
+        Self::new(StatusCode::FORBIDDEN, "protection_role_required")
+    }
+
+    #[allow(dead_code)]
+    pub fn revalidation_failed() -> Self {
+        Self::new(StatusCode::CONFLICT, "revalidation_failed")
+    }
+
+    #[allow(dead_code)]
+    pub fn guardian_not_verified() -> Self {
+        Self::new(StatusCode::UNPROCESSABLE_ENTITY, "guardian_not_verified")
+    }
+
+    #[allow(dead_code)]
+    pub fn person_in_other_household() -> Self {
+        Self::new(StatusCode::CONFLICT, "person_in_other_household")
+    }
+
+    #[allow(dead_code)]
+    pub fn household_has_card() -> Self {
+        Self::new(StatusCode::CONFLICT, "household_has_card")
+    }
+
+    #[allow(dead_code)]
+    pub fn code_taken() -> Self {
+        Self::new(StatusCode::CONFLICT, "code_taken")
+    }
 }
 
 /// Lets a handler's error cross a Firestore transaction (see `store::fs_error`).
