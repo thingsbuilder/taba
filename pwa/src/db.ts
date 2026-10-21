@@ -57,6 +57,11 @@ export interface PersonRecord {
   is_child?: boolean
   child_status?: 'with_guardian' | 'separated' | 'unaccompanied'
   household_id?: string
+  /** What the person screen needs to open and edit offline (spec 9.1). */
+  birth_year?: number
+  needs?: { continuous_medication: boolean; dietary_restriction: boolean; reduced_mobility: boolean; health_follow_up: boolean }
+  vulnerabilities?: { pregnant: boolean; lactating: boolean; disability: ('mobility' | 'visual' | 'hearing' | 'intellectual' | 'psychosocial' | 'other')[]; indigenous_people?: string; migrant_language?: string }
+  biometrics_declined?: boolean
   /** Made on this phone and not confirmed by the server yet. */
   pending?: boolean
   updated_at?: string

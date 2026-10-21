@@ -10,6 +10,7 @@ import { t } from '../i18n'
 import { photoForToken } from '../image'
 import { navigate, useLocation } from '../nav'
 import { displayName } from '../people'
+import { applyEdit, recordFromView, viewFromRecord } from '../person-cache'
 import { BackLink } from './BackLink'
 import { CameraCapture } from './CameraCapture'
 import { PersonFields } from './PersonFields'
@@ -33,14 +34,24 @@ export function Person({ ctx, personId }: { ctx: AppContext; personId: string })
   const [busy, setBusy] = useState(false)
   const resumed = useRef(false)
 
+  // Without signal, or while the server does not answer, the phone's own copy opens (spec 9.1).
+  const loadCached = async () => {
+    const record = await db.get('people', personId)
+    if (record) setPerson((shown) => shown ?? viewFromRecord(record))
+  }
   const load = async () => {
     if (!active) return
     const res = await api.getPerson(active.secret, personId)
-    if (res.ok) setPerson(res.data.person)
+    if (res.ok) {
+      setPerson(res.data.person)
+      // Not over a copy that still waits in the queue: the server has not heard of that edit yet.
+      if (!(await db.get('people', personId))?.pending) await db.put('people', recordFromView(res.data.person))
+    } else if (res.status === 0) await loadCached()
     else setError(res.error)
   }
   useEffect(() => {
     if (!active) return navigate('/login', true)
+    void loadCached()
     if (online) void load()
   }, [online, personId])
 
@@ -98,6 +109,10 @@ export function Person({ ctx, personId }: { ctx: AppContext; personId: string })
       volunteer_id: active!.volunteer_id,
       shelter_id: shelterId,
     })
+    const record = (await db.get('people', personId)) ?? recordFromView(person)
+    const edited = applyEdit(record, data, new Date())
+    await db.put('people', edited)
+    setPerson({ ...person, ...viewFromRecord(edited), guardians: person.guardians, history: person.history, has_thumbnail: person.has_thumbnail, level: person.level })
     setEditing(null)
     setError(null)
     setNotice(t(online ? 'person.saved' : 'person.saved_queued'))
