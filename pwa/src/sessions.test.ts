@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionResponse } from './api'
 import type { Db } from './db'
 import { switchFailure } from './switch-message'
-import { MAX_FAILED_PINS, needsPin, addLoginSession, applyMe, getActive, getSession, hasPin, listValid, removeSession, setActive, setPin, switchOperator, touchSession, updateProfile } from './sessions'
+import { MAX_FAILED_PINS, PIN_REQUIRED, mustCreatePin, needsPin, addLoginSession, applyMe, getActive, getSession, hasPin, listValid, removeSession, setActive, setPin, switchOperator, touchSession, updateProfile } from './sessions'
 import { freshDb } from './testing'
 
 const DAY = 24 * 3600_000
@@ -154,13 +154,32 @@ describe('switching operator by PIN (spec 15, criterion 57)', () => {
   })
 })
 
+describe('the PIN is not required for now (owner decision, to be reviewed in phase 6)', () => {
+  it('is switched off, so a new login goes straight to its destination', async () => {
+    expect(PIN_REQUIRED).toBe(false)
+    const session = await addLoginSession(db, response('ana'), NOW)
+    expect(hasPin(session)).toBe(false)
+    expect(mustCreatePin(session)).toBe(false) // Return.tsx then navigates, with no PIN screen
+    expect(needsPin(session)).toBe(false) // and the app does not interpose the PIN screen either
+    expect(mustCreatePin(session, true)).toBe(true) // what turning it back on would do
+  })
+
+  it('still refuses to switch to someone without a PIN, and keeps the check for those who have one', async () => {
+    await addLoginSession(db, response('ana'), NOW)
+    expect(await switchOperator(db, 'ana', '123456', NOW)).toEqual({ ok: false, reason: 'no_pin' })
+    await setPin(db, 'ana', '123456')
+    expect(await switchOperator(db, 'ana', '000000', NOW)).toMatchObject({ ok: false, reason: 'wrong_pin' })
+    expect(await switchOperator(db, 'ana', '123456', NOW)).toEqual({ ok: true })
+  })
+})
+
 describe('a session whose owner never created the PIN', () => {
   it('is flagged so the app asks for the PIN before anything else', async () => {
     const session = await addLoginSession(db, response('ana'), NOW)
-    expect(needsPin(session)).toBe(true)
-    expect(needsPin(null)).toBe(false)
+    expect(needsPin(session, true)).toBe(true)
+    expect(needsPin(null, true)).toBe(false)
     await setPin(db, 'ana', '123456')
-    expect(needsPin(await getActive(db, NOW))).toBe(false)
+    expect(needsPin(await getActive(db, NOW), true)).toBe(false)
   })
 
   it('is not "session ended": the switch screen gets its own message', async () => {

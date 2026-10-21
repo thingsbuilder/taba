@@ -97,8 +97,18 @@ export async function addLoginSession(db: Db, response: SessionResponse, now: nu
 
 export const hasPin = (session: LocalSession): boolean => session.pin_hash !== undefined && session.pin_salt !== undefined
 
-/** A logged-in operator who never finished creating the PIN (the app was closed on that screen). */
-export const needsPin = (session: LocalSession | null): session is LocalSession => session !== null && !hasPin(session)
+// ponytail: the required PIN (spec 3.1.1) is off at the owner's request for the first pilot: "Sign out"
+// erases the session together with its PIN, so every new selfie login asked for the PIN again.
+// To be reviewed in phase 6 (docs/pt_br/fases/fase-6-painel-e-lgpd.md). The PIN code stays; only the
+// obligation is off, and nothing else creates a PIN while it is.
+export const PIN_REQUIRED = false
+
+/** Whether this login must create the PIN before anything else. */
+export const mustCreatePin = (session: LocalSession, required = PIN_REQUIRED): boolean => required && !hasPin(session)
+
+/** A logged-in operator who has to create the PIN (also after the app was closed on that screen). */
+export const needsPin = (session: LocalSession | null, required = PIN_REQUIRED): session is LocalSession =>
+  session !== null && mustCreatePin(session, required)
 
 export async function setPin(db: Db, volunteerId: string, pin: string): Promise<void> {
   const session = (await readAll(db))[volunteerId]
