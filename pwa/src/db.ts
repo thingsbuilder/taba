@@ -17,19 +17,35 @@ export interface QueueItem {
   next_attempt_at: number // ms since epoch
   state: QueueState
   error?: string
+  /** Body of the error that held the item (the `shelter_nearby` conflict details). */
+  detail?: unknown
   taken_over_from?: string
+}
+
+/** `shelters` store: the phone's copy of a shelter (spec 6.1.1). `pending` until the server confirmed the creation. */
+export interface ShelterRecord {
+  id: string
+  name: string
+  lat?: number
+  lon?: number
+  address?: { text?: string; city?: string; state?: string }
+  capacity?: number | null
+  confirmation?: 'unconfirmed' | 'confirmed'
+  status?: 'open' | 'closed'
+  event_name?: string | null
+  pending?: boolean
 }
 
 export interface TabaDB extends DBSchema {
   config: { key: string; value: unknown }
   queue: { key: string; value: QueueItem }
   blobs: { key: string; value: { queue_id: string } }
-  shelters: { key: string; value: { id: string } }
+  shelters: { key: string; value: ShelterRecord }
   people: { key: string; value: { id: string } }
   households: { key: string; value: { id: string } }
   cards: { key: string; value: { code: string } }
-  captures: { key: string; value: { capture_id: string; created_at: number } }
-  addresses: { key: string; value: { shelter_id: string } }
+  captures: { key: string; value: { capture_id: string; created_at: number; purpose?: 'invite'; invite_code?: string } }
+  addresses: { key: string; value: { shelter_id: string; lat: number; lon: number } }
 }
 
 export type Db = IDBPDatabase<TabaDB>
