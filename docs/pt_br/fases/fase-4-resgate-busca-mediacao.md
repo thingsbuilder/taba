@@ -30,7 +30,7 @@ Registrar resgatados no ponto de desembarque, buscar desaparecidos por foto sem 
 - O voluntário que pode registrar buscas (3.7 item 1) escolhe "Enviar link para a família" em vez de preencher a busca; os dois caminhos convivem. `POST /v1/search-links` cria `search_links/{code}` (128 bits, base64url, uso único, **validade de 12 horas**, `created_by`, `shelter_id`, `event_id`, `status`) e devolve `{code, url, expires_at}`; o app abre o compartilhar do celular. Conta no `SEARCHES_PER_DAY` do voluntário na criação (`429 search_limit`). `DELETE /v1/search-links/{code}` cancela.
 - Página pública `/f/<code>` (sem login, sem instalação, PT | EN | ES): aviso "Esta busca não substitui o registro de desaparecimento na delegacia.", consentimento (o que é guardado, por quanto tempo, quem acessa), dados do desaparecido e da família, 1 a 5 fotos escolhidas da galeria do celular da família. `GET /v1/search-links/{code}` (público) diz só se o link vale, sem revelar quem o gerou nem o abrigo. `POST /v1/search-links/{code}/submit` (público) usa o mesmo pipeline do `POST /v1/searches` (um token por foto, guarda só os `person_id` derivados, descarta as fotos, tenta o match na hora) e responde sempre igual: `202 {message: "search_registered", usable_photos}`. Não há fila offline: sem sinal, a família tenta de novo.
 - O link só é consumido quando o processamento termina com sucesso; em modo degradado responde `503 unico_degraded` e o link continua valendo. Reenviar não paga de novo as fotos já processadas (idempotência). Link expirado, usado ou cancelado: `410 search_link_invalid`.
-- A busca fica registrada em nome do voluntário que gerou o link (`registered_by`, `via = family_link`): limite, auditoria e mediação ficam presos a ele. **O voluntário não lê o conteúdo enviado:** só vê em "Avisos" que a família enviou e `usable_photos`.
+- A busca fica registrada em nome do voluntário que gerou o link (`created_by`, `via = family_link`): limite, auditoria e mediação ficam presos a ele. **O voluntário não lê o conteúdo enviado:** só vê em "Avisos" que a família enviou e `usable_photos`.
 - Contenção de abuso nas rotas públicas: limite de tentativas por link e por aparelho, corpo máximo de 6 MB, imagem ≤ 800 KB, nada de dado pessoal em log; a spec 10.4 passa a listar as duas rotas.
 
 **Mediação (4.8)**
@@ -74,7 +74,7 @@ Doações (fase 5); descarte, painel, anomalias (fase 6); "Estou Seguro" e media
 |---|---|
 | Coleções | `rescues`, `searches`, `matches`, `search_links` (TTL em `expires_at`) |
 | Rotas | `POST /v1/rescues`, `PATCH /v1/rescues/{id}`, `GET /v1/shelters/nearby`, `POST /v1/searches`, `GET /v1/matches`, `GET /v1/matches/{id}`, `POST /v1/matches/{id}/decision`, `POST /v1/volunteers/{volunteer_id}/roles`, `DELETE /v1/volunteers/{volunteer_id}/roles/{role}`; link da família: `POST /v1/search-links`, `DELETE /v1/search-links/{code}`, `GET /v1/search-links/{code}` e `POST /v1/search-links/{code}/submit` (as duas últimas públicas) |
-| Alertas | `search_expiring` |
+| Alertas | `search_expiring`, `family_search_received` (informativo, só para quem gerou o link: "a família enviou" e `usable_photos`) |
 | Erros | `search_limit`, `match_already_decided`, `event_closed`, `search_link_invalid` |
 | Variáveis | `SEARCHES_PER_DAY`, `INACTIVITY_DAYS`, `PURGE_AFTER_DAYS` (só para calcular `purge_at`) |
 | Módulos | `rescues.rs`, `searches.rs`, `jobs.rs` (encerramento) |

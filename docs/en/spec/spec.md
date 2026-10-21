@@ -723,7 +723,7 @@ The database is `(default)`, in native mode, in the installation's region — th
 | `audit_log` | `shelter_id` ASC, `at` DESC |
 | `audit_log` | `volunteer_id` ASC, `at` DESC |
 
-TTL policies: `sessions.expires_at`, `captures.expires_at`, `idempotency.expires_at`, `audit_log.expires_at`.
+TTL policies: `sessions.expires_at`, `captures.expires_at`, `idempotency.expires_at`, `audit_log.expires_at`, `search_links.expires_at`.
 
 #### 6.3.5 Free tier quotas (reference)
 1 GiB stored; 50,000 reads, 20,000 writes and 20,000 deletes per day. Each operation = 1 business write + 1 audit write.
@@ -794,13 +794,16 @@ Dates: `Timestamp`. `client_*` = phone time; no prefix = server time.
 `person_id`, `volunteer_id`, `device_id`, `lat`, `lon`, `accuracy_m`, `landing_point?`, `captured_at` (client), `received_at`, `event_id?`, `destination_shelter_id?`, `note?`.
 
 ### `searches/{search_id}` (client UUID)
-`created_by`, `origin_shelter_id?`, `event_id?`, `person_ids: []` (HMAC of the photos' tokens), `photos_sent`, `usable_photos`, `missing_person: {name, nickname?, notes}`, `family: {name, phone, relationship, language}`, `status: active|closed`, `expiry_notified_at?`, `created_at`.
+`created_by` (the volunteer the search is in the name of: who typed it or who made the family link), `via: volunteer|family_link`, `origin_shelter_id?`, `event_id?`, `person_ids: []` (HMAC of the photos' tokens), `photos_sent`, `usable_photos`, `missing_person: {name, nickname?, notes}`, `family: {name, phone, relationship, language}`, `status: active|closed`, `expiry_notified_at?`, `created_at`.
+
+### `search_links/{code}` (128 random bits, base64url)
+`created_by`, `shelter_id`, `event_id?`, `status: active|used|canceled`, `created_at`, `expires_at` (12 h; TTL), `used_at?`, `search_id?`, `attempts`.
 
 ### `matches/{sha256(search_id|person_id)}`
 `search_id`, `person_id`, `is_child: bool`, `mediator_kind: shelter|central|protection`, `mediator_shelter_id?`, `status: open|accepted|declined|not_the_person`, `decided_by?: person|operator`, `decided_by_volunteer?`, `decided_at?`, `note?`, `created_at`.
 
 ### `alerts/{alert_id}`
-`kind: anomaly_volume|anomaly_distance|out_of_area|volunteer_removed|shelter_flagged|event_overlap|unico_limit|endorser_flagged|exceptional_exit|child_separated|search_expiring|household_conflict|revalidation_failed`, `informational: bool`, `target_kind`, `target_id`, `event_id?`, `shelter_ids: []`, `volunteer_ids: []`, `for_civil_defense: bool`, `for_protection: bool`, `detail`, `created_at`, `resolved: bool`, `resolved_by?`.
+`kind: anomaly_volume|anomaly_distance|out_of_area|volunteer_removed|shelter_flagged|event_overlap|unico_limit|endorser_flagged|exceptional_exit|child_separated|search_expiring|family_search_received|household_conflict|revalidation_failed`, `informational: bool`, `target_kind`, `target_id`, `event_id?`, `shelter_ids: []`, `volunteer_ids: []`, `for_civil_defense: bool`, `for_protection: bool`, `detail`, `created_at`, `resolved: bool`, `resolved_by?`.
 
 ### `audit_log/{auto}`
 `at`, `volunteer_id?`, `device_id?`, `ip?`, `shelter_id?`, `action`, `target_kind`, `target_id`, `legal_basis?`, `lat?`, `lon?`, `taken_over_from?`, `expires_at` (1-year TTL [dec. k, Q21]). No name and no photo.

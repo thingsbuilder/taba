@@ -44,11 +44,14 @@ Compartilhado e já pronto (ninguém mexe): `error.rs` (`search_limit` 429, `mat
 - i18n: um marcador por seção em `pt-BR.json` e `en.json`, antes de `__end__`: `__rescue__` (F), `__search__` (F), `__family__` (H), `__match__` (G), `__role__` (G), `__inbox__` (G, chaves `inbox.*` novas). `es.json` só tem `consent.*` e `family.*`; `family.*` tem de existir completo em pt-BR, en e es (teste). Códigos de erro novos já têm texto (`error.search_limit`, `error.match_already_decided`, `error.search_link_invalid`).
 - Rotas novas em `routes.ts` com teste; `/matches/:id` volta para `/inbox`.
 
-## Pendências de decisão (do orquestrador)
+## Decisões fechadas
 
-1. **Aviso "a família enviou":** o doc diz que o voluntário vê em "Avisos" que a família enviou e `usable_photos`, mas a spec 7 não tem um tipo de alerta para isso. Criei `FamilySearchReceived` (informativo, `volunteer_ids = [quem gerou o link]`); se a decisão for outra, é só remover a variante.
-2. **Spec 7:** faltam `search_links` e `via` em `searches` (a spec usa `created_by`; o doc da fase fala em `registered_by`; adotei `created_by` + `via`). `search_links/{code}`: `created_by`, `shelter_id`, `event_id?`, `status: active|used|canceled`, `created_at`, `expires_at`, `used_at?`, `search_id?`, `attempts`. A spec (pt_br e en) precisa dessas linhas.
-3. Em `alerts.rs`, `GET /v1/alerts` hoje recusa (`403`) quem não é admin, `protection` ou DC; quem registra buscas e não é admin precisa receber `search_expiring`. É com D.
+1. **Aviso "a família enviou":** `AlertKind::FamilySearchReceived` (`family_search_received`), informativo, `volunteer_ids = [quem gerou o link]`; mostra só "a família enviou" e `usable_photos`, nunca o conteúdo.
+2. **Modelo de dados** (já na spec 7, pt_br e en): `searches.created_by` + `via: volunteer|family_link`; `search_links/{code}` com `created_by`, `shelter_id`, `event_id?`, `status`, `created_at`, `expires_at` (TTL), `used_at?`, `search_id?`, `attempts`.
+
+## Para o dono D
+
+Em `alerts.rs`, `GET /v1/alerts` hoje recusa (`403`) quem não é admin, `protection` ou DC; quem registra buscas e não é admin precisa receber `search_expiring` e `family_search_received`.
 
 ## Regras de convivência
 
