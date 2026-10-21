@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import type { AppContext } from '../app-context'
 import { navigate } from '../nav'
 import { t } from '../i18n'
+import { canManageRoles } from '../roles'
 import { updateProfile } from '../sessions'
 import { BackLink } from './BackLink'
 import { ProfileForm } from './ProfileForm'
@@ -31,6 +32,10 @@ export function Profile({ ctx }: { ctx: AppContext }) {
       <h1 class="title">{t('profile.title')}</h1>
       <ProfileForm initial={active.profile} submitLabel={t('profile.save')} onSubmit={(p) => void save(p)} />
       {saved && <p class="notice" role="status">{t('profile.saved')}</p>}
+      <p class="caption">{t('role.my_id', { id: active.volunteer_id })}</p>
+      {canManageRoles(active.global_roles) && (
+        <button type="button" class="button button-secondary" onClick={() => navigate('/roles')}>{t('role.open')}</button>
+      )}
       <button type="button" class="button button-secondary" onClick={() => navigate('/switch-operator')}>{t('home.switch')}</button>
       <button type="button" class="button button-secondary" onClick={() => navigate('/diagnostics')}>{t('profile.diagnostics')}</button>
       <button type="button" class="button button-secondary" onClick={() => void signOut(ctx)}>{t('home.logout')}</button>
