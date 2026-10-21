@@ -1,0 +1,20 @@
+# Gerado pelo Ansible (configure.yml) — não editar à mão na VM.
+[Unit]
+Description=Taba API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/taba serve
+# Lido pelo systemd como root, antes de largar os privilégios (DynamicUser): o modo 0600 basta.
+EnvironmentFile=/etc/taba/env
+Restart=always
+RestartSec=2
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

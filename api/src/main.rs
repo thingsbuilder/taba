@@ -57,6 +57,9 @@ async fn shutdown_signal() {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Development only: loads `.env` when present. On the VM the variables come from systemd.
+    dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt()
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .with_env_filter(
