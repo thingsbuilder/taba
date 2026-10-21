@@ -8,3 +8,5 @@ prompt-fase.md
 target/
 node_modules/
 dist/
+*.log
+Caddyfile.local*
