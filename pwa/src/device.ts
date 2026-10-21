@@ -16,7 +16,7 @@ export interface IosProbe {
   standalone?: boolean
 }
 
-/** Spec 3.0.2: on iOS, `navigator.standalone !== true` blocks the app until it is installed. */
+/** Spec 3.0.2: on iOS, `navigator.standalone !== true` means a browser tab, where the browser may erase our data. */
 export function isIosOutsideStandalone(nav: IosProbe): boolean {
   const iphoneOrIpod = /iPhone|iPod/.test(nav.userAgent)
   // iPadOS 13+ reports itself as a Mac; touch support tells them apart.
@@ -32,3 +32,7 @@ export async function requestPersistence(storage: Pick<StorageManager, 'persist'
     return false
   }
 }
+
+/** Spec 3.0.3: the permanent warning shows when the browser did not grant persistence, and always
+ *  in an iPhone tab, where Safari erases site data after about 7 days without use even if `persist()` answers. */
+export const showStorageWarning = (persisted: boolean, iosTab: boolean): boolean => !persisted || iosTab

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { type Api, type ApiStatus, getStatus } from './api'
 import type { AppContext } from './app-context'
 import type { Db } from './db'
-import { isIosOutsideStandalone, requestPersistence } from './device'
+import { isIosOutsideStandalone, requestPersistence, showStorageWarning } from './device'
 import { useLanguage, useOnline } from './hooks'
 import { type Language, saveLanguage, setLanguage, t } from './i18n'
 import { SESSIONS_CHANGED } from './events'
@@ -17,7 +17,7 @@ import { Invite } from './screens/Invite'
 import { Members } from './screens/Members'
 import { NewShelter } from './screens/NewShelter'
 import { Shelter } from './screens/Shelter'
-import { InstallIos } from './screens/InstallIos'
+import { InstallPrompt } from './screens/InstallPrompt'
 import { Login } from './screens/Login'
 import { NotFound } from './screens/NotFound'
 import { PinSetup } from './screens/PinSetup'
@@ -102,16 +102,17 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
     })
   }, [online, active?.volunteer_id])
   const [persisted, setPersisted] = useState(true)
-  const blocked = isIosOutsideStandalone(navigator)
+  const iosTab = isIosOutsideStandalone(navigator)
+  const [installDismissed, setInstallDismissed] = useState(false)
 
   // Spec 3.0.4: ask for the status on open and whenever the connection comes back.
   useEffect(() => {
     if (online) void getStatus().then(setStatus)
   }, [online])
-  // Spec 3.0.3: only once the app is installed (on iOS, past the install screen).
+  // Spec 3.0.3: asked on every start; in an iPhone tab the answer does not protect the data (see showStorageWarning).
   useEffect(() => {
-    if (!blocked) void requestPersistence(navigator.storage).then(setPersisted)
-  }, [blocked])
+    void requestPersistence(navigator.storage).then(setPersisted)
+  }, [])
 
   const { pathname, search } = useLocation()
   const route = resolveRoute(pathname)
@@ -136,10 +137,11 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
           <strong>{t('update.available')}</strong> · {t('update.action')}
         </button>
       )}
-      {!blocked && <NetworkChip queue={queue} />}
-      {!blocked && status?.unico === 'degraded' && <div class="banner" role="status">{t('degraded.banner')}</div>}
-      {!blocked && !persisted && <div class="banner" role="alert">{t('persist.warning')}</div>}
-      {blocked ? <InstallIos /> : ready && (needsPin(active) && route.name !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
+      <NetworkChip queue={queue} />
+      {status?.unico === 'degraded' && <div class="banner" role="status">{t('degraded.banner')}</div>}
+      {showStorageWarning(persisted, iosTab) && <div class="banner" role="alert">{t('persist.warning')}</div>}
+      {iosTab && !installDismissed && <InstallPrompt onDismiss={() => setInstallDismissed(true)} />}
+      {ready && (needsPin(active) && route.name !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
     </>
   )
 }
