@@ -3,6 +3,7 @@ import { type PhotoFields, blobToBase64, decryptPhotoFields, encryptPhotoFields 
 import type { Db, QueueItem } from './db'
 import { logEvent, routeOf } from './diagnostics'
 import { PHOTO_ERRORS } from './queue-errors'
+import { recordSearchReply } from './search'
 import { applyPhase3Synced, undoPhase3Local } from './sync'
 
 // Generic offline write queue (spec 9.2). Strict FIFO, one item at a time.
@@ -46,6 +47,8 @@ export type NewQueueItem = Pick<QueueItem, 'method' | 'path' | 'body' | 'volunte
 export interface QueuePhotos {
   photo?: Blob
   thumbnail?: Blob
+  /** The photos of a search (`photos_base64`). */
+  photos?: Blob[]
 }
 
 /** The two answers of a Unico that is out: the first request after the monthly limit, and the ones after it (spec 5.5, 5.7). */
@@ -99,10 +102,11 @@ export function createQueue(deps: QueueDeps) {
       state: 'pending',
     }
     // The encrypted photo is stored first: the drain never sees an item whose photo is missing.
-    if (photos?.photo || photos?.thumbnail) {
+    if (photos?.photo || photos?.thumbnail || photos?.photos?.length) {
       const fields = {
         ...(photos.photo ? { photo_base64: await blobToBase64(photos.photo) } : {}),
         ...(photos.thumbnail ? { thumbnail_base64: await blobToBase64(photos.thumbnail) } : {}),
+        ...(photos.photos?.length ? { photos_base64: await Promise.all(photos.photos.map(blobToBase64)) } : {}),
       }
       await db.put('blobs', await encryptPhotoFields(db, item.id, fields))
     }
@@ -301,6 +305,7 @@ export function createQueue(deps: QueueDeps) {
         const reply = res.status === 204 ? null : await res.json().catch(() => null)
         await remove(item.id)
         await applyPhase3Synced(db, item, reply)
+        await recordSearchReply(db, item, reply)
         await deps.onSynced?.(item, reply)
         notify()
         continue
@@ -322,7 +327,8 @@ export function createQueue(deps: QueueDeps) {
         }
         await db.put('queue', { ...item, error: errorCode })
         idsOf(item).forEach((id) => waiting.add(id))
-      } else if (res.status === 429 || res.status >= 500) {
+      } else if ((res.status === 429 && errorCode !== 'search_limit') || res.status >= 500) {
+        // `search_limit` is the daily quota: repeating cannot help, a person decides (falls to `needs_action`).
         await scheduleRetry(item, errorCode ?? `http_${res.status}`, parseRetryAfter(res.headers.get('Retry-After'), now()))
         notify()
         break

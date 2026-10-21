@@ -36,6 +36,8 @@ export async function decryptBytes(db: Db, record: BlobRecord): Promise<Uint8Arr
 export interface PhotoFields {
   photo_base64?: string
   thumbnail_base64?: string
+  /** The 1 to 5 photos of a search (spec 3.7). */
+  photos_base64?: string[]
 }
 
 const encoder = new TextEncoder()
