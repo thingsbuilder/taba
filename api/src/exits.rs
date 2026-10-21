@@ -197,6 +197,13 @@ async fn close_stay(
     let index = open_stay(&person, &a.shelter_id).ok_or_else(not_in_shelter)?;
     let plan = plan(a.member, a.privileged, &a.request, &person)?;
 
+    // The plan was made before the transaction. If the person became a child meanwhile, the exit
+    // has no revalidation behind it and must not close the stay: the caller starts again.
+    if let Plan::Revalidate { guardian_id, .. } = &plan {
+        if a.revalidated.as_ref() != Some(guardian_id) {
+            return Err(ApiError::new(StatusCode::CONFLICT, "person_changed"));
+        }
+    }
     if let (Plan::Revalidate { capture_id, .. }, Some(resolved)) = (&plan, &a.revalidated) {
         let capture: CaptureDoc = store::get(db, CAPTURES, capture_id)
             .await?
@@ -955,6 +962,64 @@ mod tests {
                 .exit(self.w.actor(who), &self.w.unconfirmed, body)
                 .await
         }
+    }
+
+    #[tokio::test]
+    async fn an_adult_who_became_a_child_before_the_stay_closes_is_not_released_without_revalidation()
+     {
+        let w = World::new().await;
+        let person_id = new_id();
+        put(
+            &w.app,
+            &person_id,
+            &person(Level::Assisted, Some(&w.unconfirmed)),
+        )
+        .await;
+        let volunteer = Volunteer {
+            id: "vol".into(),
+            doc: crate::volunteers::VolunteerDoc::from_profile(
+                &serde_json::from_value(
+                    json!({ "name": "V", "show_phone": false, "language": "en" }),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            memberships: vec![],
+            session_id: "s".into(),
+        };
+        // What the handler decided while the person was an adult: no revalidation.
+        let exit = Exit {
+            shelter_id: w.unconfirmed.clone(),
+            volunteer,
+            member: true,
+            privileged: false,
+            request: serde_json::from_value(
+                json!({ "person_id": person_id, "exit_destination": "own_home", "guardian_id": "g1", "capture_id": "c1" }),
+            )
+            .unwrap(),
+            destination: ExitDestination::OwnHome,
+            municipality: None,
+            revalidated: None,
+        };
+        // ... then someone registers the person as a child, before the transaction runs.
+        put(
+            &w.app,
+            &person_id,
+            &child(
+                &w.unconfirmed,
+                ChildStatus::WithGuardian,
+                vec![("g1", GuardianLink::DocumentChecked)],
+            ),
+        )
+        .await;
+        let closed = store::transact(&w.app.state.db, |db, tx| {
+            let exit = exit.clone();
+            Box::pin(async move { close_stay(&db, tx, &exit).await })
+        })
+        .await;
+        assert_eq!(closed.unwrap_err().code, "person_changed");
+        let kept = load(&w.app, &person_id).await;
+        assert!(kept.stays[0].left_at.is_none() && kept.current_shelter_id.is_some());
     }
 
     #[tokio::test]

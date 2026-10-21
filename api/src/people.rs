@@ -2589,6 +2589,7 @@ mod tests {
             checked_by: None,
             checked_at: None,
         });
+        child.sync_guardian_ids();
         store::replace(&w.app.state.db, COLLECTION, &kin, &child)
             .await
             .unwrap();
