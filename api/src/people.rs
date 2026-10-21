@@ -668,6 +668,7 @@ async fn checkin_in(
     );
     person.updated_at = now;
     tx_replace(db, tx, COLLECTION, &c.person_id, &person)?;
+    crate::matching::on_person_registered(db, tx, &person, &c.person_id, Some(&c.shelter)).await?;
     // A child who arrives separated or alone raises the alert for the protection queue (spec 3.4.1).
     if let (true, true, Some(status)) = (
         person.is_child,
@@ -1263,6 +1264,7 @@ async fn migrate_in(
         }
     }
     repoint_person_refs(db, tx, &m.old_id, &m.new_id).await?;
+    crate::rescues::repoint_person(db, tx, &m.old_id, &m.new_id).await?;
 
     if let Some((capture_id, capture)) = capture {
         tx_replace(
@@ -1275,6 +1277,7 @@ async fn migrate_in(
     }
     tx_delete(db, tx, COLLECTION, &m.old_id)?;
     tx_replace(db, tx, COLLECTION, &m.new_id, &person)?;
+    crate::matching::on_person_registered(db, tx, &person, &m.new_id, shelter.as_ref()).await?;
     if let (Some((old_household_id, new_household_id)), Some(shelter)) = (conflict, &shelter) {
         let mut alert = AlertDoc::new(
             AlertKind::HouseholdConflict,

@@ -480,3 +480,49 @@ async fn anyone_signed_in_creates_a_shelter_and_reads_the_basics_of_any() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+// ---- Phase 4 (stage 0): every route is registered and asks for a session ----
+// Each owner replaces the rows of their routes with the real matrix of spec 2.3 (who may, who
+// gets 403) in the file of their module, and removes them from here.
+
+#[tokio::test]
+async fn phase_4_routes_are_registered_and_ask_for_a_session() {
+    let app = TestApp::new().await;
+    let ana = app.actor("Ana").await;
+    for (method, path) in [
+        ("POST", "/v1/rescues"),
+        ("PATCH", "/v1/rescues/r1"),
+        ("GET", "/v1/shelters/nearby"),
+        ("POST", "/v1/searches"),
+        ("GET", "/v1/matches"),
+        ("GET", "/v1/matches/m1"),
+        ("POST", "/v1/matches/m1/decision"),
+        ("POST", "/v1/volunteers/v1/roles"),
+        ("DELETE", "/v1/volunteers/v1/roles/mediator"),
+        ("POST", "/v1/search-links"),
+        ("DELETE", "/v1/search-links/c1"),
+    ] {
+        let body = (method != "GET" && method != "DELETE").then(|| json!({}));
+        let (status, _, answer) = app.request(method, path, &[], body.clone()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}");
+        assert_eq!(answer["error"], "unauthorized", "{method} {path}");
+        let (status, answer) = app.send(method, path, &ana.secret, body).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {path}");
+        assert_eq!(answer["error"], "not_implemented", "{method} {path}");
+    }
+}
+
+/// The two routes of the family link need no session (spec 10.4). Owner E: an unknown code is 404.
+#[tokio::test]
+async fn the_two_public_search_link_routes_need_no_session() {
+    let app = TestApp::new().await;
+    for (method, path) in [
+        ("GET", "/v1/search-links/c1"),
+        ("POST", "/v1/search-links/c1/submit"),
+    ] {
+        let body = (method == "POST").then(|| json!({}));
+        let (status, _, answer) = app.request(method, path, &[], body).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {path}");
+        assert_eq!(answer["error"], "not_implemented", "{method} {path}");
+    }
+}

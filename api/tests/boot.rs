@@ -78,6 +78,20 @@ fn serve_starts_without_a_rustls_panic() {
                 ("POST", "/v1/shelters/s1/exits"),
                 ("GET", "/v1/cards/ABCD2345"),
                 ("POST", "/v1/households/h1/cards"),
+                // Phase 4 routes, registered since stage 0. `/v1/shelters/nearby` shares its
+                // prefix with `/v1/shelters/{id}`: building the table panics if they conflict.
+                ("POST", "/v1/rescues"),
+                ("GET", "/v1/shelters/nearby"),
+                ("POST", "/v1/searches"),
+                ("GET", "/v1/matches"),
+                ("POST", "/v1/matches/m1/decision"),
+                ("POST", "/v1/volunteers/v1/roles"),
+                ("DELETE", "/v1/volunteers/v1/roles/mediator"),
+                ("POST", "/v1/search-links"),
+                ("DELETE", "/v1/search-links/c1"),
+                // The two public routes of the family link need no session: stage 0 answers 501.
+                ("GET", "/v1/search-links/c1"),
+                ("POST", "/v1/search-links/c1/submit"),
             ] {
                 answered.push((method, path, request(method, path)));
             }
@@ -107,8 +121,11 @@ fn serve_starts_without_a_rustls_panic() {
     );
     for (method, path, response) in answered {
         let (status, body) = response.unwrap_or_else(|| panic!("no answer to {method} {path}"));
+        let public = path.starts_with("/v1/search-links/c1") && method != "DELETE";
         let (code, error) = if path == "/v1/nope" {
             ("404", "not_found")
+        } else if public {
+            ("501", "not_implemented")
         } else {
             ("401", "unauthorized")
         };

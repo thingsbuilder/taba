@@ -32,6 +32,10 @@ pub enum AlertKind {
     ExceptionalExit,
     HouseholdConflict,
     UnicoLimit,
+    /// Phase 4: an active search without an accepted match when its event closes (spec 3.7 item 9).
+    SearchExpiring,
+    /// Phase 4: the family sent a search through the volunteer's link (spec 3.7 item 11); informational.
+    FamilySearchReceived,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

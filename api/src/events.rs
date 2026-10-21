@@ -34,6 +34,14 @@ pub enum EventStatus {
     Purged,
 }
 
+#[allow(dead_code)] // written by the hourly task of phase 4
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClosureReason {
+    AllSheltersClosed,
+    Inactivity,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReferenceContacts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -51,6 +59,21 @@ pub struct EventDoc {
     pub created_at: FirestoreInstant,
     #[serde(with = "firestore::serialize_as_timestamp")]
     pub last_activity_at: FirestoreInstant,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "firestore::serialize_as_optional_timestamp"
+    )]
+    pub closed_at: Option<FirestoreInstant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closure_reason: Option<ClosureReason>,
+    /// When the event's data is discarded: `closed_at` + `PURGE_AFTER_DAYS` (spec 4.3, phase 6 does the discard).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "firestore::serialize_as_optional_timestamp"
+    )]
+    pub purge_at: Option<FirestoreInstant>,
     #[serde(default)]
     pub reference_contacts: ReferenceContacts,
 }
@@ -74,6 +97,9 @@ impl EventDoc {
             status: EventStatus::Active,
             created_at: now,
             last_activity_at: now,
+            closed_at: None,
+            closure_reason: None,
+            purge_at: None,
             reference_contacts: ReferenceContacts::default(),
         }
     }
@@ -146,6 +172,14 @@ pub async fn assign(
             in_range,
         },
     })
+}
+
+/// Gate for the writes of a shelter (spec 4.3 item 5): an event that is closed takes no writes, so
+/// the shelters of a closed event answer `409 event_closed`. Phase 4, owner D, writes the body;
+/// stage 0 lets everything through. Every write route that names a shelter calls it first.
+#[allow(dead_code)] // stage 0 scaffold: owner D wires the write routes
+pub async fn ensure_open(_db: &FirestoreDb, _event_id: Option<&str>) -> Result<(), ApiError> {
+    Ok(())
 }
 
 /// Whether the event's activity should be written now, and if so, remembers it.
@@ -325,6 +359,9 @@ mod tests {
             status: EventStatus::Active,
             created_at: at("2026-05-09T12:00:00Z"),
             last_activity_at: at("2026-05-09T12:00:00Z"),
+            closed_at: None,
+            closure_reason: None,
+            purge_at: None,
             reference_contacts: ReferenceContacts::default(),
         }
     }

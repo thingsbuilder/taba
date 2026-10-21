@@ -61,6 +61,31 @@ impl ApiError {
     }
 }
 
+// Phase 4 codes (doc da fase 4, "O que a fase cria"). Each is raised by the module that owns the rule.
+#[allow(dead_code)] // stage 0 scaffold: the owners of phase 4 start using these
+impl ApiError {
+    /// A route that is registered but not written yet.
+    pub fn not_implemented() -> Self {
+        Self::new(StatusCode::NOT_IMPLEMENTED, "not_implemented")
+    }
+
+    pub fn search_limit() -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, "search_limit")
+    }
+
+    pub fn match_already_decided() -> Self {
+        Self::new(StatusCode::CONFLICT, "match_already_decided")
+    }
+
+    pub fn event_closed() -> Self {
+        Self::new(StatusCode::CONFLICT, "event_closed")
+    }
+
+    pub fn search_link_invalid() -> Self {
+        Self::new(StatusCode::GONE, "search_link_invalid")
+    }
+}
+
 /// Lets a handler's error cross a Firestore transaction (see `store::fs_error`).
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -15,10 +15,17 @@ mod idempotency;
 #[cfg(test)]
 mod integration_tests;
 mod invites;
+mod jobs;
+mod matches;
+mod matching;
 mod members;
 mod people;
 #[cfg(test)]
 mod permissions_tests;
+mod rescues;
+mod roles;
+mod search_links;
+mod searches;
 mod shelters;
 mod status;
 mod store;
@@ -124,6 +131,28 @@ fn router(state: AppState) -> Router {
         .route("/v1/households/{id}/cards", post(cards::post_card))
         .route("/v1/cards/{code}", get(cards::get_card))
         .route("/v1/cards/{code}/cancel", post(cards::cancel_card))
+        // Phase 4 (501 until each owner writes the handler)
+        .route("/v1/rescues", post(rescues::post_rescue))
+        .route("/v1/rescues/{id}", patch(rescues::patch_rescue))
+        .route("/v1/shelters/nearby", get(rescues::nearby_shelters))
+        .route("/v1/searches", post(searches::post_search))
+        .route("/v1/matches", get(matches::list_matches))
+        .route("/v1/matches/{id}", get(matches::get_match))
+        .route("/v1/matches/{id}/decision", post(matches::post_decision))
+        .route("/v1/volunteers/{id}/roles", post(roles::post_role))
+        .route(
+            "/v1/volunteers/{id}/roles/{role}",
+            delete(roles::delete_role),
+        )
+        .route("/v1/search-links", post(search_links::post_search_link))
+        .route(
+            "/v1/search-links/{code}",
+            get(search_links::get_search_link).delete(search_links::delete_search_link),
+        )
+        .route(
+            "/v1/search-links/{code}/submit",
+            post(search_links::submit_search_link),
+        )
         .route("/v1/alerts", get(alerts::get_alerts))
         .route("/v1/alerts/{id}/resolve", post(alerts::resolve_alert))
         .fallback(error::not_found)
@@ -146,6 +175,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         tracing::warn!("HUMAN_TOKEN_ACCESS_KEY is not set: every Unico call will fail");
     }
     let state = AppState::new(db, config, unico)?;
+    jobs::spawn(state.clone());
     let addr: SocketAddr = LISTEN_ADDR.parse()?;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
