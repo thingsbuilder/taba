@@ -1,7 +1,7 @@
 import type { ApiStatus } from './api'
 import { decryptPhotoFields, encryptPhotoFields, blobToBase64 } from './crypto'
 import type { Db, QueueItem } from './db'
-import { applyPhase3Synced } from './sync'
+import { applyPhase3Synced, undoPhase3Local } from './sync'
 
 // Generic offline write queue (spec 9.2). Strict FIFO, one item at a time.
 
@@ -185,6 +185,8 @@ export function createQueue(deps: QueueDeps) {
 
   /** Throws away an item that waits for a person (and its photo). */
   async function discard(id: string): Promise<void> {
+    const item = await db.get('queue', id)
+    if (item) await undoPhase3Local(db, item)
     await remove(id)
     notify()
   }

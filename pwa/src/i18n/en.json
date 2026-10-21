@@ -520,6 +520,8 @@
   "queue.label_card_cancel": "Card cancellation",
   "queue.error_person_in_other_household": "One of the people is already in another household. Take them out of it first or discard this item.",
   "queue.error_household_has_card": "This household already has another card. Discard this item and use the card that exists.",
+  "queue.error_person_in_other_household_named": "{person} is already in the household of {household}. Take them out of there first or discard this item.",
+  "queue.error_household_has_card_named": "The household of {household} already has another card. Discard this item and use the card it has.",
   "queue.error_code_taken": "This card code already exists. Discard this item and make another card.",
   "queue.error_photo_unreadable": "The photo can no longer be read on this phone. Take another one.",
   "queue.error_revalidation_failed": "The guardian selfie does not match.",

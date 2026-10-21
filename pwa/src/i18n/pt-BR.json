@@ -520,6 +520,8 @@
   "queue.label_card_cancel": "Cancelamento de cartão",
   "queue.error_person_in_other_household": "Uma das pessoas já está em outro núcleo. Tire-a de lá primeiro ou descarte este item.",
   "queue.error_household_has_card": "Este núcleo já tem outro cartão. Descarte este item e use o cartão que já existe.",
+  "queue.error_person_in_other_household_named": "{person} já está no núcleo de {household}. Tire a pessoa de lá primeiro ou descarte este item.",
+  "queue.error_household_has_card_named": "O núcleo de {household} já tem outro cartão. Descarte este item e use o cartão que já existe.",
   "queue.error_code_taken": "Este código de cartão já existe. Descarte este item e gere outro cartão.",
   "queue.error_photo_unreadable": "A foto não pode mais ser lida neste celular. Tire outra foto.",
   "queue.error_revalidation_failed": "A selfie do responsável não confere.",

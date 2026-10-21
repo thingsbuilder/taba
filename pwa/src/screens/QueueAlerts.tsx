@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import type { AppContext } from '../app-context'
 import type { QueueItem } from '../db'
 import { t } from '../i18n'
+import { useConflictNames } from '../pending-hook'
 import { pendingViews } from '../pending'
 import { phase3Label } from '../queue-errors'
 import { type TakeOverOffer, nameOf, rememberNames, takeOverOffers } from '../takeover'
@@ -23,6 +24,7 @@ export function QueueAlerts({ ctx }: { ctx: AppContext }) {
     void rememberNames(db, sessions)
   }, [sessions])
 
+  const conflicts = useConflictNames(db, items)
   const offers = takeOverOffers(items, active, sessions)
   const offerKey = offers.map((o) => o.fromVolunteerId).join(',')
   useEffect(() => {
@@ -33,7 +35,7 @@ export function QueueAlerts({ ctx }: { ctx: AppContext }) {
 
   if (!active) return null
   const phase3 = new Set(items.filter((i) => phase3Label(i)).map((i) => i.id))
-  const waiting = pendingViews(items).filter((p) => phase3.has(p.id))
+  const waiting = pendingViews(items, undefined, conflicts).filter((p) => phase3.has(p.id))
   const stale = items.some((i) => i.state === 'pending' && Date.now() - i.created_at > DAY_MS)
 
   const takeOver = (o: TakeOverOffer) => void queue.takeOver(o.fromVolunteerId, active.volunteer_id, o.shelterIds)
@@ -50,7 +52,7 @@ export function QueueAlerts({ ctx }: { ctx: AppContext }) {
       {waiting.map((p) => (
         <section class="card" role="alert" key={p.id}>
           <p class="body-strong">{t(p.labelKey)}</p>
-          {p.errorKey && <p class="body">{t(p.errorKey)}</p>}
+          {p.errorKey && <p class="body">{t(p.errorKey, p.errorParams)}</p>}
           {p.state === 'needs_action' && <button type="button" class="button button-secondary" onClick={() => void queue.retry(p.id)}>{t('queue.retry')}</button>}
           <button
             type="button"

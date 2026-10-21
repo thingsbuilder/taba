@@ -103,3 +103,44 @@ function pick(state: Partial<PersonRecord>): Partial<PersonRecord> {
   const keys = ['name', 'social_name', 'wristband', 'level', 'is_child', 'child_status', 'household_id', 'current_shelter_id', 'updated_at'] as const
   return Object.fromEntries(keys.filter((k) => state[k] !== undefined).map((k) => [k, state[k]]))
 }
+
+/**
+ * An item that will never be sent (a conflict of spec 9.4 that a person gave up, or any discard):
+ * takes back what the phone assumed when it was made, so the household or card that the server
+ * refused does not stay in the local copy.
+ */
+export async function undoPhase3Local(db: Db, item: QueueItem): Promise<void> {
+  const body = (item.body ?? {}) as { id?: string; code?: string; member_ids?: string[]; add_member_ids?: string[] }
+  const leave = async (householdId: string, personIds: string[]) => {
+    for (const personId of personIds) {
+      const person = await db.get('people', personId)
+      if (person?.household_id === householdId) {
+        const { household_id: _gone, ...rest } = person
+        await db.put('people', rest)
+      }
+    }
+  }
+  if (item.method === 'POST' && HOUSEHOLDS.test(item.path) && body.id) {
+    const record = await db.get('households', body.id)
+    if (record?.pending) await db.delete('households', body.id)
+    await leave(body.id, body.member_ids ?? [])
+    return
+  }
+  const patched = item.method === 'PATCH' ? HOUSEHOLD.exec(item.path) : null
+  if (patched && body.add_member_ids?.length) {
+    const record = await db.get('households', patched[1]!)
+    if (record) await db.put('households', { ...record, member_ids: record.member_ids.filter((m) => !body.add_member_ids!.includes(m)) })
+    await leave(patched[1]!, body.add_member_ids)
+    return
+  }
+  const card = item.method === 'POST' ? CARDS.exec(item.path) : null
+  if (card && body.code) {
+    const record = await db.get('cards', body.code)
+    if (record?.pending) await db.delete('cards', body.code)
+    const household = await db.get('households', card[1]!)
+    if (household?.card_code === body.code) {
+      const { card_code: _gone, ...rest } = household
+      await db.put('households', rest)
+    }
+  }
+}

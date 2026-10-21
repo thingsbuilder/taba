@@ -3,6 +3,7 @@ import type { AppContext } from '../app-context'
 import { useOnline } from '../hooks'
 import { navigate } from '../nav'
 import { t } from '../i18n'
+import { useConflictNames } from '../pending-hook'
 import { pendingViews } from '../pending'
 import { InviteCodeField } from './InviteCodeField'
 import { signOut } from './signout'
@@ -13,6 +14,7 @@ export function Home({ ctx }: { ctx: AppContext }) {
   const online = useOnline()
   const [alerts, setAlerts] = useState<number | null>(null)
   const [items, setItems] = useState<QueueItem[]>([])
+  const conflicts = useConflictNames(ctx.db, items)
   useEffect(() => {
     const load = () => void ctx.queue.list().then(setItems)
     load()
@@ -32,7 +34,7 @@ export function Home({ ctx }: { ctx: AppContext }) {
       </main>
     )
   }
-  const pending = pendingViews(items)
+  const pending = pendingViews(items, undefined, conflicts)
   return (
     <main class="screen">
       <h1 class="display">{t('home.greeting', { name: active.profile.name })}</h1>
@@ -59,7 +61,7 @@ export function Home({ ctx }: { ctx: AppContext }) {
             {pending.map((p) => (
               <li key={p.id}>
                 <button type="button" class="button button-secondary" disabled={!p.shelterId} onClick={() => p.shelterId && navigate(`/shelter/${p.shelterId}`)}>
-                  {t(p.labelKey)}{p.errorKey ? `: ${t(p.errorKey)}` : ''}
+                  {t(p.labelKey)}{p.errorKey ? `: ${t(p.errorKey, p.errorParams)}` : ''}
                 </button>
               </li>
             ))}

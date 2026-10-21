@@ -6,6 +6,7 @@ import type { QueueItem, ShelterRecord } from '../db'
 import { useOnline } from '../hooks'
 import { t } from '../i18n'
 import { navigate } from '../nav'
+import { useConflictNames } from '../pending-hook'
 import { pendingViews } from '../pending'
 import { roleIn } from '../sessions'
 import { actionsFor, conflictOf, saveView } from '../shelters'
@@ -20,6 +21,7 @@ export function Shelter({ ctx, shelterId }: { ctx: AppContext; shelterId: string
   const [view, setView] = useState<ShelterView | null>(null)
   const [record, setRecord] = useState<ShelterRecord | null>(null)
   const [items, setItems] = useState<QueueItem[]>([])
+  const conflicts = useConflictNames(ctx.db, items)
   const [error, setError] = useState<string | null>(null)
   const [reason, setReason] = useState('')
   const [capacity, setCapacity] = useState('')
@@ -129,8 +131,8 @@ export function Shelter({ ctx, shelterId }: { ctx: AppContext; shelterId: string
             </button>
           </section>
         )}
-        {pendingViews(items, shelterId).filter((p) => p.state === 'needs_action').map((p) => (
-          <p class="notice notice-error" role="alert" key={p.id}>{t(p.labelKey)}: {t(p.errorKey ?? 'error.generic')}</p>
+        {pendingViews(items, shelterId, conflicts).filter((p) => p.state === 'needs_action').map((p) => (
+          <p class="notice notice-error" role="alert" key={p.id}>{t(p.labelKey)}: {t(p.errorKey ?? 'error.generic', p.errorParams)}</p>
         ))}
         {error && <p class="notice notice-error" role="alert">{t(errorKey(error))}</p>}
 
