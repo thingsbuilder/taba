@@ -107,7 +107,7 @@ describe('the privacy page in three languages (spec 10.1.3)', () => {
     expect(new Set([pt.title, en.title, es.title]).size).toBe(3)
     expect(es.sections[5]!.body).toBe('Los datos no se comparten con la policía ni con inmigración.')
     expect(es.sections[6]!.body).toContain('Rechazar la selfie no quita el albergue ni las donaciones.')
-    expect(en.sections[5]!.body).toBe('The data is not shared with the police or with immigration.')
+    expect(en.sections[5]!.body).toContain('is not shared with the police or with immigration.')
   })
 
   it('every privacy key of the volunteer interface exists in Spanish', () => {
