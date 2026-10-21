@@ -2933,6 +2933,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_photo_unico_refuses_is_a_422_that_is_not_repeated_nor_kept_as_paid() {
+        let w = world().await;
+        let refuse = |app: &TestApp, n: usize| {
+            app.unico.with(|s| {
+                (0..n).for_each(|_| {
+                    s.post_replies
+                        .push_back((400, json!({ "code": 3, "message": "INVALID_REQUEST" })))
+                })
+            })
+        };
+        let path = format!("/v1/shelters/{}/checkins", w.shelter);
+        let before = w.app.unico.post_count();
+
+        // Check-in by photo: one call to Unico, no retry on the server, a 422 and nothing written.
+        refuse(&w.app, 1);
+        let (status, body) = keyed(
+            &w.app,
+            &w.volunteer,
+            "POST",
+            &path,
+            "k-refused",
+            checkin(json!({ "photo_base64": photo() })),
+        )
+        .await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("photo_rejected")),
+            "{body}"
+        );
+        assert_eq!(w.app.unico.post_count(), before + 1);
+        assert!(
+            crate::test_support::all_docs(&w.app.state.db, COLLECTION)
+                .await
+                .is_empty()
+        );
+        let kept = crate::test_support::all_docs(&w.app.state.db, "idempotency").await;
+        assert!(
+            kept.is_empty(),
+            "a refusal is not kept as an answer, paid or not: {kept:?}"
+        );
+
+        // The same, late biometrics by photo.
+        let person = register_without_biometrics(&w, "Ana").await;
+        refuse(&w.app, 1);
+        let (status, body) = keyed(
+            &w.app,
+            &w.volunteer,
+            "PUT",
+            &format!("/v1/people/{person}/biometrics"),
+            "k-late",
+            json!({ "photo_base64": photo() }),
+        )
+        .await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("photo_rejected")),
+            "{body}"
+        );
+        assert_eq!(stored(&w.app, &person).await.level, Level::NoBiometrics);
+        assert!(
+            crate::test_support::all_docs(&w.app.state.db, "idempotency")
+                .await
+                .is_empty()
+        );
+
+        // The codes Unico does identify keep their own.
+        w.app.unico.with(|s| {
+            s.post_replies
+                .push_back((400, json!({ "code": 20532, "message": "no face" })))
+        });
+        let (status, body) = call(
+            &w.app,
+            &w.volunteer,
+            "POST",
+            &path,
+            Some(checkin(json!({ "photo_base64": photo() }))),
+        )
+        .await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::UNPROCESSABLE_ENTITY, Some("no_face"))
+        );
+    }
+
+    #[tokio::test]
     async fn a_kept_answer_is_not_handed_to_another_volunteer_or_route() {
         let w = world().await;
         photos_are(&w.app, "tok-1", 1);

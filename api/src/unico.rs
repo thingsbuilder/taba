@@ -46,6 +46,8 @@ pub enum UnicoError {
     /// API-only flow: finished without a token, or failed.
     Inconclusive,
     NoFace,
+    /// Any other refusal of the image by Unico: it will refuse it again, so it is not repeated.
+    PhotoRejected,
     InvalidImage,
     ImageTooLarge,
     /// The degraded mode is on (spec 5.7): no call was made.
@@ -81,6 +83,7 @@ impl From<UnicoError> for ApiError {
             }
             UnicoError::Inconclusive => (StatusCode::UNPROCESSABLE_ENTITY, "capture_inconclusive"),
             UnicoError::NoFace => (StatusCode::UNPROCESSABLE_ENTITY, "no_face"),
+            UnicoError::PhotoRejected => (StatusCode::UNPROCESSABLE_ENTITY, "photo_rejected"),
             UnicoError::InvalidImage => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_image"),
             UnicoError::ImageTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "image_too_large"),
             UnicoError::Degraded => return ApiError::unico_degraded(),
@@ -221,7 +224,11 @@ impl Unico {
             .call(reqwest::Method::POST, "/process", Some(&body))
             .await
         {
-            Err(UnicoError::Rejected(reply)) => return Err(rejected_image(&reply)),
+            Err(UnicoError::Rejected(reply)) => {
+                let err = rejected_image(&reply);
+                log_rejected_image(&reply, image, &err);
+                return Err(err);
+            }
             other => other?,
         };
         match classify(&process)? {
@@ -380,8 +387,89 @@ fn rejected_image(reply: &Value) -> UnicoError {
     match message {
         "INVALID_IMAGE" | "UNSUPPORTED_IMAGE_FORMAT" | "MISSING_IMAGE" => UnicoError::InvalidImage,
         "IMAGE_TOO_LARGE" => UnicoError::ImageTooLarge,
-        _ => UnicoError::UnexpectedState(format!("rejected: {message}")),
+        // A 4xx about the image that is none of the above is still about the image: the same
+        // image will be refused again, so it is a refusal, not a failure of Unico (a 502).
+        _ => UnicoError::PhotoRejected,
     }
+}
+
+/// Longest part of Unico's answer written to the log.
+const LOGGED_REPLY_CHARS: usize = 300;
+
+/// What the image was, without the image: size, the first four bytes and, for a JPEG or a PNG, the
+/// dimensions of its header. Enough to tell a black frame or a wrong format from a refusal of the face.
+#[derive(Debug, PartialEq, Eq)]
+struct ImageInfo {
+    bytes: usize,
+    magic: String,
+    dimensions: Option<(u32, u32)>,
+}
+
+fn image_info(image: &[u8]) -> ImageInfo {
+    ImageInfo {
+        bytes: image.len(),
+        magic: image.iter().take(4).map(|b| format!("{b:02x}")).collect(),
+        dimensions: png_size(image).or_else(|| jpeg_size(image)),
+    }
+}
+
+fn png_size(image: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    if image.len() < 24 || image[..8] != SIGNATURE {
+        return None;
+    }
+    let read =
+        |at: usize| u32::from_be_bytes([image[at], image[at + 1], image[at + 2], image[at + 3]]);
+    Some((read(16), read(20)))
+}
+
+/// The size in the first start-of-frame marker (`SOF0`..`SOF15`, but not `DHT`, `JPG` or `DAC`).
+fn jpeg_size(image: &[u8]) -> Option<(u32, u32)> {
+    if image.len() < 4 || image[0] != 0xff || image[1] != 0xd8 {
+        return None;
+    }
+    let mut at = 2;
+    while at + 4 <= image.len() {
+        if image[at] != 0xff {
+            return None;
+        }
+        let marker = image[at + 1];
+        if marker == 0xff {
+            at += 1; // fill byte
+            continue;
+        }
+        if (0xd0..=0xd9).contains(&marker) || marker == 0x01 {
+            at += 2; // markers without a length
+            continue;
+        }
+        let length = usize::from(u16::from_be_bytes([image[at + 2], image[at + 3]]));
+        let is_frame = (0xc0..=0xcf).contains(&marker) && ![0xc4, 0xc8, 0xcc].contains(&marker);
+        if is_frame {
+            let frame = image.get(at + 4..at + 9)?;
+            let height = u32::from(u16::from_be_bytes([frame[1], frame[2]]));
+            let width = u32::from(u16::from_be_bytes([frame[3], frame[4]]));
+            return Some((width, height));
+        }
+        at += 2 + length;
+    }
+    None
+}
+
+/// Writes down why Unico refused a photo: its answer (cut short) and the metadata of the image,
+/// never the image nor its base64.
+fn log_rejected_image(reply: &Value, image: &[u8], mapped: &UnicoError) {
+    let text = reply.to_string();
+    let shown: String = text.chars().take(LOGGED_REPLY_CHARS).collect();
+    let info = image_info(image);
+    tracing::warn!(
+        reply = %shown,
+        image_bytes = info.bytes,
+        image_magic = %info.magic,
+        image_width = info.dimensions.map(|d| d.0),
+        image_height = info.dimensions.map(|d| d.1),
+        ?mapped,
+        "unico refused the photo"
+    );
 }
 
 #[cfg(test)]
@@ -749,6 +837,12 @@ mod tests {
                 (400, json!({ "code": 3, "message": "IMAGE_TOO_LARGE" })),
                 UnicoError::ImageTooLarge,
             ),
+            // Observed in production: a 400 with no documented code for a bad or faceless image.
+            (
+                (400, json!({ "code": 3, "message": "INVALID_REQUEST" })),
+                UnicoError::PhotoRejected,
+            ),
+            ((422, json!({})), UnicoError::PhotoRejected),
             ((200, finished(json!(""))), UnicoError::Inconclusive),
             (
                 (200, json!({ "state": "PROCESS_STATE_FAILED" })),
@@ -768,6 +862,7 @@ mod tests {
         let table = [
             (UnicoError::NoFace, 422, "no_face"),
             (UnicoError::InvalidImage, 422, "invalid_image"),
+            (UnicoError::PhotoRejected, 422, "photo_rejected"),
             (UnicoError::Inconclusive, 422, "capture_inconclusive"),
             (UnicoError::Degraded, 503, "unico_degraded"),
             (
@@ -829,5 +924,85 @@ mod tests {
             2,
             "only the unexpected cases are logged: {log}"
         );
+    }
+
+    /// A JPEG header: SOI, an APP0, then SOF0 for `width` x `height`.
+    fn jpeg(width: u16, height: u16) -> Vec<u8> {
+        let mut bytes = vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10];
+        bytes.extend_from_slice(b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0");
+        bytes.extend_from_slice(&[0xff, 0xc0, 0x00, 0x0b, 0x08]);
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&[0x01, 0x01, 0x11, 0x00]);
+        bytes
+    }
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = vec![
+            0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+        ];
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn the_metadata_of_an_image_comes_from_its_header() {
+        assert_eq!(
+            image_info(&jpeg(1280, 960)),
+            ImageInfo {
+                bytes: jpeg(1280, 960).len(),
+                magic: "ffd8ffe0".into(),
+                dimensions: Some((1280, 960))
+            }
+        );
+        assert_eq!(image_info(&png(640, 480)).dimensions, Some((640, 480)));
+        assert_eq!(image_info(&png(640, 480)).magic, "89504e47");
+        // Not an image, a short one, a truncated JPEG: no dimensions, and no panic.
+        for junk in [
+            &b"hello world"[..],
+            b"",
+            b"\xff\xd8",
+            b"\xff\xd8\xff\xe0\x00",
+        ] {
+            assert_eq!(image_info(junk).dimensions, None, "{junk:?}");
+        }
+        assert_eq!(image_info(b"ab").magic, "6162");
+        assert_eq!(image_info(b"").magic, "");
+    }
+
+    #[test]
+    fn a_refused_photo_is_logged_with_the_answer_and_the_metadata_and_never_the_image() {
+        let buffer = LogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .finish();
+        let image = jpeg(1280, 960);
+        let reply = json!({ "code": 3, "message": "INVALID_REQUEST", "padding": "x".repeat(1000) });
+        tracing::subscriber::with_default(subscriber, || {
+            log_rejected_image(&reply, &image, &UnicoError::PhotoRejected)
+        });
+        let log = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains("WARN") && log.contains("INVALID_REQUEST"),
+            "{log}"
+        );
+        assert!(
+            log.contains("ffd8ffe0") && log.contains(&format!("image_bytes={}", image.len())),
+            "{log}"
+        );
+        assert!(
+            log.contains("image_width=1280") && log.contains("image_height=960"),
+            "{log}"
+        );
+        assert!(log.contains("PhotoRejected"), "{log}");
+        // The answer is cut short, and the image (or its base64) is not there.
+        assert!(!log.contains(&"x".repeat(400)), "reply not truncated");
+        assert!(
+            !log.contains(&STANDARD.encode(&image)),
+            "base64 of the image in the log"
+        );
+        assert_eq!(log.lines().count(), 1);
     }
 }
