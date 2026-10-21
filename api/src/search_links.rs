@@ -108,6 +108,12 @@ fn new_code() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
+fn invalid_shelter() -> ApiError {
+    let mut error = ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid_shelter");
+    error.detail = json!({ "field": "shelter_id" });
+    error
+}
+
 fn forbidden() -> ApiError {
     ApiError::new(StatusCode::FORBIDDEN, "forbidden")
 }
@@ -141,7 +147,7 @@ pub async fn post_search_link(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let shelter: ShelterDoc = store::get(&state.db, shelters::COLLECTION, &request.shelter_id)
         .await?
-        .ok_or_else(forbidden)?;
+        .ok_or_else(invalid_shelter)?;
     let global = [
         GlobalRole::CivilDefense,
         GlobalRole::Mediator,
@@ -151,8 +157,15 @@ pub async fn post_search_link(
     .any(|role| volunteer.has_global(role));
     let member_of_confirmed = volunteer.role_in(&request.shelter_id).is_some()
         && shelter.confirmation == Confirmation::Confirmed;
-    if !global && !member_of_confirmed {
-        return Err(forbidden());
+    // The origin: a member's own confirmed shelter, or, for the Civil Defense, a mediator and
+    // protection, any confirmed shelter they name (the app asks them which).
+    if !member_of_confirmed {
+        if !global {
+            return Err(forbidden());
+        }
+        if shelter.confirmation != Confirmation::Confirmed {
+            return Err(invalid_shelter());
+        }
     }
     crate::events::ensure_open(&state.db, shelter.event_id.as_deref()).await?;
 
@@ -172,9 +185,14 @@ pub async fn post_search_link(
     };
     let limit = state.config.searches_per_day;
     store::transact(&state.db, |db, tx| {
-        let (code, link, by) = (code.clone(), link.clone(), volunteer.id.clone());
+        let (code, link, by, tz) = (
+            code.clone(),
+            link.clone(),
+            volunteer.id.clone(),
+            state.config.tz_pilot.clone(),
+        );
         Box::pin(async move {
-            searches::take_daily_slot(&db, tx, &by, limit).await?;
+            searches::take_daily_slot(&db, tx, &by, limit, &tz).await?;
             tx_create(&db, tx, COLLECTION, &code, &link)?;
             audit::add(
                 &db,
@@ -384,6 +402,11 @@ where
         }
     };
 
+    // No photo gave a face: nothing was registered and the link stays valid, with this try counted.
+    if outcome.usable_photos == 0 {
+        release(state, code, 1).await;
+        return Ok(searches::answer(outcome));
+    }
     store::transact(&state.db, |db, tx| {
         let (code, search_id, device) = (code.to_string(), search_id.clone(), device.clone());
         Box::pin(async move {
@@ -596,9 +619,10 @@ mod tests {
         // Unknown shelter.
         assert_eq!(
             create_status(&app, &other, "nope").await,
-            StatusCode::FORBIDDEN
+            StatusCode::UNPROCESSABLE_ENTITY
         );
-        // Global roles do not need to be members.
+        // Global roles are not members: they name a confirmed shelter of an active event, and
+        // only that one (an unknown or unconfirmed one is 422, a closed event 409).
         for role in [
             GlobalRole::CivilDefense,
             GlobalRole::Mediator,
@@ -607,11 +631,45 @@ mod tests {
             let who = app.actor(&format!("g-{role:?}")).await;
             app.grant(&who, role).await;
             assert_eq!(
-                create_status(&app, &who, &unconfirmed).await,
+                create_status(&app, &who, &shelter).await,
                 StatusCode::CREATED,
                 "{role:?}"
             );
+            for refused in [unconfirmed.as_str(), "nope"] {
+                let (status, body) = app
+                    .send(
+                        "POST",
+                        "/v1/search-links",
+                        &who.secret,
+                        Some(json!({ "shelter_id": refused })),
+                    )
+                    .await;
+                assert_eq!(
+                    (status, body["error"].as_str()),
+                    (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_shelter")),
+                    "{role:?} {refused}"
+                );
+            }
         }
+        let stored: ShelterDoc = store::get(&app.state.db, shelters::COLLECTION, &shelter)
+            .await
+            .unwrap()
+            .unwrap();
+        let event_id = stored.event_id.unwrap();
+        let mut event: crate::events::EventDoc =
+            store::get(&app.state.db, crate::events::COLLECTION, &event_id)
+                .await
+                .unwrap()
+                .unwrap();
+        event.status = crate::events::EventStatus::Closed;
+        store::replace(&app.state.db, crate::events::COLLECTION, &event_id, &event)
+            .await
+            .unwrap();
+        let dc = app.actor("g-CivilDefense").await;
+        assert_eq!(
+            create_status(&app, &dc, &shelter).await,
+            StatusCode::CONFLICT
+        );
         // Validator alone is not enough.
         let validator = app.actor("Validator").await;
         app.grant(&validator, GlobalRole::Validator).await;

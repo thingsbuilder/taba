@@ -30,6 +30,8 @@ pub struct Config {
     pub delivery_retention_days: u32,
     pub session_days: u32,
     pub searches_per_day: u32,
+    /// The time zone whose midnight turns over the daily search quota (IANA name).
+    pub tz_pilot: String,
     pub delivery_sample_rate: f64,
     pub anomaly_checkins_per_10min: u32,
     pub anomaly_rescues_per_10min: u32,
@@ -84,11 +86,20 @@ impl Config {
             delivery_retention_days: number(&get, "DELIVERY_RETENTION_DAYS", "90")?,
             session_days: number(&get, "SESSION_DAYS", "7")?,
             searches_per_day: number(&get, "SEARCHES_PER_DAY", "10")?,
+            tz_pilot: time_zone(text("TZ_PILOT"))?,
             delivery_sample_rate,
             anomaly_checkins_per_10min: number(&get, "ANOMALY_CHECKINS_PER_10MIN", "30")?,
             anomaly_rescues_per_10min: number(&get, "ANOMALY_RESCUES_PER_10MIN", "100")?,
         })
     }
+}
+
+/// `TZ_PILOT`: an IANA time zone name the server knows; São Paulo when absent.
+fn time_zone(value: Option<String>) -> Result<String, ConfigError> {
+    let name = value.unwrap_or_else(|| "America/Sao_Paulo".into());
+    jiff::tz::TimeZone::get(name.trim())
+        .map(|_| name.trim().to_string())
+        .map_err(|_| ConfigError::Invalid("TZ_PILOT"))
 }
 
 /// An event that closes after zero idle days would close the moment it opens.
@@ -131,6 +142,7 @@ mod tests {
         assert_eq!(config.delivery_retention_days, 90);
         assert_eq!(config.session_days, 7);
         assert_eq!(config.searches_per_day, 10);
+        assert_eq!(config.tz_pilot, "America/Sao_Paulo");
         assert_eq!(config.delivery_sample_rate, 0.05);
         assert_eq!(config.anomaly_checkins_per_10min, 30);
         assert_eq!(config.anomaly_rescues_per_10min, 100);
@@ -175,6 +187,16 @@ mod tests {
         assert_eq!(
             load(&[("GCP_PROJECT", "p"), ("SHELTER_RADIUS_M", "-1")]),
             Err(ConfigError::Invalid("SHELTER_RADIUS_M"))
+        );
+        assert_eq!(
+            load(&[("GCP_PROJECT", "p"), ("TZ_PILOT", "Mars/Olympus")]),
+            Err(ConfigError::Invalid("TZ_PILOT"))
+        );
+        assert_eq!(
+            load(&[("GCP_PROJECT", "p"), ("TZ_PILOT", "Europe/Lisbon")])
+                .unwrap()
+                .tz_pilot,
+            "Europe/Lisbon"
         );
         assert_eq!(
             load(&[("GCP_PROJECT", "p"), ("INACTIVITY_DAYS", "0")]),

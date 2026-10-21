@@ -1406,3 +1406,121 @@ async fn the_family_link_of_a_closed_event_answers_like_any_dead_link() {
         (StatusCode::GONE, Some("search_link_invalid"))
     );
 }
+
+/// The family opens the link and sends the search; `reply` is what Unico answers to the photo.
+async fn submit_to(app: &TestApp, code: &str, unico: (u16, Value)) -> (StatusCode, Value) {
+    app.unico.with(|s| s.post_replies.push_back(unico));
+    let (status, _, answer) = app
+        .request(
+            "POST",
+            &format!("/v1/search-links/{code}/submit"),
+            &[("x-device-id", "dev-family")],
+            Some(search_body(1)),
+        )
+        .await;
+    (status, answer)
+}
+
+#[tokio::test]
+async fn a_link_whose_photos_all_fail_is_not_used_and_makes_no_search_until_a_photo_serves() {
+    let s = scene().await;
+    let (status, link) = call(
+        &s.app,
+        &s.admin,
+        "POST",
+        "/v1/search-links",
+        Some(json!({ "shelter_id": s.shelter })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{link}");
+    let code = link["code"].as_str().unwrap();
+
+    // No face: the same answer as always, with zero usable photos, and the link stays valid.
+    let no_face = (400, json!({ "code": 20532, "message": "No face detected" }));
+    for attempt in 1..=2u64 {
+        let (status, answer) = submit_to(&s.app, code, no_face.clone()).await;
+        assert_eq!(
+            (status, answer),
+            (
+                StatusCode::ACCEPTED,
+                json!({ "message": "search_registered", "usable_photos": 0 })
+            )
+        );
+        let doc = all_docs(&s.app.state.db, "search_links")
+            .await
+            .pop()
+            .unwrap();
+        assert_eq!(
+            (doc["status"].as_str(), doc["attempts"].as_u64()),
+            (Some("active"), Some(attempt))
+        );
+        assert!(all_docs(&s.app.state.db, "searches").await.is_empty());
+        assert!(
+            all_docs(&s.app.state.db, "alerts")
+                .await
+                .iter()
+                .all(|a| a["kind"] != "family_search_received")
+        );
+        let (status, _, valid) = s
+            .app
+            .request("GET", &format!("/v1/search-links/{code}"), &[], None)
+            .await;
+        assert_eq!(
+            (status, valid["valid"].as_bool()),
+            (StatusCode::OK, Some(true))
+        );
+    }
+
+    // Another photo serves: now the search exists, the link is used and the volunteer is told.
+    let (status, answer) = submit_to(&s.app, code, (200, json!({ "id": "img", "state": "PROCESS_STATE_FINISHED", "data": { "humanToken": { "value": "tok-second-try" } } }))).await;
+    assert_eq!(
+        (status, answer),
+        (
+            StatusCode::ACCEPTED,
+            json!({ "message": "search_registered", "usable_photos": 1 })
+        )
+    );
+    let doc = all_docs(&s.app.state.db, "search_links")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(doc["status"], "used");
+    assert_eq!(all_docs(&s.app.state.db, "searches").await.len(), 1);
+    assert_eq!(
+        all_docs(&s.app.state.db, "alerts")
+            .await
+            .iter()
+            .filter(|a| a["kind"] == "family_search_received")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_link_made_by_the_civil_defense_for_a_chosen_shelter_gives_the_search_that_shelter_and_its_event()
+ {
+    let s = scene().await;
+    let dc = actor_with(&s.app, "DC", GlobalRole::CivilDefense).await;
+    let (status, link) = call(
+        &s.app,
+        &dc,
+        "POST",
+        "/v1/search-links",
+        Some(json!({ "shelter_id": s.shelter })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{link}");
+    let (status, _) = submit_to(&s.app, link["code"].as_str().unwrap(), (200, json!({ "id": "img", "state": "PROCESS_STATE_FINISHED", "data": { "humanToken": { "value": "tok-chosen" } } }))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let shelter: crate::shelters::ShelterDoc =
+        store::get(&s.app.state.db, crate::shelters::COLLECTION, &s.shelter)
+            .await
+            .unwrap()
+            .unwrap();
+    let searches = all_docs(&s.app.state.db, "searches").await;
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0]["created_by"], json!(dc.id));
+    assert_eq!(searches[0]["via"], "family_link");
+    assert_eq!(searches[0]["origin_shelter_id"], json!(s.shelter));
+    assert_eq!(searches[0]["event_id"], json!(shelter.event_id));
+}

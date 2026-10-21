@@ -7,6 +7,7 @@ use axum::http::{HeaderMap, StatusCode};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use firestore::jiff::SignedDuration;
+use firestore::jiff::tz::TimeZone;
 use firestore::{FirestoreDb, FirestoreInstant, FirestoreTransaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -171,10 +172,16 @@ struct DayCount {
     expires_at: FirestoreInstant,
 }
 
-/// One counter per volunteer and UTC day.
-fn quota_id(volunteer_id: &str) -> String {
-    let now = store::now().to_string();
-    format!("searchday~{volunteer_id}~{}", &now[..10])
+/// The calendar day of `at` in the pilot's time zone (`TZ_PILOT`), as `YYYY-MM-DD`: the day the
+/// daily search quota follows, so it turns over at midnight there and not at 21:00 in Brazil.
+pub fn quota_day(at: FirestoreInstant, tz: &str) -> String {
+    let zone = TimeZone::get(tz).unwrap_or(TimeZone::UTC);
+    at.to_zoned(zone).date().to_string()
+}
+
+/// One counter per volunteer and day of the pilot's time zone.
+fn quota_id(volunteer_id: &str, tz: &str) -> String {
+    format!("searchday~{volunteer_id}~{}", quota_day(store::now(), tz))
 }
 
 /// Takes one of the `limit` daily slots (`SEARCHES_PER_DAY`) of the volunteer inside the caller's
@@ -184,8 +191,9 @@ pub async fn take_daily_slot(
     tx: &mut FirestoreTransaction<'_>,
     volunteer_id: &str,
     limit: u32,
+    tz: &str,
 ) -> Result<(), ApiError> {
-    let id = quota_id(volunteer_id);
+    let id = quota_id(volunteer_id, tz);
     let used = store::get::<DayCount>(db, QUOTA_COLLECTION, &id)
         .await?
         .map_or(0, |c| c.count);
@@ -201,8 +209,13 @@ pub async fn take_daily_slot(
 
 /// Whether the day is already used up: a cheap look before paying Unico for the photos. The
 /// slot itself is taken in the transaction that writes the search.
-async fn day_is_full(db: &FirestoreDb, volunteer_id: &str, limit: u32) -> Result<bool, ApiError> {
-    let used = store::get::<DayCount>(db, QUOTA_COLLECTION, &quota_id(volunteer_id))
+async fn day_is_full(
+    db: &FirestoreDb,
+    volunteer_id: &str,
+    limit: u32,
+    tz: &str,
+) -> Result<bool, ApiError> {
+    let used = store::get::<DayCount>(db, QUOTA_COLLECTION, &quota_id(volunteer_id, tz))
         .await?
         .map_or(0, |c| c.count);
     Ok(used >= limit)
@@ -259,9 +272,10 @@ async fn commit_search(
     person_ids: &[String],
     usable_photos: u32,
     limit: Option<u32>,
+    tz: &str,
 ) -> Result<u32, ApiError> {
     store::transact(db, |db, tx| {
-        let (owner, input) = (owner.clone(), input.clone());
+        let (owner, input, tz) = (owner.clone(), input.clone(), tz.to_string());
         let person_ids = person_ids.to_vec();
         Box::pin(async move {
             if let Some(existing) = store::get::<SearchDoc>(&db, COLLECTION, &input.id).await? {
@@ -272,7 +286,7 @@ async fn commit_search(
                 };
             }
             if let Some(limit) = limit {
-                take_daily_slot(&db, tx, &owner.volunteer_id, limit).await?;
+                take_daily_slot(&db, tx, &owner.volunteer_id, limit, &tz).await?;
             }
             let search = SearchDoc {
                 id: None,
@@ -327,7 +341,14 @@ async fn register(
         });
     }
     if let Some(limit) = limit {
-        if day_is_full(&state.db, &owner.volunteer_id, limit).await? {
+        if day_is_full(
+            &state.db,
+            &owner.volunteer_id,
+            limit,
+            &state.config.tz_pilot,
+        )
+        .await?
+        {
             return Err(ApiError::search_limit());
         }
     }
@@ -339,8 +360,20 @@ async fn register(
             person_ids.push(id);
         }
     }
-    let usable_photos =
-        commit_search(&state.db, &owner, &input, &person_ids, usable_photos, limit).await?;
+    // A family link whose photos all fail makes no search: the family is asked for other photos.
+    if usable_photos == 0 && owner.via == SearchVia::FamilyLink {
+        return Ok(RegisterOutcome { usable_photos: 0 });
+    }
+    let usable_photos = commit_search(
+        &state.db,
+        &owner,
+        &input,
+        &person_ids,
+        usable_photos,
+        limit,
+        &state.config.tz_pilot,
+    )
+    .await?;
     Ok(RegisterOutcome { usable_photos })
 }
 
@@ -875,11 +908,24 @@ mod tests {
         assert_eq!(status, StatusCode::ACCEPTED);
     }
 
+    #[test]
+    fn the_quota_day_follows_the_pilot_time_zone_not_utc() {
+        let at = |text: &str| text.parse::<FirestoreInstant>().unwrap();
+        let brt = "America/Sao_Paulo";
+        // 21:00 in Brazil is already the next day in UTC, and the quota does not restart there.
+        assert_eq!(quota_day(at("2026-10-22T00:00:00Z"), brt), "2026-10-21");
+        assert_eq!(quota_day(at("2026-10-22T02:59:59Z"), brt), "2026-10-21");
+        // Midnight in Brazil it does.
+        assert_eq!(quota_day(at("2026-10-22T03:00:00Z"), brt), "2026-10-22");
+        assert_eq!(quota_day(at("2026-10-22T00:00:00Z"), "UTC"), "2026-10-22");
+        assert_ne!(quota_id("v", brt), quota_id("w", brt));
+    }
+
     async fn take(app: &TestApp, volunteer_id: &str, limit: u32) -> Result<(), ApiError> {
         let id = volunteer_id.to_string();
         store::transact(&app.state.db, |db, tx| {
             let id = id.clone();
-            Box::pin(async move { take_daily_slot(&db, tx, &id, limit).await })
+            Box::pin(async move { take_daily_slot(&db, tx, &id, limit, "America/Sao_Paulo").await })
         })
         .await
     }
@@ -1029,7 +1075,7 @@ mod tests {
                 },
             };
             handles.push(tokio::spawn(async move {
-                commit_search(&db, &owner, &input, &[target], 1, None)
+                commit_search(&db, &owner, &input, &[target], 1, None, "UTC")
                     .await
                     .unwrap();
             }));
