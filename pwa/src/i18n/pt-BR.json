@@ -70,7 +70,7 @@
   "error.unico_degraded": "O reconhecimento facial está indisponível agora. Tente mais tarde.",
   "error.unico_unavailable": "O reconhecimento facial está indisponível agora. Tente mais tarde.",
   "error.invalid_profile": "Confira o nome e o telefone.",
-  "switch.no_pin": "Não foi criado um PIN para {name}. Entre de novo para criá-lo.",
+  "switch.no_pin": "{name} não tem PIN neste celular, então não dá para escolher essa pessoa por aqui. Para usar esta conta, entre de novo com a selfie.",
   "home.shelters": "Meus abrigos",
   "home.no_shelters": "Você ainda não está em nenhum abrigo.",
   "home.new_shelter": "Criar abrigo",

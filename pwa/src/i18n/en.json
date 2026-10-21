@@ -70,7 +70,7 @@
   "error.unico_degraded": "Face recognition is unavailable right now. Try again later.",
   "error.unico_unavailable": "Face recognition is unavailable right now. Try again later.",
   "error.invalid_profile": "Check the name and the phone.",
-  "switch.no_pin": "No PIN was created for {name}. Sign in again to create it.",
+  "switch.no_pin": "{name} has no PIN on this phone, so they cannot be picked here. To use this account, sign in again with a selfie.",
   "home.shelters": "My shelters",
   "home.no_shelters": "You are not in any shelter yet.",
   "home.new_shelter": "Create shelter",

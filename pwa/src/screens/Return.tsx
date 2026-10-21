@@ -6,7 +6,7 @@ import { type LoginOutcome, finishLogin } from '../login'
 import { navigate } from '../nav'
 import { takeReturnTo } from '../return-to'
 import { t } from '../i18n'
-import { hasPin } from '../sessions'
+import { mustCreatePin } from '../sessions'
 import { PinSetup } from './PinSetup'
 import { ProfileForm } from './ProfileForm'
 
@@ -32,7 +32,7 @@ export function Return({ ctx, search }: { ctx: AppContext; search: string }) {
     if (outcome.kind === 'error') return setStep({ name: 'error', code: outcome.code })
     await ctx.refresh()
     const destination = outcome.membership ? `/shelter/${outcome.membership.shelter_id}` : ((await takeReturnTo(ctx.db)) ?? '/')
-    if (hasPin(outcome.session)) navigate(destination, true)
+    if (!mustCreatePin(outcome.session)) navigate(destination, true)
     else setStep({ name: 'pin', volunteerId: outcome.session.volunteer_id, next: destination })
   }
 

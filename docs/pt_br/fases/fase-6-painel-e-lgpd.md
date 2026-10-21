@@ -33,6 +33,7 @@ Fechar o piloto: painel no formato do que a Defesa Civil reporta, CSV diário e 
 
 **Prontidão do piloto**
 - `docs/pt_br/RIPD.md` com o conteúdo mínimo da 10.1.4 (dados, finalidades, bases, riscos, medidas, descarte, região e transferência internacional, instância própria em `southamerica-east1`). Documento em português.
+- Rever o PIN do operador (3.1.1): foi desligado na fase 2 a pedido do dono (`PIN_REQUIRED = false` em `pwa/src/sessions.ts`); decidir se volta como obrigatório e se o PIN passa a sobreviver ao "Sair".
 - Conferência final: nenhuma rota das fases posteriores (seção 16) existe; nenhum token puro nem foto de pessoa em resposta ou documento.
 
 ## Fora de escopo
@@ -85,6 +86,7 @@ Todas as fases anteriores (o painel conta o que elas criam; o descarte apaga o q
 - [ ] Descarte diferenciado, pseudonimização e perfis antigos.
 - [ ] Anomalias informativas e auditoria revisada, com TTL de 1 ano.
 - [ ] `docs/pt_br/RIPD.md` escrito.
+- [ ] Rever o PIN do operador (3.1.1): foi desligado na fase 2 a pedido do dono (`PIN_REQUIRED = false`); decidir se volta como obrigatório e se o PIN passa a sobreviver ao "Sair".
 - [ ] Conferência de que nada da seção 16 foi construído.
 - [ ] Critérios 13, 16, 41, 52, 53, 59 e 60 verificados; 61 e 62 conferidos de novo.
 - [ ] Todos os 62 critérios continuam verdes no CI.
