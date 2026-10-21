@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Db } from './db'
-import { cancelCard, createHousehold, findLocalCard, issueCard, updateHousehold } from './households'
+import { cancelCard, createHousehold, createSoloHousehold, findLocalCard, householdOf, issueCard, updateHousehold } from './households'
 import { createQueue } from './queue'
 import { freshDb } from './testing'
 
@@ -28,6 +28,24 @@ describe('households and cards offline', () => {
     const [item] = await queue.list()
     expect(item).toMatchObject({ method: 'POST', path: '/v1/shelters/s1/households', shelter_id: 's1', volunteer_id: 'ana' })
     expect(item.body).toMatchObject({ id: 'h1', member_ids: ['p1', 'p2'], head_id: 'p1', pets: [{ species: 'dog', count: 1 }] })
+  })
+
+  it('makes a household of one person after the check-in, with the person as head, in the queue after the check-in', async () => {
+    const queue = make()
+    await queue.enqueue({ method: 'POST', path: '/v1/shelters/s1/checkins', body: { id: 'p1' }, ...who })
+    const id = await createSoloHousehold(db, queue, who, 'p1')
+    expect(await db.get('households', id)).toMatchObject({ member_ids: ['p1'], head_id: 'p1', pending: true })
+    expect((await db.get('people', 'p1'))?.household_id).toBe(id)
+    const items = await queue.list()
+    expect(items.map((i) => i.path)).toEqual(['/v1/shelters/s1/checkins', '/v1/shelters/s1/households'])
+    expect(items[1]!.body).toMatchObject({ id, member_ids: ['p1'], head_id: 'p1' })
+  })
+
+  it('offers the options only to a person with no household, on the server or on this phone', () => {
+    expect(householdOf({})).toBeUndefined()
+    expect(householdOf({}, {})).toBeUndefined()
+    expect(householdOf({ household_id: 'h1' })).toBe('h1')
+    expect(householdOf({}, { household_id: 'h2' })).toBe('h2')
   })
 
   it('changes members, head and pets; removing the head clears it', async () => {

@@ -95,3 +95,13 @@ export async function findLocalCard(db: Db, code: string): Promise<LocalCard | n
   const card = await db.get('cards', code)
   return card ? { card, household: await db.get('households', card.household_id) } : null
 }
+
+/** The person's household: the server's view or, for one made on this phone and not synced yet, the phone's copy. */
+export const householdOf = (person: { household_id?: string }, local?: { household_id?: string }): string | undefined =>
+  person.household_id ?? local?.household_id
+
+/** A household of one: the person, who is also its head, so the card can be issued (spec 3.5.1). The id is made here, so it works offline. */
+export async function createSoloHousehold(db: Db, queue: Queue, who: Who, personId: string, id: string = crypto.randomUUID()): Promise<string> {
+  await createHousehold(db, queue, who, { id, member_ids: [personId], head_id: personId })
+  return id
+}

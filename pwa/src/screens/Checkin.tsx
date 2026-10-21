@@ -16,6 +16,7 @@ import { setReturnTo } from '../return-to'
 import { BackLink } from './BackLink'
 import { CameraCapture } from './CameraCapture'
 import { Consent } from './Consent'
+import { HouseholdOptions } from './HouseholdOptions'
 import { PersonFields } from './PersonFields'
 
 type Step = 'consent' | 'form' | 'method' | 'camera' | 'working' | 'done'
@@ -193,9 +194,7 @@ export function Checkin({ ctx, shelterId }: { ctx: AppContext; shelterId: string
         {done.personId && !done.queued && (
           <button type="button" class="button" onClick={() => navigate(`/person/${done.personId}`)}>{t('checkin.open_person')}</button>
         )}
-        <h2 class="subtitle">{t('checkin.household_question')}</h2>
-        <button type="button" class="button button-secondary" onClick={() => navigate(`/shelter/${shelterId}/households/new`)}>{t('checkin.household_new')}</button>
-        <button type="button" class="button button-secondary" onClick={() => navigate(`/shelter/${shelterId}/households/new`)}>{t('checkin.household_join')}</button>
+        {done.personId && <HouseholdOptions ctx={ctx} shelterId={shelterId} personId={done.personId} />}
         <button
           type="button"
           class="button button-secondary"

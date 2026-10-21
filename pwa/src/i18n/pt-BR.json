@@ -367,6 +367,7 @@
   "checkin.household_question": "Esta pessoa tem família aqui?",
   "checkin.household_new": "Novo núcleo familiar",
   "checkin.household_join": "Juntar a um núcleo existente",
+  "checkin.household_alone": "Só esta pessoa (gerar cartão)",
   "checkin.error.photo_rejected": "Não conseguimos ver um rosto nesta foto. Tire outra, ou cadastre sem foto.",
   "checkin.camera_hint": "Rosto de frente, com boa luz.",
   "checkin.camera_bad_frame": "Não conseguimos pegar a imagem, tente de novo.",

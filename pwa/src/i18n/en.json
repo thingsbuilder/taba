@@ -367,6 +367,7 @@
   "checkin.household_question": "Does this person have family here?",
   "checkin.household_new": "New household",
   "checkin.household_join": "Join an existing household",
+  "checkin.household_alone": "Only this person (issue a card)",
   "checkin.error.photo_rejected": "We could not see a face in this photo. Take another, or register without a photo.",
   "checkin.camera_hint": "Face to the camera, in good light.",
   "checkin.camera_bad_frame": "We could not get the image, please try again.",
