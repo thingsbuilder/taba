@@ -2,3 +2,5 @@ docs/pt_br/ideias/
 testes/
 .env
 infra/ansible/inventory/prod/
+docs/unico/
+.DS_Store
