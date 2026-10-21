@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  bodyNoBiometrics, bodyWithCapture, checkinErrorKey, dataToForm, emptyForm, formToData, needsThumbnail, queuedCheckin, validateForm,
+  bodyNoBiometrics, bodyWithCapture, checkinErrorKey, dataToForm, emptyForm, enqueueParts, formToData, needsThumbnail, queuedCheckin, validateForm,
 } from './checkin'
 
 const now = new Date('2026-10-21T12:00:00Z')
@@ -64,11 +64,6 @@ describe('thumbnail rule (spec 4.6)', () => {
     expect(needsThumbnail({ name: 'Ana' })).toBe(false)
     expect(needsThumbnail({ wristband: '7' })).toBe(false)
   })
-  it('the body carries the thumbnail only then', () => {
-    const base = { id: 'p1', legal_basis: 'consent' as const, now, thumbnail_base64: 'dGg=' }
-    expect(bodyNoBiometrics({ ...base, data: { is_child: true }, declined: false })).toHaveProperty('thumbnail_base64', 'dGg=')
-    expect(bodyNoBiometrics({ ...base, data: { is_child: true, name: 'Bia' }, declined: false })).not.toHaveProperty('thumbnail_base64')
-  })
 })
 
 describe('request bodies', () => {
@@ -85,29 +80,48 @@ describe('request bodies', () => {
 })
 
 describe('queuedCheckin', () => {
+  const photo = new Blob([new Uint8Array([1, 2, 3])])
+  const thumbnail = new Blob([new Uint8Array([9])])
   const base = { id: 'p1', data: { is_child: false, name: 'Ana' }, legal_basis: 'consent' as const, now, shelterId: 's1', volunteerId: 'v1', declined: false, degraded: false }
 
   it('no photo: one check-in without biometrics', () => {
-    const items = queuedCheckin({ ...base, declined: true })
-    expect(items).toHaveLength(1)
-    expect(items[0]).toMatchObject({ method: 'POST', path: '/v1/shelters/s1/checkins', shelter_id: 's1', volunteer_id: 'v1' })
-    expect(items[0]!.body).toMatchObject({ no_biometrics: true, biometrics_declined: true })
+    const parts = queuedCheckin({ ...base, declined: true })
+    expect(parts).toHaveLength(1)
+    expect(parts[0]!.item).toMatchObject({ method: 'POST', path: '/v1/shelters/s1/checkins', shelter_id: 's1', volunteer_id: 'v1' })
+    expect(parts[0]!.item.body).toMatchObject({ no_biometrics: true, biometrics_declined: true })
+    expect(parts[0]!.blobs).toBeUndefined()
   })
 
-  it('photo: path B, assisted by the server, no no_biometrics flag', () => {
-    const [item, ...rest] = queuedCheckin({ ...base, photo_base64: 'Zm90bw==' })
+  it('photo: path B; the photo travels as a Blob for the queue to encrypt, never in the body', () => {
+    const [part, ...rest] = queuedCheckin({ ...base, photo })
     expect(rest).toEqual([])
-    expect(item!.body).toMatchObject({ photo_base64: 'Zm90bw==' })
-    expect(item!.body).not.toHaveProperty('no_biometrics')
+    expect(part!.blobs).toEqual({ photo })
+    expect(JSON.stringify(part!.item.body)).not.toContain('photo')
+    expect(part!.item.body).not.toHaveProperty('no_biometrics')
+  })
+
+  it('thumbnail only for a person without name and wristband', () => {
+    expect(queuedCheckin({ ...base, data: { is_child: true }, photo, thumbnail })[0]!.blobs).toEqual({ photo, thumbnail })
+    expect(queuedCheckin({ ...base, photo, thumbnail })[0]!.blobs).toEqual({ photo })
   })
 
   it('photo with Unico down: path C first, then the photo as late biometrics (FIFO order)', () => {
-    const items = queuedCheckin({ ...base, photo_base64: 'Zm90bw==', degraded: true })
-    expect(items.map((i) => `${i.method} ${i.path}`)).toEqual(['POST /v1/shelters/s1/checkins', 'PUT /v1/people/p1/biometrics'])
-    expect(items[0]!.body).toMatchObject({ no_biometrics: true })
-    expect(items[0]!.body).not.toHaveProperty('photo_base64')
-    expect(items[0]!.body).not.toHaveProperty('biometrics_declined')
-    expect(items[1]!.body).toEqual({ photo_base64: 'Zm90bw==' })
+    const parts = queuedCheckin({ ...base, photo, degraded: true })
+    expect(parts.map((p) => `${p.item.method} ${p.item.path}`)).toEqual(['POST /v1/shelters/s1/checkins', 'PUT /v1/people/p1/biometrics'])
+    expect(parts[0]!.item.body).toMatchObject({ no_biometrics: true })
+    expect(parts[0]!.item.body).not.toHaveProperty('biometrics_declined')
+    expect(parts[0]!.blobs).toBeUndefined()
+    expect(parts[1]!.blobs).toEqual({ photo })
+  })
+})
+
+describe('enqueueParts', () => {
+  it('enqueues in order with the blobs as the second argument', async () => {
+    const calls: unknown[][] = []
+    const parts = queuedCheckin({ id: 'p1', data: { is_child: false, name: 'A' }, legal_basis: 'consent', now, shelterId: 's', volunteerId: null, photo: new Blob(['x']), declined: false, degraded: true })
+    await enqueueParts({ enqueue: async (...args) => void calls.push(args) }, parts)
+    expect(calls.map((c) => (c[0] as { method: string }).method)).toEqual(['POST', 'PUT'])
+    expect(calls[1]![1]).toHaveProperty('photo')
   })
 })
 

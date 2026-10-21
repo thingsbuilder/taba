@@ -57,6 +57,9 @@ export const LEGAL_BASES: LegalBasis[] = ['consent', 'vital_interest', 'child_pr
 /** The basis the volunteer starts with: a child is `child_protection` (spec 3.4.1), otherwise `consent`. */
 export const defaultLegalBasis = (isChild: boolean): LegalBasis => (isChild ? 'child_protection' : 'consent')
 
+/** A child is `child_protection` (spec 3.4.1) unless the volunteer chose `vital_interest` for an injured one. */
+export const effectiveBasis = (basis: LegalBasis, isChild: boolean): LegalBasis => (isChild && basis === 'consent' ? 'child_protection' : basis)
+
 // The responsible of the pilot comes from `GET /v1/status` (`pilot_responsible`). The consent has to be
 // readable offline, so the last value seen stays on the phone; a server that does not send it yet gives null.
 

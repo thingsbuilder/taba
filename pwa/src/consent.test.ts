@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import en from './i18n/en.json'
 import es from './i18n/es.json'
 import ptBR from './i18n/pt-BR.json'
-import { CONSENT_LANGS, LEGAL_BASES, consentT, consentView, defaultConsentLang, defaultLegalBasis, rememberResponsible, responsibleOf } from './consent'
+import { CONSENT_LANGS, LEGAL_BASES, effectiveBasis, consentT, consentView, defaultConsentLang, defaultLegalBasis, rememberResponsible, responsibleOf } from './consent'
 import { detectLanguage, getLanguage, setLanguage, t } from './i18n'
 import { freshDb } from './testing'
 
@@ -73,6 +73,9 @@ describe('legal basis', () => {
     expect(LEGAL_BASES).toEqual(['consent', 'vital_interest', 'child_protection'])
     expect(defaultLegalBasis(true)).toBe('child_protection')
     expect(defaultLegalBasis(false)).toBe('consent')
+    expect(effectiveBasis('consent', true)).toBe('child_protection')
+    expect(effectiveBasis('vital_interest', true)).toBe('vital_interest')
+    expect(effectiveBasis('consent', false)).toBe('consent')
   })
 })
 

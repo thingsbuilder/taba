@@ -94,7 +94,8 @@ export async function cachePeople(db: Db, shelterId: string, people: PersonSumma
 export async function cachedPeople(db: Db, shelterId: string): Promise<PersonSummary[]> {
   const rows = await db.getAllFromIndex('people', 'by_shelter', shelterId)
   return rows
-    .filter((r) => r.level)
+    // Pending ones are shown from the queue (`pendingPeople`).
+    .filter((r) => r.level && !r.pending)
     .map((r) => ({
       id: r.id,
       level: r.level!,

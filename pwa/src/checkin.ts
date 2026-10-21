@@ -108,7 +108,6 @@ interface BodyInput {
   data: PersonData
   legal_basis: LegalBasis
   now: Date
-  thumbnail_base64?: string
 }
 
 function base(i: BodyInput) {
@@ -117,7 +116,6 @@ function base(i: BodyInput) {
     data: i.data,
     legal_basis: i.legal_basis,
     client_created_at: i.now.toISOString(),
-    ...(i.thumbnail_base64 && needsThumbnail(i.data) ? { thumbnail_base64: i.thumbnail_base64 } : {}),
   }
 }
 
@@ -134,39 +132,49 @@ export const bodyNoBiometrics = (i: BodyInput & { declined: boolean }): CheckinR
 export interface QueuedInput extends BodyInput {
   shelterId: string
   volunteerId: string | null
-  /** The reduced JPEG (base64) taken with the app camera; absent for the no-photo way. */
-  photo_base64?: string
+  /** The reduced JPEG taken with the app camera; absent for the no-photo way. */
+  photo?: Blob
   /** The person refused the selfie (spec 3.4, path C). */
   declined: boolean
   /** `GET /status` says the facial recognition is down (spec 5.7). */
   degraded: boolean
 }
 
+/** A queue item and the photos that travel with it: the queue encrypts them and puts them back in the body when sending (spec 6.1.7). */
+export interface QueuedPart {
+  item: NewQueueItem
+  blobs?: { photo?: Blob; thumbnail?: Blob }
+}
+
 /**
  * What to put in the queue (spec 3.4, 5.7). With a photo and Unico working, the photo is the check-in (path B,
  * `assisted`). With Unico down the check-in goes by path C and the photo waits as a late biometrics `PUT` that
- * the queue sends after it (strict FIFO).
+ * the queue sends after it (strict FIFO). `thumbnail` is only kept for a person without name and wristband.
  */
-export function queuedCheckin(i: QueuedInput): NewQueueItem[] {
-  const checkin = (body: CheckinRequest): NewQueueItem => ({
-    method: 'POST',
-    path: `/v1/shelters/${i.shelterId}/checkins`,
-    body,
-    volunteer_id: i.volunteerId,
-    shelter_id: i.shelterId,
+export function queuedCheckin(i: QueuedInput & { thumbnail?: Blob }): QueuedPart[] {
+  const thumbnail = i.thumbnail && needsThumbnail(i.data) ? i.thumbnail : undefined
+  const checkin = (body: CheckinRequest, blobs?: QueuedPart['blobs']): QueuedPart => ({
+    item: { method: 'POST', path: `/v1/shelters/${i.shelterId}/checkins`, body, volunteer_id: i.volunteerId, shelter_id: i.shelterId },
+    ...(blobs ? { blobs } : {}),
   })
-  if (!i.photo_base64) return [checkin(bodyNoBiometrics(i))]
-  if (!i.degraded) return [checkin({ ...base(i), photo_base64: i.photo_base64 })]
+  if (!i.photo) return [checkin(bodyNoBiometrics(i), thumbnail ? { thumbnail } : undefined)]
+  if (!i.degraded) return [checkin(base(i), { photo: i.photo, ...(thumbnail ? { thumbnail } : {}) })]
   return [
-    checkin(bodyNoBiometrics({ ...i, declined: false })),
+    checkin(bodyNoBiometrics({ ...i, declined: false }), thumbnail ? { thumbnail } : undefined),
     {
-      method: 'PUT',
-      path: `/v1/people/${i.id}/biometrics`,
-      body: { photo_base64: i.photo_base64 },
-      volunteer_id: i.volunteerId,
-      shelter_id: i.shelterId,
+      item: { method: 'PUT', path: `/v1/people/${i.id}/biometrics`, body: {}, volunteer_id: i.volunteerId, shelter_id: i.shelterId },
+      blobs: { photo: i.photo },
     },
   ]
+}
+
+interface BlobQueue {
+  enqueue(item: NewQueueItem, blobs?: { photo?: Blob; thumbnail?: Blob }): Promise<unknown>
+}
+
+/** In order, so a late biometrics `PUT` always goes after its check-in. */
+export async function enqueueParts(queue: BlobQueue, parts: QueuedPart[]): Promise<void> {
+  for (const part of parts) await queue.enqueue(part.item, part.blobs)
 }
 
 const OWN_ERRORS = new Set(['no_face', 'invalid_image', 'image_too_large'])
