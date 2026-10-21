@@ -3,6 +3,7 @@ import type { SearchLinkCreated } from '../api-phase4'
 import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
 import { cameraSupported } from '../camera'
+import { getPosition } from '../geo'
 import { checkinErrorKey } from '../checkin'
 import { useOnline } from '../hooks'
 import { getLanguage, t } from '../i18n'
@@ -11,8 +12,8 @@ import { navigate } from '../nav'
 import { queueErrorKey } from '../queue-errors'
 import { setReturnTo } from '../return-to'
 import {
-  FAMILY_LANGUAGES, MAX_PHOTOS, type SearchError, type SearchForm, canSearch, confirmedShelters, emptySearchForm, enqueueSearch, reducePhotos,
-  shareLink, takeSearchReply, validateSearch,
+  FAMILY_LANGUAGES, MAX_PHOTOS, type SearchError, type SearchForm, type ShelterChoice, canSearch, confirmedShelters, emptySearchForm, enqueueSearch, hasSearchRole,
+  reducePhotos, shareLink, shelterChoices, takeSearchReply, validateSearch,
 } from '../search'
 import { BackLink } from './BackLink'
 import { CameraCapture } from './CameraCapture'
@@ -225,14 +226,36 @@ export function Search({ ctx }: { ctx: AppContext }) {
 /** "Enviar link para a família" (spec 3.7 item 11): needs signal; the volunteer never reads what the family sends. */
 function FamilyLink({ ctx }: { ctx: AppContext }) {
   const online = useOnline()
-  const shelters = ctx.active ? confirmedShelters(ctx.active) : []
-  const [shelterId, setShelterId] = useState(shelters[0]?.shelter_id ?? '')
+  const own = ctx.active ? confirmedShelters(ctx.active) : []
+  const [near, setNear] = useState<ShelterChoice[]>([])
+  const shelters = shelterChoices(own, near.map((s) => ({ id: s.shelter_id, name: s.name, confirmation: 'confirmed' as const })))
+  const [shelterId, setShelterId] = useState(own[0]?.shelter_id ?? '')
+  const [looking, setLooking] = useState(false)
   const [link, setLink] = useState<SearchLinkCreated | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  if (!ctx.active || shelters.length === 0) return null
+  if (!ctx.active || (own.length === 0 && !hasSearchRole(ctx.active))) return null
   const secret = ctx.active.secret
+
+  /** The Civil Defense, a mediator or protection name any confirmed shelter: those near where they are. */
+  async function lookNearby() {
+    setLooking(true)
+    setError(null)
+    try {
+      const position = await getPosition()
+      const res = await ctx.api.nearbyShelters(secret, position.lat, position.lon)
+      if (!res.ok) return setError(res.error)
+      const found = shelterChoices([], res.data.shelters)
+      setNear(found)
+      if (found.length === 0) setError('search.link_none_nearby')
+      else if (!shelterId) setShelterId(found[0]!.shelter_id)
+    } catch {
+      setError('search.link_no_position')
+    } finally {
+      setLooking(false)
+    }
+  }
 
   async function share(created: SearchLinkCreated) {
     const result = await shareLink(navigator, t('search.link_share_text'), created.url)
@@ -254,6 +277,9 @@ function FamilyLink({ ctx }: { ctx: AppContext }) {
     <section class="card">
       <h2 class="subtitle">{t('search.link_title')}</h2>
       <p class="caption">{t('search.link_hint')}</p>
+      {hasSearchRole(ctx.active) && (
+        <button type="button" class="button button-secondary" disabled={!online || looking} onClick={() => void lookNearby()}>{looking ? t('search.link_looking') : t('search.link_other')}</button>
+      )}
       {shelters.length > 1 && (
         <label class="field">
           {t('search.link_shelter')}
@@ -263,8 +289,9 @@ function FamilyLink({ ctx }: { ctx: AppContext }) {
         </label>
       )}
       {!online && <p class="notice" role="status">{t('search.link_needs_signal')}</p>}
-      {error && <p class="notice notice-error" role="alert">{t(errorKey(error))}</p>}
-      <button type="button" class="button button-secondary" disabled={!online || busy} onClick={() => void create()}>{busy ? t('search.link_creating') : t('search.link_create')}</button>
+      {shelters.length === 0 && <p class="caption">{t('search.link_pick_shelter')}</p>}
+      {error && <p class="notice notice-error" role="alert">{t(error.startsWith('search.') ? error : errorKey(error))}</p>}
+      <button type="button" class="button button-secondary" disabled={!online || busy || shelterId === ''} onClick={() => void create()}>{busy ? t('search.link_creating') : t('search.link_create')}</button>
       {link && (
         <>
           <input type="text" readOnly value={link.url} aria-label={t('search.link_title')} onFocus={(e) => e.currentTarget.select()} />

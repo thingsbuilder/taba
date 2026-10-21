@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createQueue } from './queue'
 import { phase3Label, queueErrorKey } from './queue-errors'
-import { canSearch, emptySearchForm, enqueueSearch, reducePhotos, searchBody, shareLink, takeSearchReply, validateSearch } from './search'
+import { canSearch, emptySearchForm, enqueueSearch, hasSearchRole, reducePhotos, searchBody, shareLink, shelterChoices, takeSearchReply, validateSearch } from './search'
 import { freshDb } from './testing'
 
 const json = (status: number, body: unknown = {}, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers })
@@ -160,5 +160,28 @@ describe('shareLink', () => {
     expect(writeText).toHaveBeenCalledWith('t u')
     expect(await shareLink({ share: vi.fn().mockRejectedValue(new Error('x')), clipboard: { writeText } }, 't', 'u')).toBe('copied')
     expect(await shareLink({}, 't', 'u')).toBe('unsupported')
+  })
+})
+
+describe('the origin shelter of a family link', () => {
+  const near = [
+    { id: 's1', name: 'Ginásio', confirmation: 'confirmed' as const },
+    { id: 's2', name: 'Galpão', confirmation: 'unconfirmed' as const },
+    { id: 's3', name: 'Escola', confirmation: 'confirmed' as const },
+  ]
+  it('keeps the own confirmed shelters first and adds only the confirmed ones found near, once each', () => {
+    expect(shelterChoices([{ shelter_id: 's3', name: 'Escola' }], near)).toEqual([
+      { shelter_id: 's3', name: 'Escola' },
+      { shelter_id: 's1', name: 'Ginásio' },
+    ])
+    expect(shelterChoices([], near).map((s) => s.shelter_id)).toEqual(['s1', 's3'])
+    expect(shelterChoices([], [])).toEqual([])
+  })
+
+  it('lets the Civil Defense, a mediator and protection name any shelter, and nobody else', () => {
+    expect(hasSearchRole({ global_roles: ['mediator'] })).toBe(true)
+    expect(hasSearchRole({ global_roles: ['civil_defense'] })).toBe(true)
+    expect(hasSearchRole({ global_roles: ['validator'] })).toBe(false)
+    expect(hasSearchRole({ global_roles: [] })).toBe(false)
   })
 })

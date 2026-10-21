@@ -98,6 +98,7 @@ const CONTENTION_WAIT_MS = 1000
 
 export type SubmitResult =
   | { kind: 'done'; usable: number }
+  | { kind: 'none_usable' }
   | { kind: 'invalid' }
   | { kind: 'error'; key: 'error_offline' | 'error_degraded' | 'error_too_big' | 'error_busy' | 'error_contention' | 'error_check' | 'error_generic' }
 
@@ -114,7 +115,8 @@ export async function submitSearch(
     await sleep(CONTENTION_WAIT_MS)
     res = await publicCall<SearchResponse>(fetchFn, 'POST', `/v1/search-links/${encodeURIComponent(code)}/submit`, request)
   }
-  if (res.ok) return { kind: 'done', usable: res.data.usable_photos }
+  // No photo gave a face: nothing was registered and the link still works, so the family sends others.
+  if (res.ok) return res.data.usable_photos === 0 ? { kind: 'none_usable' } : { kind: 'done', usable: res.data.usable_photos }
   switch (res.status) {
     case 0: return { kind: 'error', key: 'error_offline' }
     case 410: return { kind: 'invalid' }

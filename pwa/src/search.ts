@@ -1,4 +1,4 @@
-import type { FamilyLanguage, SearchRequest, SearchResponse } from './api-phase4'
+import type { FamilyLanguage, NearbyShelter, SearchRequest, SearchResponse } from './api-phase4'
 import type { Db, QueueItem } from './db'
 import { type Frame, photoForToken } from './image'
 import type { Queue } from './queue'
@@ -88,6 +88,23 @@ export async function takeSearchReply(db: Db, searchId: string): Promise<number 
 const SEARCH_ROLES = ['civil_defense', 'mediator', 'protection']
 
 export const confirmedShelters = (session: Pick<LocalSession, 'memberships'>) => (session.memberships ?? []).filter((m) => m.confirmation === 'confirmed')
+
+/** Whether the volunteer searches by a global role and so may name any confirmed shelter for a family link. */
+export const hasSearchRole = (session: Pick<LocalSession, 'global_roles'>): boolean => session.global_roles.some((r) => SEARCH_ROLES.includes(r))
+
+export interface ShelterChoice {
+  shelter_id: string
+  name: string
+}
+
+/**
+ * The shelters a family link can come from: the volunteer's own confirmed ones first (the default),
+ * then the confirmed ones found near them (`GET /v1/shelters/nearby`); no shelter twice.
+ */
+export function shelterChoices(own: ShelterChoice[], near: Pick<NearbyShelter, 'id' | 'name' | 'confirmation'>[]): ShelterChoice[] {
+  const found = near.filter((s) => s.confirmation === 'confirmed').map((s) => ({ shelter_id: s.id, name: s.name }))
+  return [...own, ...found.filter((s) => !own.some((o) => o.shelter_id === s.shelter_id))]
+}
 
 export const canSearch = (session: Pick<LocalSession, 'memberships' | 'global_roles'>): boolean =>
   confirmedShelters(session).length > 0 || session.global_roles.some((r) => SEARCH_ROLES.includes(r))

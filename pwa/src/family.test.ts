@@ -84,6 +84,10 @@ describe('submitSearch', () => {
     expect(await send(json(400, { error: 'invalid_request' }))).toEqual({ kind: 'error', key: 'error_check' })
     expect(await send(json(500))).toEqual({ kind: 'error', key: 'error_generic' })
   })
+  it('an answer with no usable photo is not a success: the link still works and the family sends others', async () => {
+    expect(await send(json(202, { message: 'search_registered', usable_photos: 0 }))).toEqual({ kind: 'none_usable' })
+    expect(await send(json(202, { message: 'search_registered', usable_photos: 1 }))).toEqual({ kind: 'done', usable: 1 })
+  })
   it('tries again at once when the server is busy with the link, and gives up after a few', async () => {
     const waits: number[] = []
     const sleep = async (ms: number) => void waits.push(ms)

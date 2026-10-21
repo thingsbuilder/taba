@@ -86,6 +86,11 @@ export function Family({ code }: { code: string }) {
       urls.current = []
       setOutcome({ kind: 'done', usable: result.usable, sent: photos.length })
       setPhotos([])
+    } else if (result.kind === 'none_usable') {
+      urls.current.forEach((u) => URL.revokeObjectURL(u))
+      urls.current = []
+      setPhotos([])
+      setMessage(t('no_useful_photo'))
     } else if (result.kind === 'invalid') setLink('invalid')
     else setMessage(t(result.key))
   }
