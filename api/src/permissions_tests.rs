@@ -485,14 +485,6 @@ async fn anyone_signed_in_creates_a_shelter_and_reads_the_basics_of_any() {
 /// without a session and `501 not_implemented` with one. Each owner replaces the rows of their
 /// routes with the real permission matrix (2.3) and moves them to their own test.
 const PHASE_3_ROUTES: &[(&str, &str, &str)] = &[
-    // owner A: people and thumbnails
-    ("A", "POST", "/v1/shelters/s1/checkins"),
-    ("A", "GET", "/v1/shelters/s1/people"),
-    ("A", "GET", "/v1/shelters/s1/people/needs-selfie"),
-    ("A", "GET", "/v1/people/p1"),
-    ("A", "PATCH", "/v1/people/p1"),
-    ("A", "PUT", "/v1/people/p1/biometrics"),
-    ("A", "GET", "/v1/people/p1/thumbnail"),
     // owner B: households and cards
     ("B", "POST", "/v1/shelters/s1/households"),
     ("B", "GET", "/v1/households/h1"),

@@ -864,7 +864,7 @@ mod tests {
             (StatusCode::BAD_REQUEST, Some("device_id_required"))
         );
         let (status, body) = app
-            .post("/v1/captures", DEVICE, json!({ "purpose": "checkin" }))
+            .post("/v1/captures", DEVICE, json!({ "purpose": "revalidation" }))
             .await;
         assert_eq!(
             (status, body["error"].as_str()),
