@@ -8,7 +8,7 @@
 |---|---|---|---|
 | A | `rescues.rs` | `POST /v1/rescues`, `PATCH /v1/rescues/{id}`, `GET /v1/shelters/nearby` | `RescueDoc`; `repoint_person` (gancho, já chamado) |
 | B | `searches.rs`, `matching.rs` | `POST /v1/searches` | `SearchDoc`, `SearchVia`, `SearchStatus`, `MissingPerson`, `Family`, `SearchOwner`, `SearchInput`, `RegisterOutcome`; `register_photos`; `on_person_registered` |
-| C | `matches.rs` | `GET /v1/matches`, `GET /v1/matches/{id}`, `POST /v1/matches/{id}/decision` | `MatchDoc`, `MediatorKind`, `MatchStatus`, `DecidedBy` |
+| C | `matches.rs` | `GET /v1/matches` (`{matches: [MatchSummary]}`), `GET /v1/matches/{id}`, `GET /v1/matches/{id}/thumbnail` (`image/jpeg`, `no-store`, `404 thumbnail_not_found`), `POST /v1/matches/{id}/decision` | `MatchDoc`, `MediatorKind`, `MatchStatus`, `DecidedBy`; `matches::match_id`, `matches::queue_for` |
 | D | `roles.rs`, `jobs.rs`, `events.rs`, `alerts.rs` | `POST /v1/volunteers/{id}/roles`, `DELETE /v1/volunteers/{id}/roles/{role}` | `ClosureReason`, `closed_at`/`closure_reason`/`purge_at` em `EventDoc`; `ensure_open`; `jobs::spawn`/`run_once`; regras de destinatário de `SearchExpiring` e `FamilySearchReceived` |
 | E | `search_links.rs` | `POST /v1/search-links`, `DELETE /v1/search-links/{code}`, `GET /v1/search-links/{code}` (público), `POST /v1/search-links/{code}/submit` (público) | `SearchLinkDoc`, `LinkStatus` |
 

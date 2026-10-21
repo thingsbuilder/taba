@@ -641,7 +641,6 @@ mod tests {
         shelter_a: String,
         admin_b: Actor,
         admin_u: Actor,
-        shelter_u: String,
         volunteer_a: Actor,
         mediator: Actor,
         protection: Actor,
@@ -657,8 +656,7 @@ mod tests {
         app.confirmed_shelter(&admin_b, "B", north_of_origin(5_000.0))
             .await;
         let admin_u = app.actor("AdminU").await;
-        let shelter_u = app
-            .create_shelter(&admin_u, "U", north_of_origin(10_000.0))
+        app.create_shelter(&admin_u, "U", north_of_origin(10_000.0))
             .await;
         let volunteer_a = app
             .join(
@@ -687,7 +685,6 @@ mod tests {
             shelter_a,
             admin_b,
             admin_u,
-            shelter_u,
             volunteer_a,
             mediator,
             protection,
