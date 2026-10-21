@@ -63,7 +63,7 @@ As fontes (Outfit, Figtree e IBM Plex Mono, licença SIL OFL 1.1) vão dentro da
 
 ### Checagem de segredos
 
-`scripts/check-secrets.sh repo` e `scripts/check-secrets.sh dir pwa/dist` (rodados no CI e no `release.yml`) falham se acharem chave `uk_live_…`, endereço IP, ID de projeto GCP (`nome-123456`) ou e-mail de conta de serviço. Na sua máquina, o `repo` também procura o `gcp_project` real do `inventory/prod`.
+`scripts/check-secrets.sh repo` e `scripts/check-secrets.sh dir pwa/dist` (rodados no CI e no `release.yml`) falham se acharem chave `uk_live_…`, endereço IP, ID de projeto GCP (nome seguido de hífen e 6 dígitos) ou e-mail de conta de serviço. Na sua máquina, o `repo` também procura o `gcp_project` real do `inventory/prod`.
 
 ## Índices e TTL do Firestore
 

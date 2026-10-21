@@ -33,7 +33,7 @@ target=${2:-.}
 
 scan "Unico access key (uk_live_...)" 'uk_live_[A-Za-z0-9]{8,}' "$target"
 scan "IPv4 address" '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' "$target"
-scan "GCP project id (name-123456)" '\b[a-z][a-z0-9-]{4,28}-[0-9]{6}\b' "$target"
+scan "GCP project id (name-NNNNNN)" '\b[a-z][a-z0-9-]{3,28}-[0-9]{6}\b' "$target"
 scan "GCP service account email" '@[a-z][a-z0-9-]+\.iam\.gserviceaccount\.com' "$target"
 
 # On the maintainer's machine, also look for the real values of this installation.

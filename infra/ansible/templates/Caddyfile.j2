@@ -22,7 +22,12 @@
 		# manifesto) revalida sempre: é o que deixa o navegador ver a versão nova do app.
 		@revalidate not path /assets/*
 		header @revalidate Cache-Control "no-cache"
-		header /assets/* Cache-Control "public, max-age=31536000, immutable"
+		# Imutável só quando o arquivo existe: um 404 não pode ficar um ano em cache.
+		@immutable {
+			path /assets/*
+			file
+		}
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
 
 		# Rotas da PWA (/shelter/...) caem em index.html. Caminho com extensão que não
 		# existe (um .js antigo, por exemplo) dá 404 em vez de devolver HTML.

@@ -27,7 +27,7 @@ h1, p { margin: 0; }
 .lang { display: flex; gap: var(--space-1); padding: var(--space-1); border-radius: var(--radius-pill); background: var(--surface-sunken); }
 .lang-option {
   min-width: var(--touch-min);
-  min-height: 40px;
+  min-height: var(--touch-min);
   border: 0;
   border-radius: var(--radius-pill);
   background: transparent;

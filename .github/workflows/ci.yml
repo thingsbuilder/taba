@@ -71,3 +71,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: No secrets, GCP project ids or IPs in the repository
         run: scripts/check-secrets.sh repo
+      - name: The check itself detects leaks
+        run: scripts/check-secrets.test.sh
