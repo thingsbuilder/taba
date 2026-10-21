@@ -143,7 +143,9 @@ pub async fn create_invite(
             audit::add(
                 &db,
                 tx,
-                &AuditEntry::new("invite.create", "invite", &code).by(&by),
+                &AuditEntry::new("invite.create", "invite", &code)
+                    .by(&by)
+                    .in_shelter(&invite.shelter_id),
             )
         })
     })
@@ -248,7 +250,9 @@ pub async fn cancel_invite(
             audit::add(
                 &db,
                 tx,
-                &AuditEntry::new("invite.cancel", "invite", &code).by(&volunteer.id),
+                &AuditEntry::new("invite.cancel", "invite", &code)
+                    .by(&volunteer.id)
+                    .in_shelter(&invite.shelter_id),
             )?;
             Ok(invite.shelter_id)
         })
@@ -399,6 +403,7 @@ async fn accept_in(
         AuditEntry::new(action, kind, target)
             .by(&a.person_id)
             .on_device(&a.device_id)
+            .in_shelter(&invite.shelter_id)
             .basis(LegalBasis::FraudPrevention)
     };
     if is_new {

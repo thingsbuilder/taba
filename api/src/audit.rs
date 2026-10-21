@@ -32,6 +32,8 @@ pub struct AuditEntry {
     pub volunteer_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shelter_id: Option<String>,
     pub action: String,
     pub target_kind: String,
     pub target_id: String,
@@ -48,6 +50,7 @@ impl AuditEntry {
             at,
             volunteer_id: None,
             device_id: None,
+            shelter_id: None,
             action: action.into(),
             target_kind: target_kind.into(),
             target_id: target_id.into(),
@@ -63,6 +66,11 @@ impl AuditEntry {
 
     pub fn on_device(mut self, device_id: &str) -> Self {
         self.device_id = Some(device_id.into());
+        self
+    }
+
+    pub fn in_shelter(mut self, shelter_id: &str) -> Self {
+        self.shelter_id = Some(shelter_id.into());
         self
     }
 
@@ -113,6 +121,7 @@ mod tests {
         let entry = AuditEntry::new("session.create", "session", "abc")
             .by("vol-1")
             .on_device("dev-1")
+            .in_shelter("shelter-1")
             .basis(LegalBasis::FraudPrevention);
         write(&db, &entry).await.unwrap();
 
@@ -129,6 +138,7 @@ mod tests {
         assert_eq!(got.action, "session.create");
         assert_eq!(got.volunteer_id.as_deref(), Some("vol-1"));
         assert_eq!(got.device_id.as_deref(), Some("dev-1"));
+        assert_eq!(got.shelter_id.as_deref(), Some("shelter-1"));
         assert_eq!(got.legal_basis, Some(LegalBasis::FraudPrevention));
         let year = got.expires_at.as_second() - got.at.as_second();
         assert_eq!(year, RETENTION_SECONDS);

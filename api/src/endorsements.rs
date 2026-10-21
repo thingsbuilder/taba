@@ -94,7 +94,9 @@ pub async fn create_code(
             audit::add(
                 &db,
                 tx,
-                &AuditEntry::new("endorsement.code", "shelter", &shelter_id).by(&by),
+                &AuditEntry::new("endorsement.code", "shelter", &shelter_id)
+                    .by(&by)
+                    .in_shelter(&shelter_id),
             )
         })
     })
@@ -194,7 +196,9 @@ pub async fn endorse(
             audit::add(
                 &db,
                 tx,
-                &AuditEntry::new("endorsement.create", "shelter", &shelter_id).by(&volunteer.id),
+                &AuditEntry::new("endorsement.create", "shelter", &shelter_id)
+                    .by(&volunteer.id)
+                    .in_shelter(&shelter_id),
             )?;
             Ok((shelter_id, shelter))
         })

@@ -250,7 +250,11 @@ pub async fn memberships_of(
             event_id: shelter.event_id,
         });
     }
-    memberships.sort_by(|a, b| a.shelter_id.cmp(&b.shelter_id));
+    memberships.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.shelter_id.cmp(&b.shelter_id))
+    });
     Ok(memberships)
 }
 
@@ -366,7 +370,8 @@ pub async fn promote_member(
                         "membership",
                         &membership_id(&shelter_id, &target),
                     )
-                    .by(&by),
+                    .by(&by)
+                    .in_shelter(&shelter_id),
                 )?;
             }
             let profile: VolunteerDoc = store::get(&db, VOLUNTEERS, &target)
@@ -444,7 +449,9 @@ pub async fn remove_member(
             audit::add(
                 &db,
                 tx,
-                &AuditEntry::new("member.remove", "membership", &id).by(&by),
+                &AuditEntry::new("member.remove", "membership", &id)
+                    .by(&by)
+                    .in_shelter(&shelter_id),
             )
         })
     })
@@ -484,7 +491,9 @@ pub async fn leave_shelter(
             audit::add(
                 &db,
                 tx,
-                &AuditEntry::new("member.leave", "membership", &id).by(&who),
+                &AuditEntry::new("member.leave", "membership", &id)
+                    .by(&who)
+                    .in_shelter(&shelter_id),
             )
         })
     })

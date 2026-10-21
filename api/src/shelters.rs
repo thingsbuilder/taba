@@ -465,9 +465,17 @@ async fn create_in(
             tx_create(db, tx, events::COLLECTION, &assignment.event_id, &event)?;
             event
         }
-        None => store::get(db, events::COLLECTION, &assignment.event_id)
-            .await?
-            .ok_or_else(ApiError::internal)?,
+        None => {
+            let mut event: EventDoc = store::get(db, events::COLLECTION, &assignment.event_id)
+                .await?
+                .ok_or_else(ApiError::internal)?;
+            // The event was named before any shelter had an address; this one has it.
+            if let Some(name) = event.renamed_for(&new.address) {
+                event.name = name;
+                tx_replace(db, tx, events::COLLECTION, &assignment.event_id, &event)?;
+            }
+            event
+        }
     };
     if flagged {
         alerts::add(
@@ -499,7 +507,9 @@ async fn create_in(
     audit::add(
         db,
         tx,
-        &AuditEntry::new("shelter.create", "shelter", &new.id).by(creator_id),
+        &AuditEntry::new("shelter.create", "shelter", &new.id)
+            .by(creator_id)
+            .in_shelter(&new.id),
     )?;
     Ok(Created {
         shelter,
@@ -517,8 +527,10 @@ pub async fn post_shelters(
     let radius_m = f64::from(state.config.shelter_radius_m);
     let event_radius_km = state.config.event_radius_km;
     let created = {
-        // One creation at a time in this process (spec 6.2.4); the transaction below still
-        // reads the neighbours itself, so it stays correct if the lock is ever removed.
+        // ponytail: global lock; fine with the single e2-micro instance. With more than one
+        // instance, switch to a transaction on a per-geohash-cell lock document. The
+        // transaction below already reads the neighbours itself, which is what a second
+        // instance would still need.
         let _one_at_a_time = state.shelter_lock.lock().await;
         store::transact(&state.db, |db, tx| {
             let (creator_id, new) = (volunteer.id.clone(), new.clone());
@@ -624,7 +636,9 @@ pub async fn patch_shelter(
             audit::add(
                 &db,
                 tx,
-                &AuditEntry::new("shelter.update", "shelter", &id).by(&volunteer.id),
+                &AuditEntry::new("shelter.update", "shelter", &id)
+                    .by(&volunteer.id)
+                    .in_shelter(&id),
             )?;
             Ok((shelter, event))
         })
@@ -727,7 +741,9 @@ async fn update(
                 audit::add(
                     &db,
                     tx,
-                    &AuditEntry::new(change.action(), "shelter", &id).by(&by),
+                    &AuditEntry::new(change.action(), "shelter", &id)
+                        .by(&by)
+                        .in_shelter(&id),
                 )?;
             }
             let event = event_of(&db, &shelter).await?;
@@ -1948,5 +1964,109 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored.revocations.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod follow_up_tests {
+    use super::*;
+    use crate::test_support::{ORIGIN, TestApp, all_docs, north_of_origin, shelter_body};
+
+    #[tokio::test]
+    async fn a_shelter_with_an_address_names_an_event_that_had_only_a_placeholder() {
+        let app = TestApp::new().await;
+        let (ana, bia) = (app.actor("Ana").await, app.actor("Bia").await);
+        // The first shelter has no address yet, so the event is "Evento – MM/YYYY".
+        let first = app.create_shelter(&ana, "A", ORIGIN).await;
+        let mut body = shelter_body(
+            &crate::test_support::new_id(),
+            "B",
+            north_of_origin(1_000.0),
+        );
+        body["address"] = json!({ "text": "Rua B, 2", "city": "Canoas", "state": "RS" });
+        let (status, created) = app
+            .send("POST", "/v1/shelters", &bia.secret, Some(body))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let name = created["event"]["name"].as_str().unwrap();
+        assert!(name.starts_with("Canoas/RS – "), "{name}");
+        let stored: ShelterDoc = store::get(&app.state.db, COLLECTION, &first)
+            .await
+            .unwrap()
+            .unwrap();
+        let event: EventDoc = store::get(
+            &app.state.db,
+            events::COLLECTION,
+            stored.event_id.as_deref().unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!((event.name.as_str(), event.auto_named), (name, true));
+    }
+
+    #[tokio::test]
+    async fn shelter_audit_entries_name_the_shelter() {
+        let app = TestApp::new().await;
+        let admin = app.actor("Admin").await;
+        let shelter = app.create_shelter(&admin, "A", ORIGIN).await;
+        let code = app.invite(&admin, &shelter, "qr", "volunteer").await;
+        let volunteer = app.join(&code, "Vol").await;
+        app.send(
+            "POST",
+            &format!("/v1/shelters/{shelter}/leave"),
+            &volunteer.secret,
+            None,
+        )
+        .await;
+        app.send(
+            "PATCH",
+            &format!("/v1/shelters/{shelter}"),
+            &admin.secret,
+            Some(json!({ "capacity": 10 })),
+        )
+        .await;
+        let entries = all_docs(&app.state.db, "audit_log").await;
+        for action in [
+            "shelter.create",
+            "shelter.update",
+            "invite.create",
+            "invite.accept",
+            "member.leave",
+        ] {
+            let entry = entries
+                .iter()
+                .find(|e| e["action"] == action)
+                .unwrap_or_else(|| panic!("{action}"));
+            assert_eq!(entry["shelter_id"], json!(shelter), "{action}");
+        }
+        // A login is not about a shelter.
+        let logins: Vec<_> = entries
+            .iter()
+            .filter(|e| e["action"] == "capture.create")
+            .collect();
+        assert!(!logins.is_empty() && logins.iter().all(|e| e.get("shelter_id").is_none()));
+    }
+
+    #[tokio::test]
+    async fn me_lists_the_shelters_by_name() {
+        let app = TestApp::new().await;
+        let ana = app.actor("Ana").await;
+        let zulu = app.create_shelter(&ana, "Zulu", ORIGIN).await;
+        let alfa = app
+            .create_shelter(&ana, "Alfa", north_of_origin(5_000.0))
+            .await;
+        let (_, me) = app.get_authed("/v1/me", &ana.secret).await;
+        let names: Vec<&str> = me["memberships"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["Alfa", "Zulu"]);
+        assert!(
+            me["memberships"][0]["shelter_id"] == json!(alfa)
+                && me["memberships"][1]["shelter_id"] == json!(zulu)
+        );
     }
 }
