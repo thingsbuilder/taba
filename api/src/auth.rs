@@ -181,6 +181,14 @@ pub struct CaptureDoc {
     /// HMAC of the token; the token itself is never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub person_id: Option<String>,
+    /// Who asked for the capture (session purposes only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volunteer_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shelter_id: Option<String>,
+    /// The person a revalidation must turn out to be.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_person_id: Option<String>,
     pub consumed: bool,
     #[serde(with = "firestore::serialize_as_timestamp")]
     pub created_at: FirestoreInstant,
@@ -209,24 +217,52 @@ pub fn days(n: u32) -> SignedDuration {
 #[derive(Debug, Deserialize)]
 pub struct CreateCapture {
     purpose: Purpose,
+    #[serde(default)]
+    shelter_id: Option<String>,
+    #[serde(default)]
+    expected_person_id: Option<String>,
 }
 
 pub async fn post_captures(
     State(state): State<AppState>,
     headers: HeaderMap,
+    volunteer: Option<Volunteer>,
     Json(request): Json<CreateCapture>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let device = device_id(&headers)?;
-    // Public purposes only (spec 10.4); the others need a session and arrive in phase 3.
-    if !matches!(
-        request.purpose,
-        Purpose::Login | Purpose::Invite | Purpose::Checkin | Purpose::Biometrics
-    ) {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "unsupported_purpose",
-        ));
-    }
+    // `login` and `invite` are public (spec 10.4). The captures of phase 3 need a session and say
+    // what they are for, so a capture can only be used for that shelter and that person:
+    // `checkin` for a shelter the caller belongs to, `biometrics` for one person, `revalidation`
+    // for one person in a shelter.
+    let (volunteer_id, shelter_id, expected_person_id) = match request.purpose {
+        Purpose::Login | Purpose::Invite => (None, None, None),
+        purpose => {
+            let volunteer = volunteer.ok_or_else(unauthorized)?;
+            let target_required =
+                || ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "capture_target_required");
+            let needs_shelter = matches!(purpose, Purpose::Checkin | Purpose::Revalidation);
+            let needs_person = matches!(purpose, Purpose::Biometrics | Purpose::Revalidation);
+            if (needs_shelter && request.shelter_id.is_none())
+                || (needs_person && request.expected_person_id.is_none())
+            {
+                return Err(target_required());
+            }
+            if let Some(shelter_id) = &request.shelter_id {
+                let may = volunteer.role_in(shelter_id).is_some()
+                    || (purpose == Purpose::Revalidation
+                        && (volunteer.has_global(GlobalRole::CivilDefense)
+                            || volunteer.has_global(GlobalRole::Protection)));
+                if !may {
+                    return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden"));
+                }
+            }
+            (
+                Some(volunteer.id),
+                request.shelter_id,
+                request.expected_person_id,
+            )
+        }
+    };
     let capture_id = uuid::Uuid::new_v4().to_string();
     let callback = format!("https://{}/return?capture={capture_id}", state.domain);
     let journey = state.unico.create_journey(&callback).await?;
@@ -238,6 +274,9 @@ pub async fn post_captures(
         device_id: device.clone(),
         status: CaptureStatus::Created,
         person_id: None,
+        volunteer_id,
+        shelter_id,
+        expected_person_id,
         consumed: false,
         created_at: now,
         expires_at: now + CAPTURE_TTL,
@@ -624,6 +663,23 @@ impl Volunteer {
 
 fn unauthorized() -> ApiError {
     ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized")
+}
+
+impl axum::extract::OptionalFromRequestParts<AppState> for Volunteer {
+    type Rejection = ApiError;
+
+    /// `None` without an `Authorization` header; a bad session is still an error.
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Option<Self>, ApiError> {
+        if !parts.headers.contains_key("authorization") {
+            return Ok(None);
+        }
+        <Self as FromRequestParts<AppState>>::from_request_parts(parts, state)
+            .await
+            .map(Some)
+    }
 }
 
 impl FromRequestParts<AppState> for Volunteer {
