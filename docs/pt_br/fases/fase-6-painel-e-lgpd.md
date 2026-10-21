@@ -35,6 +35,7 @@ Fechar o piloto: painel no formato do que a Defesa Civil reporta, CSV diário e 
 - `docs/pt_br/RIPD.md` com o conteúdo mínimo da 10.1.4 (dados, finalidades, bases, riscos, medidas, descarte, região e transferência internacional, instância própria em `southamerica-east1`). Documento em português.
 - Rever o PIN do operador (3.1.1): foi desligado na fase 2 a pedido do dono (`PIN_REQUIRED = false` em `pwa/src/sessions.ts`); decidir se volta como obrigatório e se o PIN passa a sobreviver ao "Sair".
 - Rever a instalação opcional da PWA no iPhone (spec 3.0.2): decidir, antes de depender do check-in offline (fase 3), se a instalação volta a ser exigida para cadastro offline, dado que o Safari não instalado apaga IndexedDB após ~7 dias sem uso.
+- Rever a regra da miniatura (spec 4.6): hoje ela é apagada na mesma escrita que preenche `name` ou `wristband` (critério 39), e só existe no cadastro por foto da câmera do app. Em teste de campo (fase 3) isso fez a miniatura sumir ao completar o cadastro. Decidir, com a revisão de LGPD, se ela passa a ficar sempre (para o voluntário reconhecer a pessoa), por quanto tempo, e se vale gerá-la também no cadastro com selfie.
 - Conferência final: nenhuma rota das fases posteriores (seção 16) existe; nenhum token puro nem foto de pessoa em resposta ou documento.
 
 ## Fora de escopo
@@ -88,6 +89,7 @@ Todas as fases anteriores (o painel conta o que elas criam; o descarte apaga o q
 - [ ] Anomalias informativas e auditoria revisada, com TTL de 1 ano.
 - [ ] `docs/pt_br/RIPD.md` escrito.
 - [ ] Rever a instalação opcional da PWA no iPhone (spec 3.0.2): decidir, antes de depender do check-in offline (fase 3), se a instalação volta a ser exigida para cadastro offline, dado que o Safari não instalado apaga IndexedDB após ~7 dias sem uso.
+- [ ] Rever a regra da miniatura (spec 4.6, critério 39): decidir se ela fica sempre depois de preencher nome ou pulseira.
 - [ ] Rever o PIN do operador (3.1.1): foi desligado na fase 2 a pedido do dono (`PIN_REQUIRED = false`); decidir se volta como obrigatório e se o PIN passa a sobreviver ao "Sair".
 - [ ] Conferência de que nada da seção 16 foi construído.
 - [ ] Critérios 13, 16, 41, 52, 53, 59 e 60 verificados; 61 e 62 conferidos de novo.
