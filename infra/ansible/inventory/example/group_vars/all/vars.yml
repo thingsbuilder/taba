@@ -22,3 +22,5 @@ hmac_key: "{{ vault_taba_hmac_key }}"
 # Opcionais (os valores abaixo são os padrões da API)
 # unico_url: "https://humantoken.unico.app/client/v1"
 # session_days: 7
+# shelter_radius_m: 100
+# event_radius_km: 50

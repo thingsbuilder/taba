@@ -50,6 +50,7 @@ O binário e a PWA são compilados no GitHub Actions, nunca na VM (a e2-micro te
    Sem `-e`, vale o `taba_version` do `inventory/prod/group_vars/all/vars.yml`.
    **Instalação existente:** `inventory/prod` foi copiado antes destas variáveis existirem. Acrescente `taba_release_repo` (e `taba_version`) ao seu `vars.yml`, copiando de `inventory/example`; sem elas o `configure.yml` falha.
    **Fase 1 (identidade):** a API passa a exigir `HMAC_KEY` e `DOMAIN`. Antes do primeiro deploy com ela, acrescente ao `vars.yml` do `inventory/prod` a linha `hmac_key: "{{ vault_taba_hmac_key }}"` e ao vault `vault_taba_hmac_key` (gere com `openssl rand -base64 32`). **Guarde uma cópia da chave fora da VM e do repositório:** perdê-la, ou trocá-la, torna todos os IDs de voluntários e pessoas incomparáveis com os tokens novos. `unico_url` e `session_days` são opcionais.
+   **Fase 2 (abrigo e rede):** a API passa a consultar abrigos, vínculos e avisos por índices compostos, e o Firestore recusa a consulta se o índice não existe. **Rode `provision.yml` antes do `configure.yml` da versão nova** para criar os índices e a política de TTL de `idempotency.expires_at`, e espere os índices ficarem prontos (console do Firestore, aba Índices; costuma levar alguns minutos). `shelter_radius_m` (padrão 100) e `event_radius_km` (padrão 50) são opcionais no `vars.yml`.
 4. Confira: `https://<seu domínio>/v1/status` deve responder `{"unico":"ok"}`.
 
 Para voltar a uma versão anterior, rode o mesmo comando com a tag antiga.
@@ -79,7 +80,7 @@ sudo sh -c 'set -a; . /etc/taba/env; exec /usr/local/bin/taba role grant <volunt
 
 ## Índices e TTL do Firestore
 
-`firestore/firestore.indexes.json` usa o formato do Firebase CLI: `indexes` (índices compostos) e `fieldOverrides` (um item com `"ttl": true` vira política de TTL). O `provision.yml` aplica os dois pela API REST e pode ser repetido. As fases só acrescentam entradas ao arquivo. Hoje há TTL em `sessions.expires_at` e `captures.expires_at`; o do `audit_log` (1 ano) entra na fase 6.
+`firestore/firestore.indexes.json` usa o formato do Firebase CLI: `indexes` (índices compostos) e `fieldOverrides` (um item com `"ttl": true` vira política de TTL). O `provision.yml` aplica os dois pela API REST e pode ser repetido. As fases só acrescentam entradas ao arquivo. Hoje há TTL em `sessions.expires_at`, `captures.expires_at` e `idempotency.expires_at`; o do `audit_log` (1 ano) entra na fase 6. A fase 2 acrescenta os índices de `shelters` (`status` + `geohash`, `event_id` + `status`), `memberships` (`volunteer_id` + `status`, `shelter_id` + `status`) e `alerts` (`resolved` + `informational` + `created_at`). O emulador do Firestore não exige índices, então os testes não avisam de um índice faltando.
 
 ## Custo
 
