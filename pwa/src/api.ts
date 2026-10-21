@@ -15,6 +15,23 @@ import type {
   PersonSummary,
   PersonView,
 } from './api-phase3'
+import type {
+  MatchDecisionRequest,
+  MatchDecisionResponse,
+  MatchDetail,
+  MatchSummary,
+  MediatorRole,
+  NearbyShelter,
+  RescuePatchRequest,
+  RescueRequest,
+  RescueResponse,
+  SearchLinkCreateRequest,
+  SearchLinkCreated,
+  SearchLinkStatus,
+  SearchLinkSubmitRequest,
+  SearchRequest,
+  SearchResponse,
+} from './api-phase4'
 import { logEvent, routeOf } from './diagnostics'
 
 export interface ApiStatus {
@@ -257,6 +274,26 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
     postCard: (secret: string, householdId: string, body: CardCreateRequest) => call<CardView>('POST', `/v1/households/${householdId}/cards`, { secret, body }),
     getCard: (secret: string, code: string) => call<CardView>('GET', `/v1/cards/${code}`, { secret }),
     cancelCard: (secret: string, code: string, body: CardCancelRequest = {}) => call<CardView>('POST', `/v1/cards/${code}/cancel`, { secret, body }),
+
+    // Phase 4 (spec 8.7). Rescues and searches go through the queue; these are the direct calls.
+    postRescue: (secret: string, body: RescueRequest) => call<RescueResponse>('POST', '/v1/rescues', { secret, body }),
+    patchRescue: (secret: string, id: string, body: RescuePatchRequest) => call<Record<string, never>>('PATCH', `/v1/rescues/${id}`, { secret, body }),
+    nearbyShelters: (secret: string, lat: number, lon: number) =>
+      call<{ shelters: NearbyShelter[] }>('GET', `/v1/shelters/nearby?lat=${lat}&lon=${lon}`, { secret }),
+    postSearch: (secret: string, body: SearchRequest) => call<SearchResponse>('POST', '/v1/searches', { secret, body }),
+    listMatches: (secret: string) => call<{ matches: MatchSummary[] }>('GET', '/v1/matches', { secret }),
+    getMatch: (secret: string, id: string) => call<{ match: MatchDetail }>('GET', `/v1/matches/${id}`, { secret }),
+    decideMatch: (secret: string, id: string, body: MatchDecisionRequest) =>
+      call<MatchDecisionResponse>('POST', `/v1/matches/${id}/decision`, { secret, body }),
+    grantRole: (secret: string, volunteerId: string, role: MediatorRole) =>
+      call<Record<string, never>>('POST', `/v1/volunteers/${volunteerId}/roles`, { secret, body: { role } }),
+    revokeRole: (secret: string, volunteerId: string, role: MediatorRole) =>
+      call<null>('DELETE', `/v1/volunteers/${volunteerId}/roles/${role}`, { secret }),
+    // Family link: the first two need a session, the last two are public (no `secret`).
+    createSearchLink: (secret: string, body: SearchLinkCreateRequest) => call<SearchLinkCreated>('POST', '/v1/search-links', { secret, body }),
+    cancelSearchLink: (secret: string, code: string) => call<null>('DELETE', `/v1/search-links/${code}`, { secret }),
+    getSearchLink: (code: string) => call<SearchLinkStatus>('GET', `/v1/search-links/${code}`),
+    submitSearchLink: (code: string, body: SearchLinkSubmitRequest) => call<SearchResponse>('POST', `/v1/search-links/${code}/submit`, { body }),
 
     // Alerts (spec 8.8)
     listAlerts: (secret: string) => call<{ alerts: AlertView[] }>('GET', '/v1/alerts', { secret }),

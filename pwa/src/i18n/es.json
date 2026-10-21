@@ -32,5 +32,7 @@
   "consent.privacy_s8_title": "Niños",
   "consent.privacy_s8_body": "El registro de niños solos o separados de la familia avisa a la protección del niño y a la Defensa Civil, para que nadie quede sin cuidado.",
   "consent.privacy_s9_title": "Tus derechos",
-  "consent.privacy_s9_body": "Puedes pedir ver, corregir o borrar tus datos. Habla con un voluntario o con el responsable del piloto."
+  "consent.privacy_s9_body": "Puedes pedir ver, corregir o borrar tus datos. Habla con un voluntario o con el responsable del piloto.",
+  "__family__": "",
+  "family.title": "Búsqueda de un familiar"
 }
