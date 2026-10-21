@@ -6,7 +6,7 @@ import { isIosOutsideStandalone, requestPersistence } from './device'
 import { useLanguage, useOnline } from './hooks'
 import { type Language, saveLanguage, setLanguage, t } from './i18n'
 import { SESSIONS_CHANGED } from './events'
-import { useLocation } from './nav'
+import { navigate, useLocation } from './nav'
 import type { Queue } from './queue'
 import { type Route, resolveRoute } from './routes'
 import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession, updateProfile } from './sessions'
@@ -17,7 +17,9 @@ import { Invite } from './screens/Invite'
 import { Members } from './screens/Members'
 import { NewShelter } from './screens/NewShelter'
 import { Shelter } from './screens/Shelter'
+import { gateFor } from './install-gate'
 import { InstallIos } from './screens/InstallIos'
+import { InviteHandoff } from './screens/InviteHandoff'
 import { Login } from './screens/Login'
 import { NotFound } from './screens/NotFound'
 import { PinSetup } from './screens/PinSetup'
@@ -115,11 +117,21 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
 
   const { pathname, search } = useLocation()
   const route = resolveRoute(pathname)
+  const gate = gateFor(route, blocked)
   const ctx: AppContext = { db, api, queue, nominatim, active, sessions, status, refresh }
   return (
     <>
       <header class="topbar">
-        <img class="brand-mark" src="/favicon.svg" alt="Taba" width="32" height="32" />
+        <a
+          href="/"
+          aria-label={t('nav.home')}
+          onClick={(e) => {
+            e.preventDefault()
+            navigate('/')
+          }}
+        >
+          <img class="brand-mark" src="/favicon.svg" alt="Taba" width="32" height="32" />
+        </a>
         <LanguageSwitch db={db} active={active} queue={queue} refresh={refresh} />
       </header>
       {updateApply && (
@@ -130,7 +142,7 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
       {!blocked && <NetworkChip queue={queue} />}
       {!blocked && status?.unico === 'degraded' && <div class="banner" role="status">{t('degraded.banner')}</div>}
       {!blocked && !persisted && <div class="banner" role="alert">{t('persist.warning')}</div>}
-      {blocked ? <InstallIos /> : ready && (needsPin(active) && route.name !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
+      {gate === 'install' ? <InstallIos /> : gate === 'invite_handoff' ? <InviteHandoff ctx={ctx} code={route.code!} /> : ready && (needsPin(active) && route.name !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
     </>
   )
 }

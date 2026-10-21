@@ -196,5 +196,15 @@
   "error.invalid_event": "Check the event name and phones.",
   "error.invalid_reason": "Write a reason.",
   "error.invalid_role": "That level is not allowed.",
-  "error.contention": "Many people are using this at once. Try again in a moment."
+  "error.contention": "Many people are using this at once. Try again in a moment.",
+  "invite.handoff_body": "Open Taba from the icon on your home screen and paste this invite there. Tap the button to copy it.",
+  "invite.copy": "Copy invite",
+  "invite.copied": "Copied. Now open Taba from your home screen.",
+  "invite.copy_failed": "Could not copy. Select the address in the bar above and copy it.",
+  "invite.have_code": "I have an invite",
+  "invite.code_placeholder": "Paste the link or the code",
+  "invite.code_go": "Open invite",
+  "invite.code_invalid": "That does not look like an invite. Paste the whole link or the code.",
+  "nav.back": "Back",
+  "nav.home": "Home screen"
 }

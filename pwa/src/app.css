@@ -126,3 +126,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--focus); outline
 .inline-form { display: flex; gap: var(--space-2); align-items: center; }
 .inline-form input { flex: 1; min-height: var(--control-height); padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); font: inherit; }
 .field-text { padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); color: var(--ink); font: inherit; }
+
+.back-link { display: inline-flex; align-items: center; min-height: var(--touch-min); color: var(--primary); font-weight: 600; text-decoration: none; }
+.back-bar { padding-top: var(--space-2); padding-bottom: 0; }
