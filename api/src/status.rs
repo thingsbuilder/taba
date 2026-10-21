@@ -52,14 +52,15 @@ pub async fn get_status(State(db): State<FirestoreDb>) -> Result<Json<Status>, A
 mod tests {
     use super::*;
     use crate::router;
-    use crate::test_support::{body_json, test_db};
+    use crate::test_support::{TestApp, body_json, test_db};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use serde_json::json;
     use tower::ServiceExt;
 
     async fn call(db: FirestoreDb, path: &str) -> (StatusCode, serde_json::Value) {
-        let response = router(db)
+        let app = TestApp::with_db(db).await;
+        let response = router(app.state)
             .oneshot(Request::get(path).body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -115,7 +116,8 @@ mod tests {
             .header("content-length", 6 * 1024 * 1024 + 1)
             .body(Body::empty())
             .unwrap();
-        let response = router(db).oneshot(request).await.unwrap();
+        let app = TestApp::with_db(db).await;
+        let response = router(app.state).oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
