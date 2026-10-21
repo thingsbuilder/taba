@@ -47,6 +47,23 @@ pub enum UnicoError {
 
 impl From<UnicoError> for ApiError {
     fn from(err: UnicoError) -> Self {
+        // Every way to a 502 unico_unexpected_state is logged here (spec 5.2.3); never a token.
+        match &err {
+            UnicoError::UnexpectedState(what) => {
+                tracing::warn!(what, "unico returned an unexpected state")
+            }
+            UnicoError::Rejected(body) => {
+                let message = body
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("none");
+                tracing::warn!(
+                    message,
+                    "unico rejected the request with an unexpected error"
+                );
+            }
+            _ => {}
+        }
         let (status, code) = match err {
             UnicoError::Limit => (StatusCode::SERVICE_UNAVAILABLE, "unico_limit"),
             UnicoError::Busy => (StatusCode::SERVICE_UNAVAILABLE, "unico_busy"),
@@ -683,5 +700,54 @@ mod tests {
             let api: ApiError = err.into();
             assert_eq!((api.status.as_u16(), api.code), (status, code));
         }
+    }
+
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+        type Writer = LogBuffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn unexpected_states_are_logged_with_the_state_and_no_token() {
+        let buffer = LogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let _: ApiError = classify(&json!({ "state": "PROCESS_STATE_AWAITING_FOR_DOCUMENT", "data": { "humanToken": { "value": "secret-token" } } }))
+                .unwrap_err()
+                .into();
+            let _: ApiError =
+                UnicoError::Rejected(json!({ "code": 3, "message": "BAD_THING" })).into();
+            let _: ApiError = UnicoError::Busy.into();
+        });
+        let log = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains("WARN") && log.contains("PROCESS_STATE_AWAITING_FOR_DOCUMENT"),
+            "{log}"
+        );
+        assert!(log.contains("BAD_THING"), "{log}");
+        assert!(!log.contains("secret-token"));
+        assert_eq!(
+            log.lines().count(),
+            2,
+            "only the unexpected cases are logged: {log}"
+        );
     }
 }
