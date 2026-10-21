@@ -1,17 +1,32 @@
-# Configura a VM: atualizações automáticas, Caddy (HTTPS automático) e o arquivo
-# de ambiente com os segredos. Idempotente — rodar de novo aplica só o que mudou.
+# Configura a VM: atualizações automáticas, swap, Caddy (HTTPS automático), o arquivo
+# de ambiente com os segredos e a release do Taba (binário + PWA + serviço systemd).
+# Idempotente — rodar de novo aplica só o que mudou. A release instalada é a de
+# taba_version (ver infra/README.md): ansible-playbook playbooks/configure.yml -e taba_version=v0.1.0
 # Pré-requisito: o registro DNS de taba_domain já aponta para a VM (o Caddy
 # precisa dele para emitir o certificado).
 - name: Configurar a VM do Taba
   hosts: taba_prod
   become: true
   gather_facts: true
+  # Se o play falhar depois de trocar o binário, o restart do taba ainda roda.
+  force_handlers: true
+  vars:
+    taba_release_url: "https://github.com/{{ taba_release_repo }}/releases/download/{{ taba_version }}"
   handlers:
     - name: reload caddy
       ansible.builtin.systemd:
         name: caddy
         state: reloaded
+    - name: restart taba
+      ansible.builtin.systemd:
+        name: taba
+        state: restarted
   tasks:
+    - name: taba_version é uma tag de release (vX.Y.Z)
+      ansible.builtin.assert:
+        that: taba_version is match('^v[0-9]+[.][0-9]+[.][0-9]+')
+        fail_msg: "taba_version deve ser uma tag como v0.1.0 (recebido: {{ taba_version }})"
+
     - name: Pacotes base
       ansible.builtin.apt:
         name: [ca-certificates, curl, gnupg, unattended-upgrades]
@@ -43,7 +58,7 @@
         enabled: true
         state: started
 
-    # Lido pelo serviço da API (EnvironmentFile do systemd), que ainda não existe.
+    # Lido pelo serviço da API (EnvironmentFile do systemd).
     - name: Diretório de configuração
       ansible.builtin.file:
         path: /etc/taba
@@ -55,3 +70,92 @@
         src: ../templates/env.j2
         dest: /etc/taba/env
         mode: "0600"
+      notify: restart taba
+
+    # ── Swap de 1 GB: a e2-micro tem 1 GB de RAM.
+    - name: Arquivo de swap
+      ansible.builtin.command: fallocate -l 1G /swapfile
+      args:
+        creates: /swapfile
+      register: swapfile
+
+    - name: Permissão do arquivo de swap
+      ansible.builtin.file:
+        path: /swapfile
+        mode: "0600"
+
+    - name: Formatar a swap
+      ansible.builtin.command: mkswap /swapfile
+      when: swapfile is changed
+
+    - name: Swap no fstab
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        line: /swapfile none swap sw 0 0
+        regexp: ^/swapfile\s
+
+    - name: Swaps ativas
+      ansible.builtin.command: swapon --noheadings --show=NAME
+      register: active_swaps
+      changed_when: false
+      check_mode: false
+
+    - name: Ativar a swap
+      ansible.builtin.command: swapon /swapfile
+      when: "'/swapfile' not in active_swaps.stdout"
+
+    # ── Release do Taba (compilada no GitHub Actions; a e2-micro não compila Rust).
+    # O SHA256SUMS da release confere os downloads; sem mudança no arquivo, nada é baixado de novo.
+    - name: Binário taba
+      ansible.builtin.get_url:
+        url: "{{ taba_release_url }}/taba-x86_64-unknown-linux-gnu"
+        dest: /usr/local/bin/taba
+        checksum: "sha256:{{ taba_release_url }}/SHA256SUMS"
+        owner: root
+        group: root
+        mode: "0755"
+      notify: restart taba
+
+    - name: PWA (tarball da release)
+      ansible.builtin.get_url:
+        url: "{{ taba_release_url }}/taba-pwa.tar.gz"
+        dest: "/var/tmp/taba-pwa-{{ taba_version }}.tar.gz"
+        checksum: "sha256:{{ taba_release_url }}/SHA256SUMS"
+        mode: "0644"
+
+    - name: Diretório da PWA
+      ansible.builtin.file:
+        path: /srv/taba/pwa
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    # Não apaga arquivos de versões anteriores: um app aberto ainda pode pedir os
+    # assets antigos enquanto não atualiza.
+    - name: Descompactar a PWA
+      ansible.builtin.unarchive:
+        src: "/var/tmp/taba-pwa-{{ taba_version }}.tar.gz"
+        dest: /srv/taba/pwa
+        remote_src: true
+        owner: root
+        group: root
+
+    - name: Serviço taba (unit do systemd)
+      ansible.builtin.template:
+        src: ../templates/taba.service.j2
+        dest: /etc/systemd/system/taba.service
+        mode: "0644"
+      register: taba_unit
+      notify: restart taba
+
+    - name: Recarregar o systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: taba_unit is changed
+
+    - name: Serviço taba habilitado e rodando
+      ansible.builtin.systemd:
+        name: taba
+        enabled: true
+        state: started

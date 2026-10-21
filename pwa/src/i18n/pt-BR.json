@@ -1,0 +1,17 @@
+{
+  "app.tagline": "Rede de abrigos para desastres",
+  "home.title": "Bem-vindo ao Taba",
+  "home.body": "Aqui ficarão o check-in, as doações e a busca de pessoas. O app já está instalado e abre mesmo sem sinal.",
+  "language.label": "Idioma",
+  "install.title": "Instale o Taba na tela de início",
+  "install.body": "Para o app guardar seus cadastros e funcionar sem sinal, instale-o primeiro: toque em Compartilhar e depois em \"Adicionar à Tela de Início\". Em seguida, abra o Taba pelo ícone.",
+  "persist.warning": "Os dados deste celular podem ser apagados pelo navegador; sincronize com frequência.",
+  "network.offline": "Sem sinal",
+  "network.offline_queue": "Sem sinal · {n} na fila",
+  "network.queue": "{n} na fila",
+  "degraded.banner": "Reconhecimento facial indisponível. O cadastro continua por nome e pulseira.",
+  "update.available": "Nova versão disponível",
+  "update.action": "Toque para atualizar",
+  "notfound.title": "Página não encontrada",
+  "notfound.home": "Voltar ao início"
+}

@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # The binary links the runner's glibc dynamically and runs on the VM (Debian 13, glibc 2.41).
+    # ubuntu-24.04 has glibc 2.39, which is not newer than the VM's. The step below enforces it.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: api
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pwa/package-lock.json
+
+      - name: Build the API
+        run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+        working-directory: api
+
+      - name: The binary does not need a glibc newer than Debian 13 (2.41)
+        run: |
+          newest=$(objdump -T api/target/x86_64-unknown-linux-gnu/release/taba | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -V | tail -1)
+          echo "newest glibc symbol: $newest"
+          [ "$(printf '%s\n2.41\n' "$newest" | sort -V | tail -1)" = "2.41" ]
+
+      - name: Build the PWA
+        working-directory: pwa
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - run: scripts/check-secrets.sh dir pwa/dist
+
+      - name: Package
+        run: |
+          mkdir release
+          cp api/target/x86_64-unknown-linux-gnu/release/taba release/taba-x86_64-unknown-linux-gnu
+          tar -czf release/taba-pwa.tar.gz -C pwa/dist .
+          cd release
+          sha256sum taba-x86_64-unknown-linux-gnu taba-pwa.tar.gz > SHA256SUMS
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" --generate-notes
+          release/taba-x86_64-unknown-linux-gnu release/taba-pwa.tar.gz release/SHA256SUMS

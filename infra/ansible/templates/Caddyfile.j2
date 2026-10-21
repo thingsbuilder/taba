@@ -1,6 +1,42 @@
 # Gerado pelo Ansible (configure.yml) — não editar à mão na VM.
 {{ taba_domain }} {
-	# Até a API existir, só confirma que DNS e HTTPS funcionam. O deploy da API
-	# troca isto por reverse_proxy.
-	respond "Taba — em construção" 200
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		Content-Security-Policy "default-src 'self'; connect-src 'self' https://nominatim.openstreetmap.org; img-src 'self' blob: data:"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(self), geolocation=(self)"
+	}
+
+	# A API nunca cai no fallback da PWA: /v1/* é sempre da API.
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	handle {
+		root * /srv/taba/pwa
+
+		# Só os assets com hash no nome ficam em cache. O resto (index.html, sw.js,
+		# manifesto) revalida sempre: é o que deixa o navegador ver a versão nova do app.
+		@revalidate not path /assets/*
+		header @revalidate Cache-Control "no-cache"
+		# Imutável só quando o arquivo existe: um 404 não pode ficar um ano em cache.
+		@immutable {
+			path /assets/*
+			file
+		}
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+		# Rotas da PWA (/shelter/...) caem em index.html. Caminho com extensão que não
+		# existe (um .js antigo, por exemplo) dá 404 em vez de devolver HTML.
+		@route {
+			not file
+			not path_regexp \.[A-Za-z0-9]+$
+		}
+		rewrite @route /index.html
+
+		file_server
+	}
 }

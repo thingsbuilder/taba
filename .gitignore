@@ -5,3 +5,8 @@ infra/ansible/inventory/prod/
 docs/unico/
 .DS_Store
 prompt-fase.md
+target/
+node_modules/
+dist/
+*.log
+Caddyfile.local*

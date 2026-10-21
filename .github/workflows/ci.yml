@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+      # The Firestore emulator needs Java; the version is pinned so CI does not drift.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: api
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          version: "590.0.0"
+          install_components: cloud-firestore-emulator
+      - name: Start the Firestore emulator
+        run: |
+          gcloud emulators firestore start --host-port=127.0.0.1:8085 > "$RUNNER_TEMP/firestore-emulator.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -s http://127.0.0.1:8085 > /dev/null && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/firestore-emulator.log"
+          exit 1
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+        env:
+          FIRESTORE_EMULATOR_HOST: 127.0.0.1:8085
+
+  pwa:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: pwa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: pwa/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: No secrets, GCP project ids or IPs in the compiled PWA
+        working-directory: .
+        run: scripts/check-secrets.sh dir pwa/dist
+
+  secrets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: No secrets, GCP project ids or IPs in the repository
+        run: scripts/check-secrets.sh repo
+      - name: The check itself detects leaks
+        run: scripts/check-secrets.test.sh

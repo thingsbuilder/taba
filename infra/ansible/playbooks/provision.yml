@@ -12,6 +12,9 @@
       auth_kind: accesstoken
       access_token: "{{ gcp_token }}"
     vm_service_account: "taba-vm@{{ gcp_project }}.iam.gserviceaccount.com"
+    # Índices compostos e políticas de TTL. As fases só acrescentam entradas a este arquivo.
+    firestore_config: "{{ lookup('file', playbook_dir ~ '/../../firestore/firestore.indexes.json') | from_json }}"
+    firestore_collection_groups: "https://firestore.googleapis.com/v1/projects/{{ gcp_project }}/databases/(default)/collectionGroups"
   tasks:
     - name: Token do gcloud de quem roda
       ansible.builtin.command: gcloud auth print-access-token
@@ -58,6 +61,47 @@
           type: FIRESTORE_NATIVE
           locationId: "{{ gcp_region }}"
         status_code: [200]
+
+    # ── Índices e TTL de infra/firestore/firestore.indexes.json (formato do Firebase CLI:
+    # `indexes` e `fieldOverrides`; um override com `"ttl": true` vira uma política de TTL).
+    # Repetir é seguro: índice que já existe responde 409 e o TTL é um PATCH.
+    # O banco acabou de ser criado na primeira execução, então tenta de novo enquanto não está pronto.
+    - name: Índices compostos do Firestore
+      ansible.builtin.uri:
+        url: "{{ firestore_collection_groups }}/{{ item.collectionGroup }}/indexes"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ gcp_token }}"
+        body_format: json
+        body:
+          queryScope: "{{ item.queryScope | default('COLLECTION') }}"
+          fields: "{{ item.fields }}"
+        status_code: [200, 409]
+      loop: "{{ firestore_config.indexes | default([]) }}"
+      loop_control:
+        label: "{{ item.collectionGroup }}"
+      register: firestore_index
+      until: firestore_index is succeeded
+      retries: 12
+      delay: 10
+
+    - name: Políticas de TTL do Firestore
+      ansible.builtin.uri:
+        url: "{{ firestore_collection_groups }}/{{ item.collectionGroup }}/fields/{{ item.fieldPath }}?updateMask=ttlConfig"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ gcp_token }}"
+        body_format: json
+        body:
+          ttlConfig: {}
+        status_code: [200]
+      loop: "{{ firestore_config.fieldOverrides | default([]) | selectattr('ttl', 'defined') | selectattr('ttl') | list }}"
+      loop_control:
+        label: "{{ item.collectionGroup }}.{{ item.fieldPath }}"
+      register: firestore_ttl
+      until: firestore_ttl is succeeded
+      retries: 12
+      delay: 10
 
     # ── Conta de serviço própria da VM, só com acesso ao Firestore. A conta padrão
     # do Compute Engine tem papel de Editor no projeto inteiro.
