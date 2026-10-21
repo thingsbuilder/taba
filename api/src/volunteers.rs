@@ -47,6 +47,14 @@ pub struct VolunteerDoc {
     pub role_grants: Vec<RoleGrant>,
     #[serde(default)]
     pub banned: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banned_by: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "firestore::serialize_as_optional_timestamp"
+    )]
+    pub banned_at: Option<FirestoreInstant>,
     #[serde(default)]
     pub flagged: bool,
     #[serde(default)]
@@ -113,6 +121,8 @@ impl VolunteerDoc {
             global_roles: vec![],
             role_grants: vec![],
             banned: false,
+            banned_by: None,
+            banned_at: None,
             flagged: false,
             flag_reasons: vec![],
             created_at: now,
@@ -132,7 +142,6 @@ pub fn view(id: &str, doc: &VolunteerDoc) -> Value {
     })
 }
 
-/// `memberships` stays empty until phase 2 creates shelters.
 pub fn me_body(volunteer: &Volunteer) -> Value {
     json!({
         "volunteer": view(&volunteer.id, &volunteer.doc),
@@ -145,9 +154,11 @@ pub async fn get_me(volunteer: Volunteer) -> Json<Value> {
     Json(me_body(&volunteer))
 }
 
-/// Distinguishes an absent field from an explicit `null` (which clears the phone).
-fn present<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
-    Option::<String>::deserialize(d).map(Some)
+/// Distinguishes an absent field from an explicit `null` (which clears the value).
+pub fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
 }
 
 #[derive(Debug, Deserialize)]

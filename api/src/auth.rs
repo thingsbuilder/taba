@@ -1,6 +1,8 @@
 //! Login captures, sessions and the `Volunteer` extractor (spec 3.1, 5.2, 6.2.5, 6.3.2, 8.1).
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::{Context, bail};
 use axum::Json;
@@ -22,12 +24,14 @@ use sha2::{Digest, Sha256};
 use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::config::Config;
 use crate::error::ApiError;
+use crate::members::{self, ShelterRole};
+use crate::shelters::Confirmation;
 use crate::store::{self, fs_error, tx_create, tx_replace};
 use crate::unico::{ProcessResult, Unico};
-use crate::volunteers::{self, ProfileInput, VolunteerDoc};
+use crate::volunteers::{self, GlobalRole, ProfileInput, VolunteerDoc};
 
 const CAPTURES: &str = "captures";
-const SESSIONS: &str = "sessions";
+pub const SESSIONS: &str = "sessions";
 const CAPTURE_TTL: SignedDuration = SignedDuration::from_mins(15);
 const MAX_LOGIN_ATTEMPTS: u32 = 10;
 const RENEW_AFTER: SignedDuration = SignedDuration::from_hours(24);
@@ -39,6 +43,12 @@ pub struct AppState {
     pub unico: Arc<Unico>,
     hmac_key: Arc<[u8]>,
     domain: Arc<str>,
+    /// Serializes shelter creation (spec 6.2.4).
+    pub shelter_lock: Arc<tokio::sync::Mutex<()>>,
+    /// When each event's `last_activity_at` was last written (spec 4.3.3).
+    pub event_activity: Arc<Mutex<HashMap<String, Instant>>>,
+    /// One lock per `Idempotency-Key` being served, so two copies of a request run one after the other.
+    pub idempotency_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl FromRef<AppState> for FirestoreDb {
@@ -69,7 +79,14 @@ impl AppState {
             unico: Arc::new(unico),
             hmac_key: hmac_key.into(),
             domain: domain.into(),
+            shelter_lock: Arc::default(),
+            event_activity: Arc::default(),
+            idempotency_locks: Arc::default(),
         })
+    }
+
+    pub fn domain(&self) -> &str {
+        &self.domain
     }
 }
 
@@ -90,13 +107,13 @@ pub fn session_id(secret: &str) -> String {
         .collect()
 }
 
-fn new_secret() -> String {
+pub fn new_secret() -> String {
     let mut bytes = [0u8; 32];
     rand::fill(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn device_id(headers: &HeaderMap) -> Result<String, ApiError> {
+pub fn device_id(headers: &HeaderMap) -> Result<String, ApiError> {
     headers
         .get("x-device-id")
         .and_then(|v| v.to_str().ok())
@@ -108,7 +125,7 @@ fn device_id(headers: &HeaderMap) -> Result<String, ApiError> {
 
 // ---- documents ----
 
-#[allow(dead_code)] // only `login` is created in phase 1
+#[allow(dead_code)] // only `login` and `invite` are created before phase 3
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Purpose {
@@ -157,7 +174,7 @@ pub struct SessionDoc {
     pub expires_at: FirestoreInstant,
 }
 
-fn days(n: u32) -> SignedDuration {
+pub fn days(n: u32) -> SignedDuration {
     SignedDuration::from_hours(24 * i64::from(n))
 }
 
@@ -174,7 +191,8 @@ pub async fn post_captures(
     Json(request): Json<CreateCapture>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let device = device_id(&headers)?;
-    if request.purpose != Purpose::Login {
+    // Public purposes only (spec 10.4); the others need a session and arrive in phase 3.
+    if !matches!(request.purpose, Purpose::Login | Purpose::Invite) {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "unsupported_purpose",
@@ -187,7 +205,7 @@ pub async fn post_captures(
     let now = crate::store::now();
     let doc = CaptureDoc {
         process_id: journey.process_id,
-        purpose: Purpose::Login,
+        purpose: request.purpose,
         device_id: device.clone(),
         status: CaptureStatus::Created,
         person_id: None,
@@ -241,7 +259,7 @@ fn terminal_error(status: CaptureStatus) -> Option<ApiError> {
 }
 
 /// Gets the person behind a capture, asking Unico only while the capture is unresolved.
-async fn resolve_person(
+pub async fn resolve_person(
     state: &AppState,
     capture_id: &str,
     capture: &mut CaptureDoc,
@@ -275,7 +293,7 @@ async fn resolve_person(
 
 /// Saves what Unico said about the capture (only `status` and `person_id`: a whole-document
 /// write could undo a concurrent `consumed = true`).
-async fn remember_result(
+pub async fn remember_result(
     state: &AppState,
     capture_id: &str,
     capture: &CaptureDoc,
@@ -303,6 +321,84 @@ struct Login {
     session_days: u32,
 }
 
+/// The volunteer a login or an invite acceptance signs in: the existing profile, or a new one
+/// built from `profile`. A banned volunteer is refused; so is a new one without a profile.
+/// The flag says whether the volunteer is new.
+pub fn volunteer_for_login(
+    existing: Option<VolunteerDoc>,
+    profile: Option<&ProfileInput>,
+    now: FirestoreInstant,
+) -> Result<(VolunteerDoc, bool), ApiError> {
+    let is_new = existing.is_none();
+    let mut volunteer = match (existing, profile) {
+        (Some(v), _) if v.banned => return Err(ApiError::new(StatusCode::FORBIDDEN, "banned")),
+        (Some(v), _) => v,
+        (None, Some(profile)) => VolunteerDoc::from_profile(profile)?,
+        (None, None) => {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "profile_required",
+            ));
+        }
+    };
+    volunteer.last_seen_at = now;
+    Ok((volunteer, is_new))
+}
+
+pub fn new_session(
+    volunteer_id: &str,
+    device_id: &str,
+    session_days: u32,
+    now: FirestoreInstant,
+) -> SessionDoc {
+    SessionDoc {
+        volunteer_id: volunteer_id.into(),
+        device_id: device_id.into(),
+        created_at: now,
+        renewed_at: now,
+        expires_at: now + days(session_days),
+    }
+}
+
+/// The capture as it stands before Unico is asked: it must exist, belong to this device and
+/// purpose, and be unused and unexpired (spec 5.2.4).
+pub async fn usable_capture(
+    state: &AppState,
+    device: &str,
+    capture_id: &str,
+    purpose: Purpose,
+) -> Result<CaptureDoc, ApiError> {
+    let capture: CaptureDoc = store::get(&state.db, CAPTURES, capture_id)
+        .await?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "capture_not_found"))?;
+    if capture.device_id != device {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "capture_wrong_device"));
+    }
+    if capture.purpose != purpose {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "wrong_capture_purpose",
+        ));
+    }
+    if capture.consumed {
+        return Err(ApiError::new(StatusCode::CONFLICT, "capture_consumed"));
+    }
+    if crate::store::now() >= capture.expires_at {
+        return Err(ApiError::new(StatusCode::GONE, "capture_expired"));
+    }
+    Ok(capture)
+}
+
+/// The capture marked as used by `person_id`, for the transaction that consumes it.
+pub fn consumed(capture: CaptureDoc, person_id: &str) -> CaptureDoc {
+    CaptureDoc {
+        consumed: true,
+        status: CaptureStatus::Ok,
+        person_id: Some(person_id.into()),
+        ..capture
+    }
+}
+
 /// One transaction: consume the capture, create or load the volunteer, open the session.
 async fn login(
     db: &FirestoreDb,
@@ -315,29 +411,17 @@ async fn login(
     if capture.consumed {
         return Err(ApiError::new(StatusCode::CONFLICT, "capture_consumed"));
     }
+    if capture.purpose != Purpose::Login {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "wrong_capture_purpose",
+        ));
+    }
     let existing: Option<VolunteerDoc> =
         store::get(db, volunteers::COLLECTION, &a.person_id).await?;
     let now = crate::store::now();
-    let is_new = existing.is_none();
-    let mut volunteer = match (existing, a.profile.as_ref()) {
-        (Some(v), _) if v.banned => return Err(ApiError::new(StatusCode::FORBIDDEN, "banned")),
-        (Some(v), _) => v,
-        (None, Some(profile)) => VolunteerDoc::from_profile(profile)?,
-        (None, None) => {
-            return Err(ApiError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "profile_required",
-            ));
-        }
-    };
-    volunteer.last_seen_at = now;
-    let session = SessionDoc {
-        volunteer_id: a.person_id.clone(),
-        device_id: a.device_id.clone(),
-        created_at: now,
-        renewed_at: now,
-        expires_at: now + days(a.session_days),
-    };
+    let (volunteer, is_new) = volunteer_for_login(existing, a.profile.as_ref(), now)?;
+    let session = new_session(&a.person_id, &a.device_id, a.session_days, now);
 
     tx_replace(db, tx, volunteers::COLLECTION, &a.person_id, &volunteer)?;
     tx_replace(
@@ -345,12 +429,7 @@ async fn login(
         tx,
         CAPTURES,
         &a.capture_id,
-        &CaptureDoc {
-            consumed: true,
-            status: CaptureStatus::Ok,
-            person_id: Some(a.person_id.clone()),
-            ..capture
-        },
+        &consumed(capture, &a.person_id),
     )?;
     tx_create(db, tx, SESSIONS, &session_id(&a.secret), &session)?;
     let audit_entry = |action: &str, kind: &str, target: &str| {
@@ -380,18 +459,7 @@ pub async fn post_sessions(
     Json(request): Json<CreateSession>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let device = device_id(&headers)?;
-    let mut capture: CaptureDoc = store::get(&state.db, CAPTURES, &request.capture_id)
-        .await?
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "capture_not_found"))?;
-    if capture.device_id != device {
-        return Err(ApiError::new(StatusCode::FORBIDDEN, "capture_wrong_device"));
-    }
-    if capture.consumed {
-        return Err(ApiError::new(StatusCode::CONFLICT, "capture_consumed"));
-    }
-    if crate::store::now() >= capture.expires_at {
-        return Err(ApiError::new(StatusCode::GONE, "capture_expired"));
-    }
+    let mut capture = usable_capture(&state, &device, &request.capture_id, Purpose::Login).await?;
     let person_id = resolve_person(&state, &request.capture_id, &mut capture).await?;
 
     let secret = new_secret();
@@ -477,14 +545,15 @@ pub async fn delete_current_session(
 
 // ---- extractor ----
 
-/// Shelter membership as `GET /v1/me` reports it (spec 8.1). Filled in phase 2.
-#[allow(dead_code)]
+/// Shelter membership as `GET /v1/me` reports it (spec 8.1).
 #[derive(Debug, Clone, Serialize)]
 pub struct Membership {
     pub shelter_id: String,
     pub name: String,
-    pub role: String,
-    pub confirmation: String,
+    pub role: ShelterRole,
+    pub confirmation: Confirmation,
+    #[serde(skip)]
+    pub event_id: Option<String>,
 }
 
 /// The authenticated volunteer: profile, global roles (inside `doc`) and active memberships.
@@ -494,6 +563,34 @@ pub struct Volunteer {
     pub doc: VolunteerDoc,
     pub memberships: Vec<Membership>,
     pub session_id: String,
+}
+
+impl Volunteer {
+    pub fn has_global(&self, role: GlobalRole) -> bool {
+        self.doc.global_roles.contains(&role)
+    }
+
+    /// `validator` and `civil_defense` confirm and revoke shelters (spec 2.1).
+    pub fn is_validator_or_civil_defense(&self) -> bool {
+        self.has_global(GlobalRole::Validator) || self.has_global(GlobalRole::CivilDefense)
+    }
+
+    pub fn role_in(&self, shelter_id: &str) -> Option<ShelterRole> {
+        self.memberships
+            .iter()
+            .find(|m| m.shelter_id == shelter_id)
+            .map(|m| m.role)
+    }
+
+    pub fn is_admin_of(&self, shelter_id: &str) -> bool {
+        self.role_in(shelter_id) == Some(ShelterRole::Admin)
+    }
+
+    pub fn has_admin_membership(&self) -> bool {
+        self.memberships
+            .iter()
+            .any(|m| m.role == ShelterRole::Admin)
+    }
 }
 
 fn unauthorized() -> ApiError {
@@ -546,10 +643,11 @@ impl FromRequestParts<AppState> for Volunteer {
                 tracing::warn!(%err, "could not renew the session");
             }
         }
+        let memberships = members::memberships_of(&state.db, &session.volunteer_id).await?;
         Ok(Volunteer {
             id: session.volunteer_id,
             doc,
-            memberships: vec![],
+            memberships,
             session_id,
         })
     }
@@ -723,7 +821,7 @@ mod tests {
             (StatusCode::BAD_REQUEST, Some("device_id_required"))
         );
         let (status, body) = app
-            .post("/v1/captures", DEVICE, json!({ "purpose": "invite" }))
+            .post("/v1/captures", DEVICE, json!({ "purpose": "checkin" }))
             .await;
         assert_eq!(
             (status, body["error"].as_str()),

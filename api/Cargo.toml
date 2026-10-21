@@ -10,6 +10,7 @@ axum = "0.8.9"
 base64 = "0.23.1"
 dotenvy = "0.15.7"
 firestore = { version = "0.51.1", default-features = false, features = ["tls-webpki-roots"] }
+geohash = "0.13"
 hmac = "0.13.0"
 rand = "0.10.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
@@ -17,7 +18,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
-tokio = { version = "1.54.0", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1.54.0", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tower-http = { version = "0.7.1", features = ["limit", "trace"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

@@ -1,6 +1,9 @@
 //! Small Firestore helpers shared by the handlers: error mapping and document writes.
 
-use firestore::errors::FirestoreError;
+use std::future::Future;
+use std::pin::Pin;
+
+use firestore::errors::{BackoffError, FirestoreError};
 use firestore::{FirestoreDb, FirestoreInstant, FirestoreTransaction, FirestoreWritePrecondition};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -37,6 +40,42 @@ pub fn fs_error(err: FirestoreError) -> ApiError {
     ApiError::internal()
 }
 
+/// Times a transaction that lost to another one is run again before the caller sees `contention`.
+const MAX_ATTEMPTS: u32 = 12;
+
+/// Runs `body` in a transaction. Reads must go through the `FirestoreDb` it receives: that
+/// copy is bound to the transaction, so a document read there conflicts with a concurrent
+/// write. A transaction Firestore aborts under contention runs again from the top, so it reads
+/// what the winner wrote; `body` may therefore run more than once and must not keep state.
+pub async fn transact<T, F>(db: &FirestoreDb, body: F) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: for<'b> Fn(
+            FirestoreDb,
+            &'b mut FirestoreTransaction<'_>,
+        ) -> Pin<Box<dyn Future<Output = Result<T, ApiError>> + Send + 'b>>
+        + Send
+        + Sync,
+{
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let ran = db
+            .run_transaction(|db, tx| {
+                let run = body(db, tx);
+                Box::pin(async move { run.await.map_err(BackoffError::permanent) })
+            })
+            .await
+            .map_err(fs_error);
+        match ran {
+            Err(busy) if busy.code == CONTENTION && attempt < MAX_ATTEMPTS => {
+                tokio::time::sleep(std::time::Duration::from_millis(5 * u64::from(attempt))).await;
+            }
+            other => return other,
+        }
+    }
+}
+
 pub async fn get<T: DeserializeOwned + Send>(
     db: &FirestoreDb,
     collection: &str,
@@ -51,8 +90,7 @@ pub async fn get<T: DeserializeOwned + Send>(
         .map_err(fs_error)
 }
 
-/// Test helper: replaces a whole document.
-#[cfg(test)]
+/// Replaces a whole document, creating it if needed.
 pub async fn replace<T: Serialize + DeserializeOwned + Sync + Send>(
     db: &FirestoreDb,
     collection: &str,

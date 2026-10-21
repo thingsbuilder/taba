@@ -208,6 +208,7 @@ pub fn fast_unico(url: &str, key: Option<&str>) -> Unico {
     Unico::with_unit(url, key.map(|k| Secret(k.into())), Duration::from_millis(1))
 }
 
+#[derive(Clone)]
 pub struct TestApp {
     pub state: AppState,
     pub unico: FakeUnico,
@@ -290,5 +291,202 @@ impl TestApp {
             body["session"].as_str().unwrap().to_string(),
             body["volunteer"]["id"].as_str().unwrap().to_string(),
         )
+    }
+}
+
+/// A signed-in volunteer of a test.
+#[derive(Clone)]
+pub struct Actor {
+    pub secret: String,
+    pub id: String,
+    pub device: String,
+    pub token: String,
+}
+
+/// Where the tests put their first shelter (Porto Alegre).
+pub const ORIGIN: (f64, f64) = (-30.0346, -51.2177);
+const METERS_PER_DEGREE: f64 = 111_194.9;
+
+/// A point `meters` north of the origin; on the same meridian, so the distance is exact.
+pub fn north_of_origin(meters: f64) -> (f64, f64) {
+    (ORIGIN.0 + meters / METERS_PER_DEGREE, ORIGIN.1)
+}
+
+pub fn shelter_body(id: &str, name: &str, at: (f64, f64)) -> Value {
+    json!({
+        "id": id, "name": name, "lat": at.0, "lon": at.1, "accuracy": 10.0,
+        "client_created_at": "2026-10-21T10:00:00Z",
+    })
+}
+
+pub fn new_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+impl TestApp {
+    /// Any request signed in as `session`.
+    pub async fn send(
+        &self,
+        method: &str,
+        path: &str,
+        session: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let auth = format!("Bearer {session}");
+        let (status, _, json) = self
+            .request(method, path, &[("authorization", auth.as_str())], body)
+            .await;
+        (status, json)
+    }
+
+    /// Like `send`, with an `Idempotency-Key`.
+    pub async fn send_keyed(
+        &self,
+        method: &str,
+        path: &str,
+        session: &str,
+        key: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let auth = format!("Bearer {session}");
+        let (status, _, json) = self
+            .request(
+                method,
+                path,
+                &[("authorization", auth.as_str()), ("idempotency-key", key)],
+                body,
+            )
+            .await;
+        (status, json)
+    }
+
+    pub async fn actor(&self, name: &str) -> Actor {
+        let (device, token) = (format!("dev-{name}"), format!("tok-{name}"));
+        let (secret, id) = self.login(&device, &token, name).await;
+        Actor {
+            secret,
+            id,
+            device,
+            token,
+        }
+    }
+
+    pub async fn grant(&self, actor: &Actor, role: crate::volunteers::GlobalRole) {
+        crate::members::change_role(
+            &self.state.db,
+            &actor.id,
+            role,
+            crate::members::Change::Grant,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Creates a shelter at `at`; returns its id.
+    pub async fn create_shelter(&self, who: &Actor, name: &str, at: (f64, f64)) -> String {
+        let id = new_id();
+        let (status, body) = self
+            .send(
+                "POST",
+                "/v1/shelters",
+                &who.secret,
+                Some(shelter_body(&id, name, at)),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        id
+    }
+
+    /// A shelter confirmed by a validator (a fresh actor given that role).
+    pub async fn confirmed_shelter(&self, who: &Actor, name: &str, at: (f64, f64)) -> String {
+        let id = self.create_shelter(who, name, at).await;
+        let validator = self.actor(&format!("validator-{}", new_id())).await;
+        self.grant(&validator, crate::volunteers::GlobalRole::Validator)
+            .await;
+        let (status, body) = self
+            .send(
+                "POST",
+                &format!("/v1/shelters/{id}/confirm"),
+                &validator.secret,
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        id
+    }
+
+    /// An invite made by `admin`; returns its code.
+    pub async fn invite(&self, admin: &Actor, shelter_id: &str, kind: &str, role: &str) -> String {
+        let (status, body) = self
+            .send(
+                "POST",
+                &format!("/v1/shelters/{shelter_id}/invites"),
+                &admin.secret,
+                Some(json!({ "kind": kind, "role": role })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        body["code"].as_str().unwrap().to_string()
+    }
+
+    /// The journey for an invite, done with `token`: returns the capture id.
+    pub async fn invite_capture(&self, device: &str, token: &str) -> String {
+        let (status, capture) = self
+            .post("/v1/captures", device, json!({ "purpose": "invite" }))
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{capture}");
+        let capture_id = capture["capture_id"].as_str().unwrap().to_string();
+        // The process of this capture, not "the last one": other tests create captures at once.
+        let stored: crate::auth::CaptureDoc =
+            crate::store::get(&self.state.db, "captures", &capture_id)
+                .await
+                .unwrap()
+                .unwrap();
+        self.unico.finish_with_token(&stored.process_id, token);
+        capture_id
+    }
+
+    /// Accepts the invite as the person behind `token` (a new person gets a profile).
+    pub async fn accept(
+        &self,
+        code: &str,
+        device: &str,
+        token: &str,
+        name: &str,
+    ) -> (StatusCode, Value) {
+        let capture_id = self.invite_capture(device, token).await;
+        let profile = json!({ "name": name, "show_phone": false, "language": "pt-BR" });
+        self.post(
+            &format!("/v1/invites/{code}/accept"),
+            device,
+            json!({ "capture_id": capture_id, "profile": profile }),
+        )
+        .await
+    }
+
+    /// Accepts an invite as a brand-new volunteer and returns them signed in.
+    pub async fn join(&self, code: &str, name: &str) -> Actor {
+        let (device, token) = (format!("dev-{name}"), format!("tok-{name}"));
+        let (status, body) = self.accept(code, &device, &token, name).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        Actor {
+            secret: body["session"].as_str().unwrap().to_string(),
+            id: body["volunteer"]["id"].as_str().unwrap().to_string(),
+            device,
+            token,
+        }
+    }
+
+    /// Someone who already has a profile accepts another invite.
+    pub async fn join_again(&self, code: &str, who: &Actor) {
+        let capture_id = self.invite_capture(&who.device, &who.token).await;
+        let (status, body) = self
+            .post(
+                &format!("/v1/invites/{code}/accept"),
+                &who.device,
+                json!({ "capture_id": capture_id }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
     }
 }
