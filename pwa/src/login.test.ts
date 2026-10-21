@@ -144,3 +144,31 @@ describe('finishLogin', () => {
     )
   })
 })
+
+describe('invite acceptance (spec 3.3)', () => {
+  it('startLogin with a code asks for an invite capture and remembers the code', async () => {
+    const { deps: d, fetchFn } = deps([json(201, { capture_id: 'c9', link: 'https://journey.test/y', expires_at: 'soon' })])
+    expect(await startLogin(d, 'code-1')).toEqual({ ok: true, link: 'https://journey.test/y' })
+    expect(JSON.parse(fetchFn.mock.calls[0]![1]!.body as string)).toEqual({ purpose: 'invite' })
+    expect(await db.get('captures', 'c9')).toEqual({ capture_id: 'c9', created_at: NOW, purpose: 'invite', invite_code: 'code-1' })
+  })
+
+  it('finishLogin with a code accepts the invite, stores the session and returns the membership', async () => {
+    const membership = { shelter_id: 's1', name: 'Ginásio', role: 'volunteer', confirmation: 'unconfirmed' }
+    const { deps: d, fetchFn } = deps([json(202, { error: 'capture_pending' }), json(201, { ...session(), membership })])
+    const outcome = await finishLogin(d, 'c9', undefined, 'code-1')
+    expect(outcome).toMatchObject({ kind: 'logged_in', membership })
+    expect(fetchFn.mock.calls.map(([path]) => path)).toEqual(['/v1/invites/code-1/accept', '/v1/invites/code-1/accept'])
+    expect((await getActive(db, NOW))?.volunteer_id).toBe('ana')
+  })
+
+  it('passes the invite errors up and asks for the profile when the volunteer is new', async () => {
+    const profile = { name: 'Ana', show_phone: false, language: 'en' as const }
+    const { deps: d } = deps([json(422, { error: 'profile_required' })])
+    expect(await finishLogin(d, 'c9', undefined, 'code-1')).toEqual({ kind: 'profile_required' })
+    for (const code of ['invite_invalid', 'already_member', 'removed_from_shelter', 'banned']) {
+      const { deps: e } = deps([json(410, { error: code })])
+      expect(await finishLogin(e, 'c9', profile, 'code-1')).toEqual({ kind: 'error', code })
+    }
+  })
+})

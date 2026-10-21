@@ -45,7 +45,7 @@ export interface TabaDB extends DBSchema {
   households: { key: string; value: { id: string } }
   cards: { key: string; value: { code: string } }
   captures: { key: string; value: { capture_id: string; created_at: number; purpose?: 'invite'; invite_code?: string } }
-  addresses: { key: string; value: { shelter_id: string; lat: number; lon: number } }
+  addresses: { key: string; value: { shelter_id: string; lat: number; lon: number; volunteer_id: string | null } }
 }
 
 export type Db = IDBPDatabase<TabaDB>

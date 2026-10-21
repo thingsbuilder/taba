@@ -13,7 +13,7 @@ export async function getStatus(fetchFn: typeof fetch = fetch): Promise<ApiStatu
   }
 }
 
-export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string }
+export type ApiResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string; detail?: unknown }
 
 export interface VolunteerView {
   id: string
@@ -156,7 +156,8 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
     const body = res.status === 204 ? null : await res.json().catch(() => null)
     // 202 is "capture_pending": a 2xx that is not a result yet.
     if (res.ok && res.status !== 202) return { ok: true, data: body as T }
-    return { ok: false, status: res.status, error: (body as { error?: string } | null)?.error ?? `http_${res.status}` }
+    const failure = body as { error?: string; detail?: unknown } | null
+    return { ok: false, status: res.status, error: failure?.error ?? `http_${res.status}`, detail: failure?.detail }
   }
 
   return {
