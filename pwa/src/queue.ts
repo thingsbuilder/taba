@@ -100,8 +100,10 @@ export function createQueue(deps: QueueDeps) {
     let statusOk: boolean | undefined
     const degradedGateOpen = async () => (statusOk ??= (await deps.getStatus())?.unico === 'ok')
 
-    for (const item of await sortedItems()) {
-      if (item.state !== 'pending') continue // held / needs_action wait for a person
+    for (const snapshot of await sortedItems()) {
+      // Read again: an earlier item of this pass may have held this one (spec 9.3).
+      const item = await db.get('queue', snapshot.id)
+      if (!item || item.state !== 'pending') continue // held / needs_action wait for a person
       if (item.error === 'unico_degraded') {
         // Retried only once GET /status is ok again; does not block the rest of the queue.
         if (!(await degradedGateOpen())) continue

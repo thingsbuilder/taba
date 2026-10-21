@@ -188,5 +188,13 @@
   "error.invalid_shelter": "Check the name and capacity.",
   "error.wrong_capture_purpose": "This selfie does not fit this step. Start again.",
   "error.shelter_exists": "A shelter with that code already exists.",
-  "error.unauthorized": "Your session ended. Sign in again."
+  "error.unauthorized": "Your session ended. Sign in again.",
+  "error.idempotency_key_mismatch": "This request was already used for something else. Try again.",
+  "error.invalid_idempotency_key": "Something went wrong with this request. Try again.",
+  "error.alert_not_found": "That notice no longer exists.",
+  "error.event_not_found": "That event no longer exists.",
+  "error.invalid_event": "Check the event name and phones.",
+  "error.invalid_reason": "Write a reason.",
+  "error.invalid_role": "That level is not allowed.",
+  "error.contention": "Many people are using this at once. Try again in a moment."
 }

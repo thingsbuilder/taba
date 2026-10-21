@@ -184,6 +184,17 @@ describe('queue state transitions', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2) // the 409, then the other shelter's item
   })
 
+  it('holds a dependent item that was already queued before the 409 (spec 9.3)', async () => {
+    const queue = make()
+    const base = { volunteer_id: 'v1', shelter_id: 's1', attempts: 0, next_attempt_at: 0, state: 'pending' as const }
+    await db.put('queue', { ...base, id: 'create', method: 'POST', path: '/v1/shelters', body: {}, created_at: 1 })
+    await db.put('queue', { ...base, id: 'address', method: 'PATCH', path: '/v1/shelters/s1', body: {}, created_at: 2 })
+    fetchMock.mockResolvedValueOnce(json(409, { error: 'shelter_nearby' })).mockResolvedValue(json(200))
+    await queue.drain()
+    expect(fetchMock).toHaveBeenCalledTimes(1) // the dependent is never sent
+    expect((await queue.list()).map((i) => [i.id, i.state])).toEqual([['create', 'held'], ['address', 'held']])
+  })
+
   it('keeps the conflict detail on the held item', async () => {
     const detail = { shelter_id: 'x', name: 'Ginásio', distance_m: 80, contact: { first_name: 'Rui' } }
     fetchMock.mockResolvedValueOnce(json(409, { error: 'shelter_nearby', detail }))

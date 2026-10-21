@@ -52,6 +52,14 @@ const KNOWN_ERRORS = new Set([
   'wrong_capture_purpose',
   'shelter_exists',
   'unauthorized',
+  'idempotency_key_mismatch',
+  'invalid_idempotency_key',
+  'alert_not_found',
+  'event_not_found',
+  'invalid_event',
+  'invalid_reason',
+  'invalid_role',
+  'contention',
 ])
 
 /** i18n key for a stable server error code; unknown codes get the generic message. */
