@@ -1,21 +1,30 @@
 import { useEffect, useState } from 'preact/hooks'
-import { type ApiStatus, getStatus } from './api'
+import { type Api, type ApiStatus, getStatus } from './api'
+import type { AppContext } from './app-context'
 import type { Db } from './db'
 import { isIosOutsideStandalone, requestPersistence } from './device'
 import { useLanguage, useOnline } from './hooks'
 import { type Language, saveLanguage, setLanguage, t } from './i18n'
+import { SESSIONS_CHANGED } from './events'
+import { useLocation } from './nav'
 import type { Queue } from './queue'
 import { resolveRoute } from './routes'
+import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession, updateProfile } from './sessions'
 import { Home } from './screens/Home'
 import { InstallIos } from './screens/InstallIos'
+import { Login } from './screens/Login'
 import { NotFound } from './screens/NotFound'
+import { PinSetup } from './screens/PinSetup'
+import { Profile } from './screens/Profile'
+import { Return } from './screens/Return'
+import { SwitchOperator } from './screens/SwitchOperator'
 
 const LANGUAGES: { id: Language; label: string }[] = [
   { id: 'pt-BR', label: 'PT' },
   { id: 'en', label: 'EN' },
 ]
 
-function LanguageSwitch({ db }: { db: Db }) {
+function LanguageSwitch({ db, active, queue, refresh }: { db: Db; active: LocalSession | null; queue: Queue; refresh: () => Promise<void> }) {
   const current = useLanguage()
   return (
     <div class="lang" role="group" aria-label={t('language.label')}>
@@ -27,6 +36,11 @@ function LanguageSwitch({ db }: { db: Db }) {
           onClick={() => {
             setLanguage(id)
             void saveLanguage(db, id)
+            // Logged in: the profile follows the choice (spec 11.1), through the queue so it works offline.
+            if (active) {
+              void updateProfile(db, active.volunteer_id, { language: id }).then(refresh)
+              void queue.enqueue({ method: 'PATCH', path: '/v1/me', body: { language: id }, volunteer_id: active.volunteer_id })
+            }
           }}
         >
           {label}
@@ -52,10 +66,35 @@ function NetworkChip({ queue }: { queue: Queue }) {
   return <div class="chip chip-warning" role="status">{text}</div>
 }
 
-export function App({ db, queue, updateApply }: { db: Db; queue: Queue; updateApply: (() => void) | null }) {
+export function App({ db, api, queue, updateApply }: { db: Db; api: Api; queue: Queue; updateApply: (() => void) | null }) {
   useLanguage() // re-render on language change
   const online = useOnline()
   const [status, setStatus] = useState<ApiStatus | null>(null)
+  const [ready, setReady] = useState(false)
+  const [active, setActive] = useState<LocalSession | null>(null)
+  const [sessions, setSessions] = useState<LocalSession[]>([])
+
+  const refresh = async () => {
+    const now = Date.now()
+    setActive(await getActive(db, now))
+    setSessions(await listValid(db, now))
+    setReady(true)
+  }
+  useEffect(() => {
+    void refresh()
+    window.addEventListener(SESSIONS_CHANGED, refresh)
+    return () => window.removeEventListener(SESSIONS_CHANGED, refresh)
+  }, [])
+  // With signal, ask the server about the active session: roles, renewal, or `401` when it ended.
+  useEffect(() => {
+    if (!online || !active) return
+    void api.getMe(active.secret).then(async (me) => {
+      if (me.ok) await applyMe(db, active.volunteer_id, me.data.global_roles, Date.now())
+      else if (me.status === 401 || me.status === 403) await removeSession(db, active.volunteer_id)
+      else return
+      await refresh()
+    })
+  }, [online, active?.volunteer_id])
   const [persisted, setPersisted] = useState(true)
   const blocked = isIosOutsideStandalone(navigator)
 
@@ -68,12 +107,14 @@ export function App({ db, queue, updateApply }: { db: Db; queue: Queue; updateAp
     if (!blocked) void requestPersistence(navigator.storage).then(setPersisted)
   }, [blocked])
 
-  const route = resolveRoute(location.pathname)
+  const { pathname, search } = useLocation()
+  const route = resolveRoute(pathname)
+  const ctx: AppContext = { db, api, queue, active, sessions, status, refresh }
   return (
     <>
       <header class="topbar">
         <img class="brand-mark" src="/favicon.svg" alt="Taba" width="32" height="32" />
-        <LanguageSwitch db={db} />
+        <LanguageSwitch db={db} active={active} queue={queue} refresh={refresh} />
       </header>
       {updateApply && (
         <button type="button" class="banner banner-action" onClick={updateApply}>
@@ -83,7 +124,24 @@ export function App({ db, queue, updateApply }: { db: Db; queue: Queue; updateAp
       {!blocked && <NetworkChip queue={queue} />}
       {!blocked && status?.unico === 'degraded' && <div class="banner" role="status">{t('degraded.banner')}</div>}
       {!blocked && !persisted && <div class="banner" role="alert">{t('persist.warning')}</div>}
-      {blocked ? <InstallIos /> : route === 'home' ? <Home /> : <NotFound />}
+      {blocked ? <InstallIos /> : ready && (needsPin(active) && route !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
     </>
   )
+}
+
+function Screen({ route, ctx, search }: { route: ReturnType<typeof resolveRoute>; ctx: AppContext; search: string }) {
+  switch (route) {
+    case 'home':
+      return <Home ctx={ctx} />
+    case 'login':
+      return <Login ctx={ctx} />
+    case 'return':
+      return <Return ctx={ctx} search={search} />
+    case 'switch_operator':
+      return <SwitchOperator ctx={ctx} />
+    case 'profile':
+      return <Profile ctx={ctx} />
+    default:
+      return <NotFound />
+  }
 }

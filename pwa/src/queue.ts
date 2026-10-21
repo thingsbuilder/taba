@@ -26,8 +26,10 @@ export interface QueueDeps {
   fetch: typeof fetch
   deviceId: () => Promise<string>
   getStatus: () => Promise<ApiStatus | null>
+  /** Session secret of the volunteer who signed the item, for the `Authorization` header. */
+  secretFor?: (volunteerId: string | null) => Promise<string | null>
   /** Called on `401`: the drain stops and the app asks for login. */
-  onUnauthorized?: () => void
+  onUnauthorized?: (volunteerId: string | null) => void
   now?: () => number
   random?: () => number
 }
@@ -92,6 +94,7 @@ export function createQueue(deps: QueueDeps) {
         break // FIFO: later items may depend on this one
       }
 
+      const secret = await deps.secretFor?.(item.volunteer_id)
       let res: Response
       try {
         res = await deps.fetch(item.path, {
@@ -100,6 +103,7 @@ export function createQueue(deps: QueueDeps) {
             'Content-Type': 'application/json',
             'Idempotency-Key': item.id,
             'X-Device-Id': await deps.deviceId(),
+            ...(secret ? { Authorization: `Bearer ${secret}` } : {}),
           },
           body: item.body === undefined ? undefined : JSON.stringify(item.body),
         })
@@ -114,7 +118,7 @@ export function createQueue(deps: QueueDeps) {
         continue
       }
       if (res.status === 401) {
-        deps.onUnauthorized?.()
+        deps.onUnauthorized?.(item.volunteer_id)
         break
       }
       const errorCode = ((await res.json().catch(() => null)) as { error?: string } | null)?.error

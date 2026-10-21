@@ -27,11 +27,12 @@ scan() { # scan <label> <regex> <allowed-match-regex>
   fi
 }
 
-ALLOWED='127\.0\.0\.1|0\.0\.0\.0|meu-projeto-123456'
+ALLOWED='127\.0\.0\.1|0\.0\.0\.0|meu-projeto-123456|uip_ak\.[a-z]+\.x{8,}'
 failed=0
 target=${2:-.}
 
 scan "Unico access key (uk_live_...)" 'uk_live_[A-Za-z0-9]{8,}' "$target"
+scan "Unico access key (uip_ak.<env>.<uuid>...)" 'uip_ak\.[a-z]+\.[A-Za-z0-9-]{8,}' "$target"
 scan "IPv4 address" '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' "$target"
 scan "GCP project id (name-NNNNNN)" '\b[a-z][a-z0-9-]{3,28}-[0-9]{6}\b' "$target"
 scan "GCP service account email" '@[a-z][a-z0-9-]+\.iam\.gserviceaccount\.com' "$target"

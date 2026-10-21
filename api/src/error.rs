@@ -3,14 +3,17 @@
 
 use axum::Json;
 use axum::http::StatusCode;
+use axum::http::header::RETRY_AFTER;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ApiError {
     pub status: StatusCode,
     pub code: &'static str,
     pub detail: Value,
+    /// Seconds for the `Retry-After` header (`503 unico_busy`).
+    pub retry_after: Option<u32>,
 }
 
 impl ApiError {
@@ -19,6 +22,7 @@ impl ApiError {
             status,
             code,
             detail: json!({}),
+            retry_after: None,
         }
     }
 
@@ -27,13 +31,24 @@ impl ApiError {
     }
 }
 
+/// Lets a handler's error cross a Firestore transaction (see `store::fs_error`).
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.status.as_u16(), self.code)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(json!({ "error": self.code, "detail": self.detail })),
-        )
-            .into_response()
+        let body = Json(json!({ "error": self.code, "detail": self.detail }));
+        match self.retry_after {
+            Some(seconds) => {
+                (self.status, [(RETRY_AFTER, seconds.to_string())], body).into_response()
+            }
+            None => (self.status, body).into_response(),
+        }
     }
 }
 

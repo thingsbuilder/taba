@@ -219,3 +219,41 @@ describe('queue state transitions', () => {
     expect(await queue.count()).toBe(1)
   })
 })
+
+describe('queue authorization (phase 1)', () => {
+  it('sends each item with the session of the volunteer who signed it', async () => {
+    const db = await freshDb()
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 200 }))
+    const secrets: Record<string, string> = { ana: 'secret-ana', bia: 'secret-bia' }
+    const queue = createQueue({
+      db,
+      fetch: fetchMock,
+      deviceId: async () => 'device-1',
+      getStatus: async () => ({ unico: 'ok' }),
+      secretFor: async (id) => (id ? (secrets[id] ?? null) : null),
+    })
+    await queue.enqueue({ method: 'PATCH', path: '/v1/me', body: {}, volunteer_id: 'ana' })
+    await queue.enqueue({ method: 'PATCH', path: '/v1/me', body: {}, volunteer_id: 'bia' })
+    await queue.enqueue({ method: 'POST', path: '/v1/x', body: {}, volunteer_id: null })
+    await queue.drain()
+    const headers = fetchMock.mock.calls.map(([, init]) => (init?.headers as Record<string, string>).Authorization)
+    expect(headers).toEqual(['Bearer secret-ana', 'Bearer secret-bia', undefined])
+  })
+
+  it('a 401 stops the drain and names the volunteer whose session failed', async () => {
+    const db = await freshDb()
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 401 }))
+    const onUnauthorized = vi.fn()
+    const queue = createQueue({
+      db,
+      fetch: fetchMock,
+      deviceId: async () => 'device-1',
+      getStatus: async () => ({ unico: 'ok' }),
+      onUnauthorized,
+    })
+    await queue.enqueue({ method: 'PATCH', path: '/v1/me', body: {}, volunteer_id: 'ana' })
+    await queue.drain()
+    expect(onUnauthorized).toHaveBeenCalledWith('ana')
+    expect(await queue.count()).toBe(1)
+  })
+})
