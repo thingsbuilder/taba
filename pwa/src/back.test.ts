@@ -4,7 +4,7 @@ import { resolveRoute } from './routes'
 
 it('goes to the logical parent of each inner screen', () => {
   expect(backTarget(resolveRoute('/shelter/abc/members'))).toBe('/shelter/abc')
-  for (const path of ['/shelter/abc', '/inbox', '/shelters/new', '/endorse/code', '/invite/code']) {
+  for (const path of ['/shelter/abc', '/inbox', '/shelters/new', '/endorse/code', '/invite/code', '/profile', '/switch-operator']) {
     expect(backTarget(resolveRoute(path)), path).toBe('/')
   }
 })
