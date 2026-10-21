@@ -498,29 +498,12 @@ async fn phase_4_routes_are_registered_and_ask_for_a_session() {
         ("POST", "/v1/matches/m1/decision"),
         ("POST", "/v1/volunteers/v1/roles"),
         ("DELETE", "/v1/volunteers/v1/roles/mediator"),
-        ("POST", "/v1/search-links"),
-        ("DELETE", "/v1/search-links/c1"),
     ] {
         let body = (method != "GET" && method != "DELETE").then(|| json!({}));
         let (status, _, answer) = app.request(method, path, &[], body.clone()).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}");
         assert_eq!(answer["error"], "unauthorized", "{method} {path}");
         let (status, answer) = app.send(method, path, &ana.secret, body).await;
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {path}");
-        assert_eq!(answer["error"], "not_implemented", "{method} {path}");
-    }
-}
-
-/// The two routes of the family link need no session (spec 10.4). Owner E: an unknown code is 404.
-#[tokio::test]
-async fn the_two_public_search_link_routes_need_no_session() {
-    let app = TestApp::new().await;
-    for (method, path) in [
-        ("GET", "/v1/search-links/c1"),
-        ("POST", "/v1/search-links/c1/submit"),
-    ] {
-        let body = (method == "POST").then(|| json!({}));
-        let (status, _, answer) = app.request(method, path, &[], body).await;
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {path}");
         assert_eq!(answer["error"], "not_implemented", "{method} {path}");
     }

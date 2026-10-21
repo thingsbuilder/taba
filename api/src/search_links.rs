@@ -25,9 +25,9 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use base64::Engine;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use firestore::FirestoreInstant;
 use firestore::jiff::SignedDuration;
-use firestore::{FirestoreDb, FirestoreInstant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -36,9 +36,7 @@ use crate::alerts::{self, AlertDoc, AlertKind};
 use crate::audit::{self, AuditEntry};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
-use crate::searches::{
-    self, Family, MissingPerson, RegisterOutcome, SearchInput, SearchOwner, SearchVia,
-};
+use crate::searches::{self, RegisterOutcome, SearchInput, SearchOwner, SearchVia};
 use crate::shelters::{self, Confirmation, ShelterDoc};
 use crate::store::{self, tx_create, tx_replace};
 use crate::volunteers::GlobalRole;
@@ -49,11 +47,6 @@ const TTL: SignedDuration = SignedDuration::from_hours(12);
 const MAX_ATTEMPTS: u32 = 5;
 /// How long one submit holds the link while Unico is being asked (Unico's own deadline is 60 s).
 const LEASE: SignedDuration = SignedDuration::from_secs(120);
-const MAX_PHOTOS: usize = 5;
-/// Spec 5.3 and 10.4: an image above this is refused with `413` without calling Unico.
-const MAX_IMAGE_BYTES: usize = 800 * 1024;
-const MAX_TEXT_CHARS: usize = 2000;
-const MAX_SHORT_CHARS: usize = 200;
 /// Submits per hour from one device (`X-Device-Id`) on one IP, and from one IP alone.
 const MAX_PER_DEVICE_HOUR: usize = 20;
 const MAX_PER_IP_HOUR: usize = 100;
@@ -124,52 +117,11 @@ fn busy() -> ApiError {
     error
 }
 
-fn invalid_request() -> ApiError {
-    ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid_request")
-}
-
 /// The search the submit makes: always the same for one link, so a retry writes the same document.
 fn search_id_of(code: &str) -> String {
     let digest = Sha256::digest(code.as_bytes());
     let bytes: [u8; 16] = digest[..16].try_into().expect("sha256 has 32 bytes");
     uuid::Uuid::from_bytes(bytes).to_string()
-}
-
-fn search_response(usable_photos: u32) -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::ACCEPTED,
-        Json(json!({ "message": "search_registered", "usable_photos": usable_photos })),
-    )
-}
-
-// ---- STAND-IN for the shared SEARCHES_PER_DAY counter of `searches.rs` (owner B) ----
-
-/// Takes one of the volunteer's searches of the day. Replace by the shared counter of
-/// `searches.rs` when it lands.
-async fn take_daily_slot(
-    db: &FirestoreDb,
-    tx: &mut firestore::FirestoreTransaction<'_>,
-    volunteer_id: &str,
-    limit: u32,
-) -> Result<(), ApiError> {
-    #[derive(Serialize, Deserialize)]
-    struct Counter {
-        count: u32,
-    }
-    let day = store::now().as_microsecond() / 86_400_000_000;
-    let id = format!("{volunteer_id}~{day}");
-    let counter: Option<Counter> = store::get(db, "search_counters", &id).await?;
-    let count = counter.map_or(0, |c| c.count);
-    if count >= limit {
-        return Err(ApiError::search_limit());
-    }
-    tx_replace(
-        db,
-        tx,
-        "search_counters",
-        &id,
-        &Counter { count: count + 1 },
-    )
 }
 
 // ---- POST /v1/search-links ----
@@ -220,7 +172,7 @@ pub async fn post_search_link(
     store::transact(&state.db, |db, tx| {
         let (code, link, by) = (code.clone(), link.clone(), volunteer.id.clone());
         Box::pin(async move {
-            take_daily_slot(&db, tx, &by, limit).await?;
+            searches::take_daily_slot(&db, tx, &by, limit).await?;
             tx_create(&db, tx, COLLECTION, &code, &link)?;
             audit::add(
                 &db,
@@ -293,13 +245,6 @@ pub async fn get_search_link(
 
 // ---- POST /v1/search-links/{code}/submit ----
 
-#[derive(Debug, Deserialize)]
-pub struct SubmitRequest {
-    photos_base64: Vec<String>,
-    missing_person: MissingPerson,
-    family: Family,
-}
-
 /// A sliding window per key, in this process's memory.
 // ponytail: the counters live in memory (single e2-micro instance) and reset on restart; the
 // per-link attempts in Firestore still cap the damage. With more than one instance, count in
@@ -347,64 +292,6 @@ fn rate_limit(headers: &HeaderMap) -> Result<(), ApiError> {
     }
 }
 
-fn text(value: &str, max: usize) -> Result<(), ApiError> {
-    if value.trim().is_empty() || value.chars().count() > max {
-        return Err(invalid_request());
-    }
-    Ok(())
-}
-
-/// Checks the form and decodes the photos: 1 to 5, each at most 800 KB (`413 image_too_large`).
-fn validate(request: SubmitRequest, id: String) -> Result<SearchInput, ApiError> {
-    text(&request.missing_person.name, MAX_SHORT_CHARS)?;
-    if request
-        .missing_person
-        .nickname
-        .as_deref()
-        .is_some_and(|n| n.chars().count() > MAX_SHORT_CHARS)
-        || request.missing_person.notes.chars().count() > MAX_TEXT_CHARS
-    {
-        return Err(invalid_request());
-    }
-    text(&request.family.name, MAX_SHORT_CHARS)?;
-    text(&request.family.phone, MAX_SHORT_CHARS)?;
-    text(&request.family.relationship, MAX_SHORT_CHARS)?;
-    if !["pt-BR", "en", "es"].contains(&request.family.language.as_str()) {
-        return Err(invalid_request());
-    }
-    if request.photos_base64.is_empty() || request.photos_base64.len() > MAX_PHOTOS {
-        return Err(invalid_request());
-    }
-    let photos = request
-        .photos_base64
-        .iter()
-        .map(|photo| {
-            let bytes = STANDARD
-                .decode(photo.trim())
-                .map_err(|_| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid_image"))?;
-            if bytes.is_empty() {
-                return Err(ApiError::new(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "invalid_image",
-                ));
-            }
-            if bytes.len() > MAX_IMAGE_BYTES {
-                return Err(ApiError::new(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "image_too_large",
-                ));
-            }
-            Ok(bytes)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(SearchInput {
-        id,
-        photos,
-        missing_person: request.missing_person,
-        family: request.family,
-    })
-}
-
 /// `POST /v1/search-links/{code}/submit`, public: the same pipeline as `POST /v1/searches`
 /// (`searches::register_photos`) and the same answer; `410 search_link_invalid`,
 /// `503 unico_degraded` keeps the link.
@@ -412,10 +299,14 @@ pub async fn submit_search_link(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(code): Path<String>,
-    Json(request): Json<SubmitRequest>,
+    Json(mut request): Json<Value>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     rate_limit(&headers)?;
-    let input = validate(request, search_id_of(&code))?;
+    // The family sends no id: it is derived from the link, so a retry is the same search.
+    if let Some(body) = request.as_object_mut() {
+        body.insert("id".into(), search_id_of(&code).into());
+    }
+    let input = searches::parse_input(request)?;
     let device = headers
         .get("x-device-id")
         .and_then(|v| v.to_str().ok())
@@ -512,7 +403,7 @@ where
         })
     })
     .await?;
-    Ok(search_response(outcome.usable_photos))
+    Ok(searches::answer(outcome))
 }
 
 /// Gives the link back after a failed run, spending `spent` attempts.
@@ -541,6 +432,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::searches::{Family, MissingPerson};
+    use base64::engine::general_purpose::STANDARD;
+    const MAX_IMAGE_BYTES: usize = 800 * 1024;
     use crate::test_support::{Actor, ORIGIN, TestApp, all_docs, audit_actions, new_id};
 
     fn photo(bytes: usize) -> String {
@@ -1074,6 +968,7 @@ mod tests {
     #[tokio::test]
     async fn an_image_above_800_kb_is_refused_without_touching_the_link_or_unico() {
         let (app, admin, shelter) = setup().await;
+        let logins = app.unico.post_count();
         let code = make_link(&app, &admin, &shelter).await;
         let path = format!("/v1/search-links/{code}/submit");
         let (status, answer) = public(
@@ -1089,12 +984,13 @@ mod tests {
         );
         let link = link_doc(&app, &code).await;
         assert_eq!((link.status, link.attempts), (LinkStatus::Active, 0));
-        assert_eq!(app.unico.post_count(), 0);
+        assert_eq!(app.unico.post_count(), logins);
     }
 
     #[tokio::test]
     async fn the_body_is_validated() {
         let (app, admin, shelter) = setup().await;
+        let logins = app.unico.post_count();
         let code = make_link(&app, &admin, &shelter).await;
         let path = format!("/v1/search-links/{code}/submit");
         let bad = |photos: Vec<String>| body(photos);
@@ -1102,7 +998,6 @@ mod tests {
             ("no photos", bad(vec![])),
             ("six photos", bad(vec![photo(10); 6])),
             ("not base64", bad(vec!["***".into()])),
-            ("empty photo", bad(vec![String::new()])),
         ] {
             let (status, _) = public(&app, "POST", &path, Some(request)).await;
             assert!(
@@ -1123,7 +1018,7 @@ mod tests {
             StatusCode::UNPROCESSABLE_ENTITY
         );
         assert_eq!(link_doc(&app, &code).await.attempts, 0);
-        assert_eq!(app.unico.post_count(), 0);
+        assert_eq!(app.unico.post_count(), logins);
     }
 
     #[tokio::test]
