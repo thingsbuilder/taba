@@ -3,15 +3,18 @@
 //!
 //! There is no sandbox and every call is billed: automated tests point `UNICO_URL` at a fake.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use axum::http::StatusCode;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use firestore::FirestoreDb;
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use crate::config::Secret;
+use crate::degraded;
 use crate::error::ApiError;
 
 /// Simultaneous calls to Unico in this process (spec 5.5).
@@ -21,6 +24,8 @@ const RATE_LIMIT_RETRIES: u32 = 4;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// `PUT`/`POST` image limit of the API-only flow (spec 5.3).
 const MAX_IMAGE_BYTES: usize = 800 * 1024;
+/// Failed calls in a row (`UnicoError::Unavailable`) that turn the degraded mode on (spec 5.5).
+const FAILURES_BEFORE_DEGRADED: u32 = 3;
 const NO_FACE_CODE: i64 = 20532;
 const RETRY_AFTER_SECONDS: u32 = 30;
 
@@ -43,6 +48,8 @@ pub enum UnicoError {
     NoFace,
     InvalidImage,
     ImageTooLarge,
+    /// The degraded mode is on (spec 5.7): no call was made.
+    Degraded,
 }
 
 impl From<UnicoError> for ApiError {
@@ -76,6 +83,7 @@ impl From<UnicoError> for ApiError {
             UnicoError::NoFace => (StatusCode::UNPROCESSABLE_ENTITY, "no_face"),
             UnicoError::InvalidImage => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_image"),
             UnicoError::ImageTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "image_too_large"),
+            UnicoError::Degraded => return ApiError::unico_degraded(),
         };
         let mut error = ApiError::new(status, code);
         if err == UnicoError::Busy {
@@ -135,6 +143,13 @@ pub struct Unico {
     permits: Semaphore,
     /// One second in production (backoff steps; the `5xx` retry waits two). Tests shrink it.
     unit: Duration,
+    /// Where `system/status` lives. Without it the client neither obeys nor changes the
+    /// degraded mode (unit tests of the retry rules).
+    status_db: Option<FirestoreDb>,
+    /// `Unavailable` answers since the last one that was not.
+    // ponytail: in-process counter; fine with the single e2-micro instance. With more than one,
+    // keep the count in `system/status`.
+    failures: AtomicU32,
 }
 
 impl Unico {
@@ -152,7 +167,15 @@ impl Unico {
             access_key,
             permits: Semaphore::new(MAX_CONCURRENT_CALLS),
             unit,
+            status_db: None,
+            failures: AtomicU32::new(0),
         }
+    }
+
+    /// Makes every call obey and update the degraded mode kept in `db` (spec 5.5, 5.7).
+    pub fn with_status(mut self, db: FirestoreDb) -> Self {
+        self.status_db = Some(db);
+        self
     }
 
     /// `humantoken` flow: creates the process and returns the link the person opens.
@@ -213,8 +236,66 @@ impl Unico {
 }
 
 impl Unico {
-    /// One logical call: semaphore, access key, and the retry rules of spec 5.5.
+    /// One logical call. In degraded mode nothing is sent (spec 5.7); the outcome feeds the
+    /// degraded mode (spec 5.5): the monthly limit at once, three `Unavailable` in a row.
     async fn call(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Value, UnicoError> {
+        self.ensure_available().await?;
+        let result = self.send(method, path, body).await;
+        self.record(&result).await;
+        result
+    }
+
+    async fn ensure_available(&self) -> Result<(), UnicoError> {
+        let Some(db) = &self.status_db else {
+            return Ok(());
+        };
+        match degraded::blocking_reason(db).await {
+            Ok(None) => Ok(()),
+            Ok(Some(_)) => Err(UnicoError::Degraded),
+            Err(err) => {
+                // Firestore down takes the whole API down anyway; do not also block on it.
+                tracing::error!(
+                    code = err.code,
+                    "could not read system/status; calling Unico"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    async fn record(&self, result: &Result<Value, UnicoError>) {
+        let Some(db) = &self.status_db else {
+            return;
+        };
+        let recorded = match result {
+            Err(UnicoError::Limit) => degraded::enter_limit(db).await,
+            Err(UnicoError::Unavailable) => {
+                let failures = self.failures.fetch_add(1, Ordering::Relaxed) + 1;
+                // The count stays up after the mode trips, so one more failure once the five
+                // minutes pass trips it again: the next real call is the test (spec 5.7).
+                if failures >= FAILURES_BEFORE_DEGRADED {
+                    degraded::enter_unavailable(db).await
+                } else {
+                    Ok(())
+                }
+            }
+            _ => {
+                self.failures.store(0, Ordering::Relaxed);
+                Ok(())
+            }
+        };
+        if let Err(err) = recorded {
+            tracing::error!(code = err.code, "could not record the degraded mode");
+        }
+    }
+
+    /// The semaphore, the access key and the retry rules of spec 5.5.
+    async fn send(
         &self,
         method: reqwest::Method,
         path: &str,
@@ -690,6 +771,7 @@ mod tests {
             (UnicoError::NoFace, 422, "no_face"),
             (UnicoError::InvalidImage, 422, "invalid_image"),
             (UnicoError::Inconclusive, 422, "capture_inconclusive"),
+            (UnicoError::Degraded, 503, "unico_degraded"),
             (
                 UnicoError::UnexpectedState("x".into()),
                 502,

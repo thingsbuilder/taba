@@ -139,7 +139,8 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let db = FirestoreDb::new(&config.gcp_project)
         .await
         .context("failed to connect to Firestore")?;
-    let unico = Unico::new(&config.unico_url, config.human_token_access_key.clone());
+    let unico = Unico::new(&config.unico_url, config.human_token_access_key.clone())
+        .with_status(db.clone());
     if config.human_token_access_key.is_none() {
         tracing::warn!("HUMAN_TOKEN_ACCESS_KEY is not set: every Unico call will fail");
     }
@@ -189,7 +190,11 @@ async fn unico_command(config: Config, args: &[String]) -> anyhow::Result<()> {
     let db = FirestoreDb::new(&config.gcp_project)
         .await
         .context("failed to connect to Firestore")?;
-    degraded::resume(&db).await
+    let changed = degraded::resume(&db)
+        .await
+        .map_err(|err| anyhow::anyhow!("{} {}", err.status.as_u16(), err.code))?;
+    println!("{}", if changed { "done" } else { "nothing to change" });
+    Ok(())
 }
 
 /// systemd stops the service with SIGTERM; Ctrl-C covers local development.
@@ -260,6 +265,22 @@ mod tests {
             let err = unico_command(config.clone(), &args(bad)).await.unwrap_err();
             assert!(err.to_string().contains("unico"), "{bad:?}: {err}");
         }
+    }
+
+    #[tokio::test]
+    async fn unico_resume_leaves_the_degraded_mode() {
+        let mut config = test_config("http://127.0.0.1:1");
+        config.gcp_project = format!("taba-test-{}", uuid::Uuid::new_v4());
+        let db = FirestoreDb::new(&config.gcp_project).await.unwrap();
+        degraded::enter_limit(&db).await.unwrap();
+        assert_eq!(
+            degraded::blocking_reason(&db).await.unwrap(),
+            Some(status::Reason::Limit)
+        );
+        unico_command(config, &args(&["resume"])).await.unwrap();
+        assert_eq!(degraded::blocking_reason(&db).await.unwrap(), None);
+        let doc = degraded::read(&db).await.unwrap().unwrap();
+        assert_eq!(doc.unico, status::Unico::Ok);
     }
 
     #[tokio::test]

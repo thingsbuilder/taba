@@ -3,9 +3,10 @@
 
 use axum::Json;
 use axum::extract::State;
-use firestore::FirestoreDb;
 use serde::{Deserialize, Serialize};
 
+use crate::auth::AppState;
+use crate::degraded;
 use crate::error::ApiError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,39 +23,39 @@ pub enum Reason {
     Unavailable,
 }
 
-/// Public view of `system/status`; `since` and `until` stay server-side.
+/// Public view of `system/status`; `since` and `until` stay server-side. `pilot_responsible`
+/// (`PILOT_RESPONSIBLE`) is for the consent screen; it is not personal data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Status {
     pub unico: Unico,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<Reason>,
+    pub pilot_responsible: Option<String>,
 }
 
-pub async fn get_status(State(db): State<FirestoreDb>) -> Result<Json<Status>, ApiError> {
-    let doc: Option<Status> = db
-        .fluent()
-        .select()
-        .by_id_in("system")
-        .obj()
-        .one("status")
-        .await
-        .map_err(|err| {
-            tracing::error!(%err, "failed to read system/status");
-            ApiError::internal()
-        })?;
-    Ok(Json(doc.unwrap_or(Status {
-        unico: Unico::Ok,
-        reason: None,
-    })))
+pub async fn get_status(State(state): State<AppState>) -> Result<Json<Status>, ApiError> {
+    let reason = degraded::blocking_reason(&state.db).await?;
+    Ok(Json(Status {
+        unico: if reason.is_some() {
+            Unico::Degraded
+        } else {
+            Unico::Ok
+        },
+        reason,
+        pilot_responsible: state.config.pilot_responsible.clone(),
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::degraded::StatusDoc;
     use crate::router;
-    use crate::test_support::{TestApp, body_json, test_db};
+    use crate::test_support::{TestApp, body_json, fast_unico, test_config, test_db};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use firestore::FirestoreDb;
+    use firestore::jiff::SignedDuration;
     use serde_json::json;
     use tower::ServiceExt;
 
@@ -67,46 +68,93 @@ mod tests {
         (response.status(), body_json(response).await)
     }
 
+    const PILOT: &str = "Pilot Team, pilot@example.org";
+
+    async fn seed(db: &FirestoreDb, doc: StatusDoc) {
+        crate::store::replace(db, degraded::COLLECTION, degraded::DOCUMENT, &doc)
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn missing_document_means_ok() {
         let db = test_db().await;
         let (status, body) = call(db, "/v1/status").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, json!({ "unico": "ok" }));
+        assert_eq!(body, json!({ "unico": "ok", "pilot_responsible": PILOT }));
     }
 
     #[tokio::test]
     async fn degraded_document_is_reported_with_reason_only() {
         let db = test_db().await;
-        let seed =
-            json!({ "unico": "degraded", "reason": "limit", "since": "2026-01-01T00:00:00Z" });
-        db.fluent()
-            .insert()
-            .into("system")
-            .document_id("status")
-            .object(&seed)
-            .execute::<()>()
-            .await
-            .unwrap();
+        let since = crate::store::now();
+        seed(
+            &db,
+            StatusDoc {
+                unico: Unico::Degraded,
+                reason: Some(Reason::Limit),
+                since: Some(since),
+                until: None,
+            },
+        )
+        .await;
         let (status, body) = call(db, "/v1/status").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, json!({ "unico": "degraded", "reason": "limit" }));
+        assert_eq!(
+            body,
+            json!({ "unico": "degraded", "reason": "limit", "pilot_responsible": PILOT })
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_is_reported_while_it_runs_and_not_after() {
+        let db = test_db().await;
+        let now = crate::store::now();
+        let doc = |until| StatusDoc {
+            unico: Unico::Degraded,
+            reason: Some(Reason::Unavailable),
+            since: Some(now),
+            until: Some(until),
+        };
+        seed(&db, doc(now + SignedDuration::from_mins(5))).await;
+        let (_, body) = call(db.clone(), "/v1/status").await;
+        assert_eq!(body["reason"], "unavailable");
+        seed(&db, doc(now - SignedDuration::from_secs(1))).await;
+        let (_, body) = call(db, "/v1/status").await;
+        assert_eq!(body, json!({ "unico": "ok", "pilot_responsible": PILOT }));
     }
 
     #[tokio::test]
     async fn ok_document_has_no_reason() {
         let db = test_db().await;
-        let seed = json!({ "unico": "ok" });
-        db.fluent()
-            .insert()
-            .into("system")
-            .document_id("status")
-            .object(&seed)
-            .execute::<()>()
+        seed(
+            &db,
+            StatusDoc {
+                unico: Unico::Ok,
+                reason: None,
+                since: None,
+                until: None,
+            },
+        )
+        .await;
+        let (_, body) = call(db, "/v1/status").await;
+        assert_eq!(body, json!({ "unico": "ok", "pilot_responsible": PILOT }));
+    }
+
+    #[tokio::test]
+    async fn pilot_responsible_is_null_when_not_configured() {
+        let db = test_db().await;
+        let mut config = test_config("http://127.0.0.1:1");
+        config.pilot_responsible = None;
+        let state = AppState::new(db, config, fast_unico("http://127.0.0.1:1", None)).unwrap();
+        let response = router(state)
+            .oneshot(Request::get("/v1/status").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        let (_, body) = call(db, "/v1/status").await;
-        assert_eq!(body, json!({ "unico": "ok" }));
+        assert_eq!(
+            body_json(response).await,
+            json!({ "unico": "ok", "pilot_responsible": null })
+        );
     }
 
     #[tokio::test]

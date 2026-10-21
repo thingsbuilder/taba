@@ -55,3 +55,31 @@ Já prontos para todos:
 3. Matriz de permissões: cada dono tira as suas rotas de `PHASE_3_ROUTES` (`permissions_tests.rs`) e cria o teste de matriz real delas num módulo próprio.
 4. Testes: nenhum chama a Unico; use o servidor falso (`UNICO_URL`). Escrita que depende de unicidade usa transação com leitura dentro dela e teste de concorrência (N pedidos, exatamente um sucesso).
 5. Commits pequenos, em inglês, com a atribuição de sempre. Antes de cada commit: `git status` e `git diff --stat`.
+
+## Modo degradado: como aplicar o gate (dono D)
+
+O cliente Unico (`unico.rs`) já obedece ao modo: em `limit` ou `unavailable` ativo ele **não faz a chamada** e devolve `UnicoError::Degraded`, que vira `503 unico_degraded`. Então um handler que chama `state.unico.*` e usa `?` já responde certo. Isso só vale se o cliente foi criado com `.with_status(db)`: `serve` faz isso; em teste, use `fast_unico(..).with_status(db.clone())` (o `TestApp` padrão **não** faz).
+
+Para o handler que precisa recusar **antes** de gravar algo:
+
+```rust
+degraded::ensure_available(&state.db).await?; // 503 unico_degraded no modo degradado
+```
+
+Para uma rota que **sempre** depende da Unico (ex.: `PUT /people/{id}/biometrics`), como `route_layer` em `main.rs`:
+
+```rust
+.route("/v1/people/{person_id}/biometrics",
+    put(people::put_biometrics).route_layer(
+        middleware::from_fn_with_state(state.clone(), degraded::require_unico)))
+```
+
+Atenção: o layer roda **antes** do extrator de sessão, então sem sessão em modo degradado a resposta é `503`, não `401`. Para manter o `401` primeiro (matriz de permissões), chame `ensure_available` dentro do handler, depois do `Volunteer`.
+
+Não aplique o gate em `POST /checkins` inteiro: o caminho C (sem biometria) precisa funcionar em modo degradado; só o ramo que chama a Unico (A ou B) passa pelo cliente/`ensure_available`.
+
+Regras do modo (5.5, 5.7):
+- `429` com "monthly process limit": `degraded`/`limit`, alerta `unico_limit` (uma vez por episódio), sem chamadas até `taba unico resume` (que também encerra `unavailable`).
+- Três `Unavailable` seguidos (contador em memória do processo): `degraded`/`unavailable` por 5 min; depois disso a próxima chamada testa, e uma falha reabre o modo.
+- Imagem > 800 KB: `UnicoError::ImageTooLarge` (`413 image_too_large`) antes de qualquer leitura de status ou chamada. `unico::MAX_IMAGE_BYTES` não é público; use `token_from_image`.
+- `GET /v1/status` devolve `{unico, reason?, pilot_responsible}` (`pilot_responsible` é `string` ou `null`).
