@@ -1,7 +1,5 @@
 // Request and response types of the phase 3 routes (spec 7, 8.5, doc da fase 3). Types only, no
-// logic. The server shapes are the spec's; where the spec leaves a response open the shape below is
-// provisional and the owner of the route (see docs/pt_br/fases/fase-3-contrato.md) adjusts it
-// together with the API.
+// logic; the response shapes follow what the API sends.
 
 export type Level = 'verified' | 'assisted' | 'no_biometrics'
 export type LegalBasis = 'consent' | 'vital_interest' | 'child_protection'

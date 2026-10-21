@@ -89,7 +89,7 @@ fn router(state: AppState) -> Router {
         )
         .route("/v1/shelters/{id}/leave", post(members::leave_shelter))
         .route("/v1/volunteers/{id}/ban", post(members::ban_volunteer))
-        // Phase 3 (stage 0: every route answers 501 until its owner builds it; see fase-3-contrato.md)
+        // Phase 3
         .route("/v1/shelters/{id}/checkins", post(people::post_checkin))
         .route("/v1/shelters/{id}/people", get(people::list_people))
         .route(

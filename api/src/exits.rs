@@ -1,5 +1,5 @@
 //! Exits and occupancy (spec 3.8, 4.2): `POST /v1/shelters/{id}/exits` (adults, children,
-//! exceptions) and "N of capacity" from the open stays. Owner C.
+//! exceptions) and "N of capacity" from the open stays.
 
 use axum::Json;
 use axum::extract::{Path, State};

@@ -1,4 +1,4 @@
-//! Households (spec 3.5.1, 7, 8.5). Owner B.
+//! Households (spec 3.5.1, 7, 8.5).
 //!
 //! A person is in at most one household: `people.household_id` is the single source of truth,
 //! read and written in the same transaction as `households.member_ids` (spec 6.2.4). Reading a

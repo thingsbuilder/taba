@@ -1,5 +1,5 @@
-//! People (spec 3.4, 4.1, 4.11, 4.12, 7, 8.5). Owner A. Stage 0: data types and the routes
-//! registered as `501 not_implemented`.
+//! People (spec 3.4, 4.1, 4.11, 4.12, 7, 8.5). Check-in in three
+//! ways, edits, late biometrics and the history rules.
 
 use axum::Json;
 use axum::extract::{Path, State};

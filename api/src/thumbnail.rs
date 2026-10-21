@@ -1,5 +1,5 @@
 //! Thumbnail of a person with no name or wristband (spec 4.6): AES-256-GCM with `THUMBNAIL_KEY`
-//! and `GET /v1/people/{id}/thumbnail`. Owner A.
+//! and `GET /v1/people/{id}/thumbnail`.
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};

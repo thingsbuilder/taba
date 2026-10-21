@@ -1,4 +1,4 @@
-//! Cards of a household (spec 3.5.1, 7, 8.5). Owner B.
+//! Cards of a household (spec 3.5.1, 7, 8.5).
 //!
 //! A card belongs to a household and works in any shelter of the network, so reading one needs
 //! only a membership; changing one needs the household's shelter (see `households`). The code

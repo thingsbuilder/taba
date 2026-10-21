@@ -1,5 +1,5 @@
 //! Children (spec 3.4.1, 4.9): guardians, who may change `child_status`, and the
-//! `child_separated` alert. Owner C.
+//! `child_separated` alert.
 
 use axum::Json;
 use axum::extract::{Path, State};
