@@ -106,6 +106,12 @@ async fn main() -> anyhow::Result<()> {
     // Development only: loads `.env` when present. On the VM the variables come from systemd.
     dotenvy::dotenv().ok();
 
+    // Two rustls providers (ring and aws-lc-rs) are in the dependency tree, so rustls cannot
+    // pick one by itself and panics on the first TLS connection. Choose before any client exists.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("no rustls crypto provider was installed yet");
+
     tracing_subscriber::fmt()
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .with_env_filter(
