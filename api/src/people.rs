@@ -550,6 +550,16 @@ fn require_member(volunteer: &Volunteer, shelter_id: &str) -> Result<(), ApiErro
         .ok_or_else(forbidden)
 }
 
+/// `X-Taken-Over-From`: the original author of a queue item an admin took over (spec 9.2).
+fn taken_over_from(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-taken-over-from")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty() && v.len() <= 64)
+        .map(str::to_string)
+}
+
 fn photo_bytes(base64: &str) -> Result<Vec<u8>, ApiError> {
     STANDARD
         .decode(base64.trim())
@@ -588,6 +598,7 @@ struct Checkin {
     entered_at: FirestoreInstant,
     volunteer_id: String,
     device: Option<String>,
+    taken_over_from: Option<String>,
 }
 
 /// One transaction on `people/{person_id}`: consume the capture, create the person or raise
@@ -639,6 +650,7 @@ async fn checkin_in(
     let mut entry = AuditEntry::new("person.checkin", "person", &c.person_id)
         .by(&c.volunteer_id)
         .in_shelter(&c.shelter_id)
+        .taken_over_from(c.taken_over_from.as_deref())
         .basis(c.legal_basis);
     if let Some(device) = &c.device {
         entry = entry.on_device(device);
@@ -706,6 +718,7 @@ pub async fn post_checkin(
         entered_at,
         volunteer_id: volunteer.id.clone(),
         device: device.ok(),
+        taken_over_from: taken_over_from(&headers),
     };
     let (person, is_new) = store::transact(&state.db, |db, tx| {
         let checkin = checkin.clone();
@@ -823,6 +836,7 @@ fn can_change_child_status(volunteer: &Volunteer) -> bool {
 pub async fn patch_person(
     State(state): State<AppState>,
     volunteer: Volunteer,
+    headers: HeaderMap,
     Path(person_id): Path<String>,
     Json(request): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
@@ -839,8 +853,12 @@ pub async fn patch_person(
     {
         return Err(ApiError::protection_role_required());
     }
+    let entry = AuditEntry::new("person.update", "person", &person_id)
+        .by(&volunteer.id)
+        .taken_over_from(taken_over_from(&headers).as_deref())
+        .basis(current.legal_basis);
     let person = store::transact(&state.db, |db, tx| {
-        let (person_id, data) = (person_id.clone(), data.clone());
+        let (person_id, data, entry) = (person_id.clone(), data.clone(), entry.clone());
         Box::pin(async move {
             let mut person: PersonDoc = store::get(&db, COLLECTION, &person_id)
                 .await?
@@ -854,6 +872,7 @@ pub async fn patch_person(
             person.updated_at = store::now();
             // child_separated hook (C): raise the alert when `child_status` changed to separated or unaccompanied.
             tx_replace(&db, tx, COLLECTION, &person_id, &person)?;
+            audit::add(&db, tx, &entry)?;
             Ok(person)
         })
     })
@@ -1016,6 +1035,7 @@ struct Migration {
     volunteer_id: String,
     device: Option<String>,
     shelter_id: String,
+    taken_over_from: Option<String>,
 }
 
 /// One transaction (spec 4.12): the record under the token is created or merged, every
@@ -1146,6 +1166,7 @@ async fn migrate_in(
     let mut entry = AuditEntry::new("person.biometrics", "person", &m.new_id)
         .by(&m.volunteer_id)
         .in_shelter(&m.shelter_id)
+        .taken_over_from(m.taken_over_from.as_deref())
         .basis(person.legal_basis);
     if let Some(device) = &m.device {
         entry = entry.on_device(device);
@@ -1184,6 +1205,7 @@ async fn raise_in(
     let entry = AuditEntry::new("person.biometrics", "person", &m.new_id)
         .by(&m.volunteer_id)
         .in_shelter(&m.shelter_id)
+        .taken_over_from(m.taken_over_from.as_deref())
         .basis(person.legal_basis);
     audit::add(db, tx, &entry)?;
     Ok(person)
@@ -1225,6 +1247,7 @@ pub async fn put_biometrics(
         volunteer_id: volunteer.id.clone(),
         device: device.ok(),
         shelter_id,
+        taken_over_from: taken_over_from(&headers),
     };
     let person = store::transact(&state.db, |db, tx| {
         let m = migration.clone();
@@ -2719,5 +2742,39 @@ mod tests {
             (StatusCode::PAYLOAD_TOO_LARGE, Some("image_too_large"))
         );
         assert_eq!(w.app.unico.post_count(), calls_before);
+    }
+
+    #[tokio::test]
+    async fn a_taken_over_item_records_the_original_author_in_the_audit() {
+        let w = world().await;
+        let id = new_id();
+        let auth = format!("Bearer {}", w.admin.secret);
+        let headers = [
+            ("authorization", auth.as_str()),
+            ("x-device-id", "dev-Admin"),
+            ("x-taken-over-from", "volunteer-original"),
+        ];
+        let (status, _, body) = w
+            .app
+            .request(
+                "POST",
+                &format!("/v1/shelters/{}/checkins", w.shelter),
+                &headers,
+                Some(checkin(json!({ "id": id, "no_biometrics": true }))),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let patch =
+            json!({ "data": { "name": "Ana" }, "client_edited_at": store::now().to_string() });
+        let (status, _, _) = w
+            .app
+            .request("PATCH", &format!("/v1/people/{id}"), &headers, Some(patch))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let entries = crate::test_support::all_docs(&w.app.state.db, "audit_log").await;
+        for action in ["person.checkin", "person.update"] {
+            let entry = entries.iter().find(|e| e["action"] == action).unwrap();
+            assert_eq!(entry["taken_over_from"], "volunteer-original", "{action}");
+        }
     }
 }
