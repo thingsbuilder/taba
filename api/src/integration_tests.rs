@@ -349,6 +349,19 @@ async fn an_unaccompanied_child_checking_in_raises_child_separated_with_the_refe
         listing["alerts"][0]["detail"]["reference_contacts"]["child_protection_phone"],
         "100"
     );
+    // The Civil Defense, who belongs to no shelter, gets it and reads the child it is about.
+    let civil_defense = s.app.actor("DC").await;
+    s.app.grant(&civil_defense, GlobalRole::CivilDefense).await;
+    let (_, listing) = s
+        .app
+        .send("GET", "/v1/alerts", &civil_defense.secret, None)
+        .await;
+    assert_eq!(listing["alerts"][0]["target_id"], json!(person_id));
+    let path = format!("/v1/people/{person_id}");
+    assert_eq!(
+        call(&s.app, &civil_defense, "GET", &path, None).await.0,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]
