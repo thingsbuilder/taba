@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { type Facing, cameraErrorKey, frameProblem, grabFrame, openCamera, sampleFrame, stopStream, videoReady, waitForFirstFrame } from '../camera'
+import { logEvent } from '../diagnostics'
 import type { Frame } from '../image'
 import { t } from '../i18n'
 
@@ -29,10 +30,19 @@ export function CameraCapture({ facing: initial = 'environment', onPhoto, onCanc
         if (el) {
           el.srcObject = s
           // Ready only with a first real frame: the rear camera of an iPhone plays before it has a picture.
-          void el.play().then(() => waitForFirstFrame(el)).then((frame) => alive && (frame ? setReady(true) : setError('checkin.camera_bad_frame')))
+          void el.play().then(() => waitForFirstFrame(el)).then((frame) => {
+            if (!alive) return
+            if (frame) return setReady(true)
+            logEvent('camera_no_frame', { width: el.videoWidth, height: el.videoHeight, ready_state: el.readyState })
+            setError('checkin.camera_bad_frame')
+          })
         }
       },
-      (e) => alive && setError(cameraErrorKey(e)),
+      (e) => {
+        if (!alive) return
+        logEvent('camera_error', { cause: (e as { name?: string } | null)?.name, key: cameraErrorKey(e) })
+        setError(cameraErrorKey(e))
+      },
     )
     return () => {
       alive = false
@@ -44,10 +54,17 @@ export function CameraCapture({ facing: initial = 'environment', onPhoto, onCanc
     const el = video.current
     if (!el) return
     setNotice(null)
-    if (!videoReady(el)) return setNotice('checkin.camera_bad_frame')
+    if (!videoReady(el)) {
+      logEvent('camera_bad_frame', { reason: 'not_ready', width: el.videoWidth, height: el.videoHeight })
+      return setNotice('checkin.camera_bad_frame')
+    }
     const frame = grabFrame(el)
     // Nothing is offered that Unico would only refuse: no size, too small, or a black or flat picture.
-    if (frameProblem(frame, sampleFrame(frame))) return setNotice('checkin.camera_bad_frame')
+    const problem = frameProblem(frame, sampleFrame(frame))
+    if (problem) {
+      logEvent('camera_bad_frame', { reason: problem, width: frame.width, height: frame.height })
+      return setNotice('checkin.camera_bad_frame')
+    }
     const blob = await new Promise<Blob | null>((r) => (frame.source as HTMLCanvasElement).toBlob(r, 'image/jpeg', 0.5))
     if (blob) setShot({ frame, url: URL.createObjectURL(blob) })
   }

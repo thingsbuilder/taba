@@ -2,6 +2,7 @@ import preact from '@preact/preset-vite'
 import type { Plugin } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import { defineConfig } from 'vitest/config'
+import pkg from './package.json' with { type: 'json' }
 
 // design/tokens.css starts with an @import of Google Fonts. In production the CSP is
 // default-src 'self' and the app must open offline, so the fonts are bundled
@@ -18,6 +19,7 @@ const stripRemoteFonts = (): Plugin => ({
 })
 
 export default defineConfig({
+  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   plugins: [
     stripRemoteFonts(),
     preact(),

@@ -1,4 +1,5 @@
 import { registerSW } from 'virtual:pwa-register'
+import { logEvent } from './diagnostics'
 
 const CHECK_INTERVAL_MS = 60 * 60_000
 
@@ -11,9 +12,17 @@ const CHECK_INTERVAL_MS = 60 * 60_000
  */
 export function watchForUpdates(onNeedRefresh: (apply: () => void) => void): void {
   const updateSW = registerSW({
-    onNeedRefresh: () => onNeedRefresh(() => void updateSW(true)),
+    onNeedRefresh: () => {
+      logEvent('sw_update_available')
+      onNeedRefresh(() => {
+        logEvent('sw_update_apply')
+        void updateSW(true)
+      })
+    },
+    onRegisterError: (error) => logEvent('sw_register_error', { cause: (error as { name?: string } | null)?.name }),
     onRegisteredSW(_url, registration) {
       if (!registration) return
+      logEvent('sw_registered')
       const check = () => void registration.update().catch(() => {})
       setInterval(check, CHECK_INTERVAL_MS)
       document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && check())

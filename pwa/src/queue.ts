@@ -1,6 +1,7 @@
 import type { ApiStatus } from './api'
 import { type PhotoFields, blobToBase64, decryptPhotoFields, encryptPhotoFields } from './crypto'
 import type { Db, QueueItem } from './db'
+import { logEvent, routeOf } from './diagnostics'
 import { PHOTO_ERRORS } from './queue-errors'
 import { applyPhase3Synced, undoPhase3Local } from './sync'
 
@@ -62,6 +63,9 @@ function idsOf(item: QueueItem): string[] {
   return [typeof id === 'string' ? id : '', person ?? ''].filter(Boolean)
 }
 
+/** What the diagnostic log says about an item: the request, never its body. */
+const describe = (item: QueueItem) => ({ method: item.method, route: routeOf(item.path), attempt: item.attempts + 1 })
+
 const mentions = (item: QueueItem, ids: Set<string>): boolean => {
   if (ids.size === 0) return false
   const text = item.path + JSON.stringify(item.body ?? null)
@@ -117,7 +121,10 @@ export function createQueue(deps: QueueDeps) {
     const items = await db.getAll('queue')
     for (const item of items) {
       const sameShelter = shelterId !== undefined && item.shelter_id === shelterId
-      if (item.id === failed.id || sameShelter) await db.put('queue', { ...item, state: 'held', error, detail })
+      if (item.id === failed.id || sameShelter) {
+        await db.put('queue', { ...item, state: 'held', error, detail })
+        logEvent('queue_state', { ...describe(item), state: 'held', error })
+      }
     }
   }
 
@@ -220,6 +227,7 @@ export function createQueue(deps: QueueDeps) {
   async function discard(id: string): Promise<void> {
     const item = await db.get('queue', id)
     if (item) await undoPhase3Local(db, item)
+    if (item) logEvent('queue_discard', describe(item))
     await remove(id)
     notify()
   }
@@ -264,6 +272,7 @@ export function createQueue(deps: QueueDeps) {
         } catch {
           // The browser lost the key: the photo cannot be read any more, a person has to take it again.
           await db.put('queue', { ...item, state: 'needs_action', error: 'photo_unreadable' })
+          logEvent('queue_state', { ...describe(item), state: 'needs_action', error: 'photo_unreadable' })
           notify()
           continue
         }
@@ -282,9 +291,11 @@ export function createQueue(deps: QueueDeps) {
           body: body === undefined ? undefined : JSON.stringify(body),
         })
       } catch {
+        logEvent('queue_network_error', describe(item))
         await scheduleRetry(item, 'network', null)
         break
       }
+      logEvent('queue_send', { ...describe(item), status: res.status })
 
       if (res.ok) {
         const reply = res.status === 204 ? null : await res.json().catch(() => null)
@@ -319,6 +330,8 @@ export function createQueue(deps: QueueDeps) {
         // Conflicts of spec 9.4 (`person_in_other_household`, `household_has_card`, ...) keep what the server said.
         // A refused photo is never sent again as it is: the item keeps its data and waits for a person.
         const refused = errorCode !== undefined && PHOTO_ERRORS.has(errorCode)
+        logEvent('queue_state', { ...describe(item), state: 'needs_action', error: errorCode ?? `http_${res.status}` })
+        if (refused) logEvent('photo_rejected', { error: errorCode, refusals: (item.photo_refusals ?? 0) + 1 })
         await db.put('queue', {
           ...item,
           state: 'needs_action',
@@ -335,6 +348,7 @@ export function createQueue(deps: QueueDeps) {
     const attempts = item.attempts + 1
     const delay = Math.max(backoffMs(attempts, random), retryAfterMs ?? 0)
     await db.put('queue', { ...item, attempts, next_attempt_at: now() + delay, error })
+    logEvent('queue_retry', { method: item.method, route: routeOf(item.path), attempt: attempts, reason: error, delay_s: Math.round(delay / 1000) })
   }
 
   /** Single flight: a call during a drain schedules one more pass and resolves when it ends. */
