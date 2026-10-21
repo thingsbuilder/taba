@@ -586,3 +586,132 @@ async fn looking_at_a_thumbnail_is_audited_with_the_vital_interest_basis() {
     assert_eq!(looks[0]["legal_basis"], "vital_interest");
     assert_eq!(looks[0]["shelter_id"], json!(s.shelter));
 }
+
+// ---- spec 4.11: protection and the Civil Defense see a child while an alert about them is open ----
+
+#[tokio::test]
+async fn protection_and_the_civil_defense_reach_a_child_only_while_an_alert_about_them_is_open() {
+    let s = scene().await;
+    let civil_defense = s.app.actor("DC").await;
+    s.app.grant(&civil_defense, GlobalRole::CivilDefense).await;
+    let protection = s.app.actor("Prot").await;
+    s.app.grant(&protection, GlobalRole::Protection).await;
+    let mediator = s.app.actor("Med").await;
+    s.app.grant(&mediator, GlobalRole::Mediator).await;
+    let register = |status: &'static str| {
+        let (app, who, shelter) = (s.app.clone(), s.volunteer.clone(), s.shelter.clone());
+        async move {
+            let (code, body) = call(
+                &app,
+                &who,
+                "POST",
+                &format!("/v1/shelters/{shelter}/checkins"),
+                Some(checkin_body(json!({
+                    "no_biometrics": true,
+                    "legal_basis": "child_protection",
+                    "data": { "name": "Crianca", "is_child": true, "child_status": status },
+                }))),
+            )
+            .await;
+            assert_eq!(code, StatusCode::CREATED, "{body}");
+            body["person_id"].as_str().unwrap().to_string()
+        }
+    };
+    let edit = |status: &str| json!({ "data": { "child_status": status }, "client_edited_at": store::now().to_string() });
+
+    // With a guardian there is no alert, so nobody outside the shelter sees the child.
+    let calm = register("with_guardian").await;
+    for who in [&civil_defense, &protection] {
+        assert_eq!(
+            call(&s.app, who, "GET", &format!("/v1/people/{calm}"), None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND,
+            "{}",
+            who.id
+        );
+        assert_eq!(
+            call(
+                &s.app,
+                who,
+                "PATCH",
+                &format!("/v1/people/{calm}"),
+                Some(edit("separated"))
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    // Alone: the alert is open, and the two read the child and change the status; nothing else.
+    let alone = register("unaccompanied").await;
+    let path = format!("/v1/people/{alone}");
+    for who in [&civil_defense, &protection] {
+        let (status, body) = call(&s.app, who, "GET", &path, None).await;
+        assert_eq!(
+            (status, body["person"]["child_status"].as_str()),
+            (StatusCode::OK, Some("unaccompanied")),
+            "{}",
+            who.id
+        );
+    }
+    // A mediator, a validator and a stranger have no such access.
+    let validator = s.app.actor("Val").await;
+    s.app.grant(&validator, GlobalRole::Validator).await;
+    for who in [&mediator, &validator] {
+        assert_eq!(
+            call(&s.app, who, "GET", &path, None).await.0,
+            StatusCode::NOT_FOUND,
+            "{}",
+            who.id
+        );
+    }
+    let rename =
+        json!({ "data": { "name": "Outro nome" }, "client_edited_at": store::now().to_string() });
+    assert_eq!(
+        call(&s.app, &protection, "PATCH", &path, Some(rename))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, body) = call(
+        &s.app,
+        &civil_defense,
+        "PATCH",
+        &path,
+        Some(edit("with_guardian")),
+    )
+    .await;
+    assert_eq!(
+        (status, body["person"]["child_status"].as_str()),
+        (StatusCode::OK, Some("with_guardian")),
+        "{body}"
+    );
+
+    // Once the alert is resolved the access ends.
+    let alerts = all_docs(&s.app.state.db, "alerts").await;
+    let open = alerts
+        .iter()
+        .find(|a| a["target_id"] == json!(alone))
+        .unwrap();
+    let resolve = format!(
+        "/v1/alerts/{}/resolve",
+        open["_firestore_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        s.app
+            .send("POST", &resolve, &protection.secret, None)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    for who in [&civil_defense, &protection] {
+        assert_eq!(
+            call(&s.app, who, "GET", &path, None).await.0,
+            StatusCode::NOT_FOUND,
+            "{}",
+            who.id
+        );
+    }
+}

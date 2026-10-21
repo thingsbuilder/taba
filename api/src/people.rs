@@ -266,6 +266,20 @@ pub struct PersonData {
     vulnerabilities: Option<Vulnerabilities>,
 }
 
+impl PersonData {
+    /// Nothing but `child_status` is set.
+    fn only_child_status(&self) -> bool {
+        self.name.is_none()
+            && self.social_name.is_none()
+            && self.wristband.is_none()
+            && self.birth_year.is_none()
+            // `child_status` makes `is_child` true on its own (see `validated`)
+            && self.is_child != Some(false)
+            && self.needs.is_none()
+            && self.vulnerabilities.is_none()
+    }
+}
+
 fn text(value: Option<String>, field: &str) -> Result<Option<String>, ApiError> {
     let Some(value) = value else { return Ok(None) };
     let value = value.trim();
@@ -821,16 +835,61 @@ pub async fn needs_selfie(
 // ---- GET, PATCH /v1/people/{id} ----
 
 /// A person someone is not allowed to see is "not found": the route does not confirm who exists.
+/// Whether a child is being attended: an open `child_separated` alert is about them (spec 4.11).
+async fn child_alert_open(
+    state: &AppState,
+    person: &PersonDoc,
+    person_id: &str,
+) -> Result<bool, ApiError> {
+    if !person.is_child {
+        return Ok(false);
+    }
+    let alerts: Vec<AlertDoc> = state
+        .db
+        .fluent()
+        .select()
+        .from(alerts::COLLECTION)
+        .filter(|q| {
+            q.for_all([
+                q.field(path!(AlertDoc::target_id)).eq(person_id),
+                q.field(path!(AlertDoc::resolved)).eq(false),
+            ])
+        })
+        .obj()
+        .query()
+        .await
+        .map_err(fs_error)?;
+    Ok(alerts.iter().any(|a| a.kind == AlertKind::ChildSeparated))
+}
+
+/// The person and the shelter through which the viewer sees them. Members of a shelter of the
+/// person see them. With `attending`, protection and the Civil Defense also see a child while
+/// an open `child_separated` alert is about them, whatever the shelter (spec 4.11); the shelter
+/// is then the child's current one, and the viewer is not a member of it.
 async fn visible_person(
     state: &AppState,
     volunteer: &Volunteer,
     person_id: &str,
+    attending: bool,
 ) -> Result<(PersonDoc, String), ApiError> {
     let person: PersonDoc = store::get(&state.db, COLLECTION, person_id)
         .await?
         .ok_or_else(person_not_found)?;
-    let shelter = viewer_shelter(&person, volunteer).ok_or_else(person_not_found)?;
-    Ok((person, shelter))
+    if let Some(shelter) = viewer_shelter(&person, volunteer) {
+        return Ok((person, shelter));
+    }
+    if attending
+        && can_change_child_status(volunteer)
+        && child_alert_open(state, &person, person_id).await?
+    {
+        let shelter = person
+            .current_shelter_id
+            .clone()
+            .or_else(|| person.stays.last().map(|s| s.shelter_id.clone()))
+            .unwrap_or_default();
+        return Ok((person, shelter));
+    }
+    Err(person_not_found())
 }
 
 pub async fn get_person(
@@ -838,7 +897,7 @@ pub async fn get_person(
     volunteer: Volunteer,
     Path(person_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let (person, shelter_id) = visible_person(&state, &volunteer, &person_id).await?;
+    let (person, shelter_id) = visible_person(&state, &volunteer, &person_id, true).await?;
     let history = history_for(&person, &volunteer, &shelter_id);
     Ok(Json(
         json!({ "person": person_view(&person_id, &person, history) }),
@@ -869,7 +928,11 @@ pub async fn patch_person(
         .client_edited_at
         .parse()
         .map_err(|_| invalid("client_edited_at"))?;
-    let (current, _) = visible_person(&state, &volunteer, &person_id).await?;
+    let (current, shelter_id) = visible_person(&state, &volunteer, &person_id, true).await?;
+    // Someone who sees the child only through the alert changes the status and nothing else.
+    if viewer_shelter(&current, &volunteer).is_none() && !data.only_child_status() {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden"));
+    }
     if data.child_status.is_some()
         && data.child_status != current.child_status
         && !can_change_child_status(&volunteer)
@@ -916,7 +979,6 @@ pub async fn patch_person(
         })
     })
     .await?;
-    let shelter_id = viewer_shelter(&person, &volunteer).ok_or_else(person_not_found)?;
     let history = history_for(&person, &volunteer, &shelter_id);
     Ok(Json(
         json!({ "person": person_view(&person_id, &person, history) }),
@@ -1258,7 +1320,7 @@ pub async fn put_biometrics(
     Json(request): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let request: BiometricsRequest = body(request)?;
-    let (person, shelter_id) = visible_person(&state, &volunteer, &person_id).await?;
+    let (person, shelter_id) = visible_person(&state, &volunteer, &person_id, false).await?;
     let device = auth::device_id(&headers);
     let (new_id, level, capture_id) = match (&request.capture_id, &request.photo_base64) {
         (Some(capture_id), None) => {
