@@ -365,7 +365,7 @@ async fn a_child_with_a_guardian_raises_no_alert_and_a_status_change_raises_one(
     let person_id = body["person_id"].as_str().unwrap().to_string();
     assert!(all_docs(&s.app.state.db, "alerts").await.is_empty());
 
-    // Only protection or the Civil Defense change the status (spec 3.4.1.4).
+    // Only protection or the Civil Defense change the status (spec 3.4.1, item 4).
     // (The Civil Defense officer here also belongs to the shelter: `GET`/`PATCH /people` only show
     // people of the shelters one belongs to, see the open question in the PR.)
     let civil_defense = s

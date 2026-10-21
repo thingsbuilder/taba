@@ -19,7 +19,7 @@ use crate::store::{self, tx_replace};
 use crate::volunteers::GlobalRole;
 
 /// `child_status` changes after the check-in belong to `protection` and the Civil Defense
-/// (spec 3.4.1.4); the same two also exit separated children (spec 2.3).
+/// (spec 3.4.1, item 4); the same two also exit separated children (spec 2.3).
 pub fn can_change_status(volunteer: &Volunteer) -> bool {
     volunteer.has_global(GlobalRole::Protection) || volunteer.has_global(GlobalRole::CivilDefense)
 }
@@ -27,7 +27,7 @@ pub fn can_change_status(volunteer: &Volunteer) -> bool {
 /// Adds the `child_separated` alert to the transaction of the write that made the child
 /// `separated` or `unaccompanied`; a no-op for `with_guardian`. The alert reaches the
 /// protection queue, the Civil Defense and the admins of the shelter, and carries the
-/// reference phones of the event (no push, spec 3.4.1.3).
+/// reference phones of the event (no push, spec 3.4.1, item 3).
 pub async fn raise_child_separated(
     db: &FirestoreDb,
     tx: &mut FirestoreTransaction<'_>,

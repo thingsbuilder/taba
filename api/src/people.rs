@@ -892,7 +892,7 @@ pub async fn patch_person(
             person.client_edited_at = Some(edited_at);
             person.updated_at = store::now();
             tx_replace(&db, tx, COLLECTION, &person_id, &person)?;
-            // A change to separated or unaccompanied raises the alert too (spec 3.4.1.4).
+            // A change to separated or unaccompanied raises the alert too (spec 3.4.1, item 4).
             if let (true, true, Some(status), Some(shelter_id)) = (
                 person.is_child,
                 person.child_status != before,

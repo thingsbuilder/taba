@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Db, QueueItem } from './db'
 import { backoffMs, createQueue, parseRetryAfter } from './queue'
 import { freshDb } from './testing'
@@ -319,8 +319,16 @@ const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0x10, 0x4a, 0x46, 0x49, 
 describe('encrypted photos in the queue (spec 6.1.7)', () => {
   let db: Db
   const fetchMock = vi.fn<typeof fetch>()
-  const make = () =>
-    createQueue({ db, fetch: fetchMock, deviceId: async () => 'd', getStatus: async () => ({ unico: 'ok' }), random: () => 0.5 })
+  // `enqueue` starts a drain that nobody awaits; one still running would use the next test's mock.
+  const made: ReturnType<typeof createQueue>[] = []
+  const make = () => {
+    const queue = createQueue({ db, fetch: fetchMock, deviceId: async () => 'd', getStatus: async () => ({ unico: 'ok' }), random: () => 0.5 })
+    made.push(queue)
+    return queue
+  }
+  afterEach(async () => {
+    await Promise.all(made.splice(0).map((q) => q.drain()))
+  })
   const checkin = { method: 'POST', path: '/v1/shelters/s1/checkins', body: { id: 'p1', data: { is_child: false } }, volunteer_id: 'ana', shelter_id: 's1' }
   const due = async (id: string) => db.put('queue', { ...(await db.get('queue', id))!, next_attempt_at: 0 })
 
@@ -513,7 +521,8 @@ describe('conflicts of spec 9.4 in the queue', () => {
     await createQueue({ db, fetch: fetchMock, deviceId: async () => 'd', getStatus: async () => ({ unico: 'ok' }) }).enqueue({
       method: 'PATCH', path: '/v1/people/p1', body: { data: { name: 'Typed offline' }, client_edited_at: 'x' }, volunteer_id: 'ana', shelter_id: 's1',
     })
-    await vi.waitFor(async () => expect(await db.count('queue')).toBe(0))
-    expect(await db.get('people', 'p1')).toMatchObject({ name: 'Newer name', level: 'verified', pending: false })
+    // The item leaves the queue just before the cache is refreshed, so wait for the cache itself.
+    await vi.waitFor(async () => expect(await db.get('people', 'p1')).toMatchObject({ name: 'Newer name', level: 'verified', pending: false }))
+    expect(await db.count('queue')).toBe(0)
   })
 })
