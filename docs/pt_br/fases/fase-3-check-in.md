@@ -101,7 +101,7 @@ Resgate, busca, mediação, concessão de `mediator`/`protection` pelo app, ence
 - Índices novos no `firestore.indexes.json`.
 
 ## Dependências
-Fase 2 (abrigos, eventos com `reference_contacts`, membros, alertas, idempotência) e fase 1 (cliente Unico, sessão, PIN, auditoria).
+Fase 2 (abrigos, eventos com `reference_contacts`, membros, alertas, idempotência) e fase 1 (cliente Unico, sessão, auditoria; o PIN está desligado, ver Riscos).
 
 ## Testes
 **Unitários (obrigatórios):** níveis e transições (nunca desce); transação de check-in e fechamento de `stay`; biometria tardia (token novo, token existente, conflito de núcleo, reapontamentos); validação de `needs` e `vulnerabilities`; cifra e decifra da miniatura (e nonce único); apagamento da miniatura; visibilidade do histórico por papel e confirmação; regras de núcleo e cartão (unicidade, código Crockford, cancelamento); todas as regras de criança e saída (matriz 2.3); `exit_destination` obrigatório; redução de imagem abaixo de 800 KB; cifra das fotos da fila (o `Blob` gravado não é JPEG legível); "Assumir pendências"; conflitos da 9.4; modo degradado (`limit`, `unavailable`, `resume`, `503`); i18n da tela de consentimento em três idiomas.
@@ -117,7 +117,8 @@ Fase 2 (abrigos, eventos com `reference_contacts`, membros, alertas, idempotênc
 
 ## Riscos e pontos de atenção
 - Fase grande: considere dividir o trabalho em commits por bloco (consentimento, caminhos, núcleo, criança, offline, degradado), mas um único PR.
-- O Safari pode apagar o IndexedDB fora do modo standalone; a instalação é pré-requisito (fase 0).
+- O Safari pode apagar o IndexedDB fora do modo standalone, e desde a fase 2 a instalação da PWA é **opcional** no iPhone (spec 3.0.2). Decisão do dono: **o risco do cadastro offline sem instalação é aceito nesta fase**; o item da fase 6 ainda revê isso.
+- O PIN obrigatório do operador está desligado (`PIN_REQUIRED = false`, decisão do dono na fase 2; revisão na fase 6): a troca de operador só aceita quem já tinha PIN, e o resto do trabalho não depende dele.
 - A cifra das fotos protege contra leitura dos arquivos do navegador fora do app, não contra quem usa o app desbloqueado.
 - Não dá para provocar o limite mensal real da Unico: teste o modo degradado com o servidor falso.
 - A tela de consentimento é lida por quem acabou de perder a casa: siga o design/README.md (frases curtas, nunca culpar a pessoa).
