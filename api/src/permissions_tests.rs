@@ -487,3 +487,4 @@ async fn anyone_signed_in_creates_a_shelter_and_reads_the_basics_of_any() {
         w.call(Anonymous, "GET", &path, &None).await,
         StatusCode::UNAUTHORIZED
     );
+}
