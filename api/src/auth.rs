@@ -106,6 +106,11 @@ impl AppState {
         &self.thumbnail_key
     }
 
+    /// The `people` id of a Human Token: its HMAC (spec 6.3.2); the token is not kept.
+    pub fn person_id_for_token(&self, token: &str) -> String {
+        derive_id(&self.hmac_key, token)
+    }
+
     pub fn domain(&self) -> &str {
         &self.domain
     }
@@ -213,7 +218,10 @@ pub async fn post_captures(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let device = device_id(&headers)?;
     // Public purposes only (spec 10.4); the others need a session and arrive in phase 3.
-    if !matches!(request.purpose, Purpose::Login | Purpose::Invite) {
+    if !matches!(
+        request.purpose,
+        Purpose::Login | Purpose::Invite | Purpose::Checkin | Purpose::Biometrics
+    ) {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "unsupported_purpose",
@@ -856,7 +864,7 @@ mod tests {
             (StatusCode::BAD_REQUEST, Some("device_id_required"))
         );
         let (status, body) = app
-            .post("/v1/captures", DEVICE, json!({ "purpose": "checkin" }))
+            .post("/v1/captures", DEVICE, json!({ "purpose": "revalidation" }))
             .await;
         assert_eq!(
             (status, body["error"].as_str()),
