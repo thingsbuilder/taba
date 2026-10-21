@@ -28,6 +28,7 @@ import { Login } from './screens/Login'
 import { NotFound } from './screens/NotFound'
 import { PinSetup } from './screens/PinSetup'
 import { Profile } from './screens/Profile'
+import { QueueAlerts } from './screens/QueueAlerts'
 import { Return } from './screens/Return'
 import { SwitchOperator } from './screens/SwitchOperator'
 
@@ -147,6 +148,7 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
         </button>
       )}
       <NetworkChip queue={queue} />
+      <QueueAlerts ctx={ctx} />
       {status?.unico === 'degraded' && <div class="banner" role="status">{t('degraded.banner')}</div>}
       {iosTab && !installDismissed && <InstallPrompt onDismiss={() => { setInstallDismissed(true); void db.put('config', Date.now(), 'install_prompt_dismissed_at') }} />}
       {ready && (needsPin(active) && route.name !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}

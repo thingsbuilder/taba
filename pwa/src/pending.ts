@@ -1,4 +1,4 @@
-import { errorKey } from './app-context'
+import { phase3Label, queueErrorKey } from './queue-errors'
 import type { QueueItem } from './db'
 
 // What the "Pendências" list shows for a queue item (spec 9.2).
@@ -14,6 +14,8 @@ export interface PendingView {
 }
 
 function labelOf(item: QueueItem): string {
+  const phase3 = phase3Label(item)
+  if (phase3) return phase3
   if (item.method === 'POST' && item.path === '/v1/shelters') return 'pending.create_shelter'
   if (item.path.startsWith('/v1/shelters/')) return 'pending.update_shelter'
   if (item.path === '/v1/me') return 'pending.update_profile'
@@ -24,5 +26,5 @@ function labelOf(item: QueueItem): string {
 export function pendingViews(items: QueueItem[], shelterId?: string): PendingView[] {
   return items
     .filter((i) => i.state !== 'pending' && (shelterId === undefined || i.shelter_id === shelterId))
-    .map((i) => ({ id: i.id, labelKey: labelOf(i), state: i.state, errorKey: i.error ? errorKey(i.error) : undefined, shelterId: i.shelter_id }))
+    .map((i) => ({ id: i.id, labelKey: labelOf(i), state: i.state, errorKey: i.error ? queueErrorKey(i.error) : undefined, shelterId: i.shelter_id }))
 }
