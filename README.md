@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/taba-mark-dark.svg">
+    <img src="assets/brand/taba-mark.svg" alt="Taba" width="120">
+  </picture>
+</p>
+
 # Taba
 
 [Português](README.pt-BR.md) · English

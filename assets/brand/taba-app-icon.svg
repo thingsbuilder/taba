@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="Taba">
+  <title>Taba</title>
+  <rect width="120" height="120" rx="27" fill="#0F5C5A"/>
+  <g transform="translate(60 60) scale(0.8)" fill="#F4EEE4">
+    <path d="M -11 -30 A 11 11 0 0 1 11 -30 Z"/>
+    <path d="M -11 -30 A 11 11 0 0 1 11 -30 Z" transform="rotate(60)"/>
+    <path d="M -11 -30 A 11 11 0 0 1 11 -30 Z" transform="rotate(120)"/>
+    <path d="M -11 -30 A 11 11 0 0 1 11 -30 Z" transform="rotate(180)"/>
+    <path d="M -11 -30 A 11 11 0 0 1 11 -30 Z" transform="rotate(240)"/>
+    <path d="M -11 -30 A 11 11 0 0 1 11 -30 Z" transform="rotate(300)"/>
+    <circle r="11" fill="#E9834A"/>
+  </g>
+</svg>
