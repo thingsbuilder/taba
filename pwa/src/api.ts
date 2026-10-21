@@ -15,6 +15,7 @@ import type {
   PersonSummary,
   PersonView,
 } from './api-phase3'
+import { logEvent, routeOf } from './diagnostics'
 
 export interface ApiStatus {
   unico: 'ok' | 'degraded'
@@ -27,8 +28,15 @@ export interface ApiStatus {
 export async function getStatus(fetchFn: typeof fetch = fetch): Promise<ApiStatus | null> {
   try {
     const res = await fetchFn('/v1/status', { cache: 'no-store' })
-    return res.ok ? ((await res.json()) as ApiStatus) : null
+    if (!res.ok) {
+      logEvent('status_failed', { status: res.status })
+      return null
+    }
+    const status = (await res.json()) as ApiStatus
+    if (status.unico !== 'ok') logEvent('status_degraded', { reason: status.reason })
+    return status
   } catch {
+    logEvent('status_failed', { status: 0 })
     return null
   }
 }
@@ -171,13 +179,16 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
     try {
       res = await fetchFn(path, { method, headers, body: opts.body === undefined ? undefined : JSON.stringify(opts.body) })
     } catch {
+      logEvent('api_error', { method, route: routeOf(path), status: 0, error: 'network' })
       return { ok: false, status: 0, error: 'network' }
     }
     const body = res.status === 204 ? null : await res.json().catch(() => null)
     // 202 is "capture_pending": a 2xx that is not a result yet.
     if (res.ok && res.status !== 202) return { ok: true, data: body as T }
     const failure = body as { error?: string; detail?: unknown } | null
-    return { ok: false, status: res.status, error: failure?.error ?? `http_${res.status}`, detail: failure?.detail }
+    const error = failure?.error ?? `http_${res.status}`
+    logEvent('api_error', { method, route: routeOf(path), status: res.status, error })
+    return { ok: false, status: res.status, error, detail: failure?.detail }
   }
 
   return {

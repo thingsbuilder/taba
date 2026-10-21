@@ -9,6 +9,7 @@ it('maps the fixed paths and sends anything else to not_found', () => {
   expect(resolveRoute('/profile')).toEqual({ name: 'profile' })
   expect(resolveRoute('/shelters/new')).toEqual({ name: 'shelter_new' })
   expect(resolveRoute('/inbox')).toEqual({ name: 'inbox' })
+  expect(resolveRoute('/diagnostics')).toEqual({ name: 'diagnostics' })
   for (const bad of ['/shelter', '/shelter/', '/shelters', '/shelter/a/b', '/invite', '/invite/a/b', '/x']) {
     expect(resolveRoute(bad)).toEqual({ name: 'not_found' })
   }

@@ -2,6 +2,7 @@ import { render } from 'preact'
 import { App } from './app'
 import { createApi, getStatus } from './api'
 import { openTabaDb } from './db'
+import { APP_VERSION, logEvent, setDiagnosticsDb } from './diagnostics'
 import { SESSIONS_CHANGED } from './events'
 import { getOrCreateDeviceId } from './device'
 import { loadLanguage, setLanguage } from './i18n'
@@ -16,6 +17,10 @@ import './app.css'
 
 async function main() {
   const db = await openTabaDb()
+  setDiagnosticsDb(db)
+  logEvent('app_open', { version: APP_VERSION, online: navigator.onLine })
+  window.addEventListener('online', () => logEvent('online'))
+  window.addEventListener('offline', () => logEvent('offline'))
   setLanguage(await loadLanguage(db, navigator.languages))
   const deviceId = () => getOrCreateDeviceId(db)
   const api = createApi((input, init) => fetch(input, init), deviceId)
