@@ -19,6 +19,8 @@ import type {
 export interface ApiStatus {
   unico: 'ok' | 'degraded'
   reason?: 'limit' | 'unavailable'
+  /** `PILOT_RESPONSIBLE`, for the consent screen; null when the instance has none. */
+  pilot_responsible?: string | null
 }
 
 /** `GET /v1/status` (spec 8.1). Returns null when the server cannot be reached. */
