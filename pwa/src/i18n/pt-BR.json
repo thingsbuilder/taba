@@ -201,6 +201,7 @@
   "error.invalid_reason": "Escreva um motivo.",
   "error.invalid_role": "Esse nível não é permitido.",
   "error.contention": "Muita gente usando ao mesmo tempo. Tente de novo em instantes.",
+  "error.photo_rejected": "Não conseguimos ver um rosto nesta foto.",
   "error.guardian_not_verified": "O responsável precisa ter feito a selfie com verificação.",
   "error.protection_role_required": "Só proteção ou Defesa Civil podem fazer isso.",
   "error.photo_too_big": "A foto ficou grande demais. Tire outra.",
@@ -358,6 +359,9 @@
   "checkin.household_question": "Esta pessoa tem família aqui?",
   "checkin.household_new": "Novo núcleo familiar",
   "checkin.household_join": "Juntar a um núcleo existente",
+  "checkin.error.photo_rejected": "Não conseguimos ver um rosto nesta foto. Tire outra, ou cadastre sem foto.",
+  "checkin.camera_hint": "Rosto de frente, com boa luz.",
+  "checkin.camera_bad_frame": "Não conseguimos pegar a imagem, tente de novo.",
   "__person__": "",
   "person.title": "Pessoa",
   "person.list_title": "Pessoas no abrigo",
@@ -529,5 +533,8 @@
   "queue.error_guardian_not_verified": "O responsável precisa ter feito a selfie.",
   "queue.error_event_closed": "O evento deste abrigo já terminou.",
   "queue.title": "Pendências",
+  "queue.photo_again": "Tirar outra foto",
+  "queue.photo_without": "Cadastrar sem foto",
+  "queue.photo_last": "Já tentamos duas fotos. Cadastre sem foto; a selfie pode ser feita depois.",
   "__end__": ""
 }

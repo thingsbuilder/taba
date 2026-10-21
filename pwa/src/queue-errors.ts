@@ -33,3 +33,21 @@ const RULES: [RegExp, string, string?][] = [
 export function phase3Label(item: Pick<QueueItem, 'method' | 'path'>): string | null {
   return RULES.find(([re, , method]) => re.test(item.path) && (method === undefined || method === item.method))?.[1] ?? null
 }
+
+/** What Unico says about a photo it will refuse again: never repeated, a person decides (spec 5.3). */
+export const PHOTO_ERRORS = new Set(['photo_rejected', 'no_face', 'invalid_image', 'image_too_large'])
+
+/** Photos that may be refused of one registration before only "register without a photo" is left. */
+export const MAX_PHOTO_ATTEMPTS = 2
+
+const PHOTO_PATHS: [string, RegExp][] = [
+  ['POST', /^\/v1\/shelters\/[^/]+\/checkins$/],
+  ['PUT', /^\/v1\/people\/[^/]+\/biometrics$/],
+]
+
+/** The ways out of a refused photo, for an item that waits because of it; null for any other item. */
+export function photoRefusalActions(item: Pick<QueueItem, 'method' | 'path' | 'state' | 'error' | 'photo_refusals'>): { again: boolean } | null {
+  if (item.state !== 'needs_action' || !item.error || !PHOTO_ERRORS.has(item.error)) return null
+  if (!PHOTO_PATHS.some(([method, path]) => item.method === method && path.test(item.path))) return null
+  return { again: (item.photo_refusals ?? 0) < MAX_PHOTO_ATTEMPTS }
+}
