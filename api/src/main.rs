@@ -285,6 +285,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unico_resume_leaves_the_limit_mode_for_real() {
+        // The command opens its own connection to the project, as the operator's does.
+        let mut config = test_config("http://127.0.0.1:1");
+        config.gcp_project = format!("taba-test-{}", uuid::Uuid::new_v4());
+        let db = FirestoreDb::new(&config.gcp_project).await.unwrap();
+        degraded::enter_limit(&db).await.unwrap();
+        assert!(degraded::blocking_reason(&db).await.unwrap().is_some());
+
+        unico_command(config.clone(), &args(&["resume"]))
+            .await
+            .unwrap();
+        assert!(degraded::blocking_reason(&db).await.unwrap().is_none());
+        // Running it again with nothing to resume is not an error.
+        unico_command(config, &args(&["resume"])).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn role_command_rejects_bad_arguments_before_touching_the_database() {
         let config = test_config("http://127.0.0.1:1");
         for bad in [
