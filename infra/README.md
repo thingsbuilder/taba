@@ -49,6 +49,7 @@ O binário e a PWA são compilados no GitHub Actions, nunca na VM (a e2-micro te
 3. Instale: `ansible-playbook playbooks/configure.yml -e taba_version=v0.1.0`. O playbook baixa os arquivos da release (conferindo o `SHA256SUMS`), instala o binário em `/usr/local/bin/taba`, descompacta a PWA em `/srv/taba/pwa`, instala `taba.service` e reinicia o serviço só se o binário, a unit ou o `/etc/taba/env` mudaram.
    Sem `-e`, vale o `taba_version` do `inventory/prod/group_vars/all/vars.yml`.
    **Instalação existente:** `inventory/prod` foi copiado antes destas variáveis existirem. Acrescente `taba_release_repo` (e `taba_version`) ao seu `vars.yml`, copiando de `inventory/example`; sem elas o `configure.yml` falha.
+   **Fase 1 (identidade):** a API passa a exigir `HMAC_KEY` e `DOMAIN`. Antes do primeiro deploy com ela, acrescente ao `vars.yml` do `inventory/prod` a linha `hmac_key: "{{ vault_taba_hmac_key }}"` e ao vault `vault_taba_hmac_key` (gere com `openssl rand -base64 32`). **Guarde uma cópia da chave fora da VM e do repositório:** perdê-la, ou trocá-la, torna todos os IDs de voluntários e pessoas incomparáveis com os tokens novos. `unico_url` e `session_days` são opcionais.
 4. Confira: `https://<seu domínio>/v1/status` deve responder `{"unico":"ok"}`.
 
 Para voltar a uma versão anterior, rode o mesmo comando com a tag antiga.
@@ -66,9 +67,19 @@ As fontes (Outfit, Figtree e IBM Plex Mono, licença SIL OFL 1.1) vão dentro da
 
 `scripts/check-secrets.sh repo` e `scripts/check-secrets.sh dir pwa/dist` (rodados no CI e no `release.yml`) falham se acharem chave `uk_live_…`, endereço IP, ID de projeto GCP (nome seguido de hífen e 6 dígitos) ou e-mail de conta de serviço. Na sua máquina, o `repo` também procura o `gcp_project` real do `inventory/prod`.
 
+## Papéis globais (`validator`, `civil_defense`)
+
+Só o operador da instância concede e retira, na VM, com o mesmo ambiente do serviço:
+
+```
+sudo sh -c 'set -a; . /etc/taba/env; exec /usr/local/bin/taba role grant <volunteer_id> civil_defense'
+```
+
+`grant` ou `revoke`, e `validator` ou `civil_defense`. O `volunteer_id` aparece em `GET /v1/me` da própria pessoa. Cada mudança grava `audit_log`. `mediator` e `protection` são concedidos pelo app (fase 4).
+
 ## Índices e TTL do Firestore
 
-`firestore/firestore.indexes.json` usa o formato do Firebase CLI: `indexes` (índices compostos) e `fieldOverrides` (um item com `"ttl": true` vira política de TTL). O `provision.yml` aplica os dois pela API REST e pode ser repetido. As fases só acrescentam entradas ao arquivo.
+`firestore/firestore.indexes.json` usa o formato do Firebase CLI: `indexes` (índices compostos) e `fieldOverrides` (um item com `"ttl": true` vira política de TTL). O `provision.yml` aplica os dois pela API REST e pode ser repetido. As fases só acrescentam entradas ao arquivo. Hoje há TTL em `sessions.expires_at` e `captures.expires_at`; o do `audit_log` (1 ano) entra na fase 6.
 
 ## Custo
 
