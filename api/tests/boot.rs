@@ -122,10 +122,13 @@ fn serve_starts_without_a_rustls_panic() {
     for (method, path, response) in answered {
         let (status, body) = response.unwrap_or_else(|| panic!("no answer to {method} {path}"));
         let public = path.starts_with("/v1/search-links/c1") && method != "DELETE";
+        if public {
+            // Public routes read Firestore, which this binary cannot reach: only "registered" matters.
+            assert!(!status.contains("404"), "{method} {path}: {status}");
+            continue;
+        }
         let (code, error) = if path == "/v1/nope" {
             ("404", "not_found")
-        } else if public {
-            ("501", "not_implemented")
         } else {
             ("401", "unauthorized")
         };
