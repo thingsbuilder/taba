@@ -74,7 +74,10 @@ export async function issueCard(db: Db, queue: Queue, who: Who, household: House
 export async function cancelCard(db: Db, queue: Queue, who: Who, household: HouseholdRecord, code: string, substitute: boolean): Promise<string | null> {
   const old = await db.get('cards', code)
   if (old) await db.put('cards', { ...old, status: 'canceled', pending: true })
-  const replacement = substitute ? generateCardCode() : null
+  // A canceled code never comes back: the substitute is always a new one.
+  let replacement: string | null = null
+  if (substitute) do replacement = generateCardCode()
+  while (replacement === code)
   await queue.enqueue({ method: 'POST', path: `/v1/cards/${code}/cancel`, body: replacement ? { replaced_by: replacement } : {}, ...who })
   if (replacement) return issueCard(db, queue, who, household, replacement)
   const { card_code: _gone, ...rest } = household

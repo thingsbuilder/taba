@@ -70,6 +70,21 @@ describe('households and cards offline', () => {
     expect(items[2].body).toMatchObject({ code: fresh })
   })
 
+  it('every card issue, first or substitute, sends code and an ISO client_issued_at', async () => {
+    const queue = make()
+    const household = await createHousehold(db, queue, who, { id: 'h1', member_ids: ['p1'] })
+    const old = await issueCard(db, queue, who, household, 'ABCD1234')
+    await cancelCard(db, queue, who, (await db.get('households', 'h1'))!, old, true)
+    const issues = (await queue.list()).filter((i) => i.path === '/v1/households/h1/cards')
+    expect(issues).toHaveLength(2)
+    for (const { body } of issues) {
+      const { code, client_issued_at } = body as { code: string; client_issued_at: string }
+      expect(code).toMatch(/^[0-9A-HJKMNP-TV-Z]{8}$/)
+      expect(new Date(client_issued_at).toISOString()).toBe(client_issued_at)
+    }
+    expect((issues[1].body as { code: string }).code).not.toBe('ABCD1234')
+  })
+
   it('cancel without a substitute leaves the household with no card', async () => {
     const queue = make()
     const household = await createHousehold(db, queue, who, { id: 'h1', member_ids: ['p1'] })
