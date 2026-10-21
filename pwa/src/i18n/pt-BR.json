@@ -69,5 +69,6 @@
   "error.unico_limit": "O reconhecimento facial está indisponível agora. Tente mais tarde.",
   "error.unico_degraded": "O reconhecimento facial está indisponível agora. Tente mais tarde.",
   "error.unico_unavailable": "O reconhecimento facial está indisponível agora. Tente mais tarde.",
-  "error.invalid_profile": "Confira o nome e o telefone."
+  "error.invalid_profile": "Confira o nome e o telefone.",
+  "switch.no_pin": "Não foi criado um PIN para {name}. Entre de novo para criá-lo."
 }

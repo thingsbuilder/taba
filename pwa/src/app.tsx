@@ -9,11 +9,12 @@ import { SESSIONS_CHANGED } from './events'
 import { useLocation } from './nav'
 import type { Queue } from './queue'
 import { resolveRoute } from './routes'
-import { type LocalSession, applyMe, getActive, listValid, removeSession, updateProfile } from './sessions'
+import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession, updateProfile } from './sessions'
 import { Home } from './screens/Home'
 import { InstallIos } from './screens/InstallIos'
 import { Login } from './screens/Login'
 import { NotFound } from './screens/NotFound'
+import { PinSetup } from './screens/PinSetup'
 import { Profile } from './screens/Profile'
 import { Return } from './screens/Return'
 import { SwitchOperator } from './screens/SwitchOperator'
@@ -123,7 +124,7 @@ export function App({ db, api, queue, updateApply }: { db: Db; api: Api; queue: 
       {!blocked && <NetworkChip queue={queue} />}
       {!blocked && status?.unico === 'degraded' && <div class="banner" role="status">{t('degraded.banner')}</div>}
       {!blocked && !persisted && <div class="banner" role="alert">{t('persist.warning')}</div>}
-      {blocked ? <InstallIos /> : ready && <Screen route={route} ctx={ctx} search={search} />}
+      {blocked ? <InstallIos /> : ready && (needsPin(active) && route !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
     </>
   )
 }

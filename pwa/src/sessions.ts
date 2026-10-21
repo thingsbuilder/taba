@@ -94,6 +94,9 @@ export async function addLoginSession(db: Db, response: SessionResponse, now: nu
 
 export const hasPin = (session: LocalSession): boolean => session.pin_hash !== undefined && session.pin_salt !== undefined
 
+/** A logged-in operator who never finished creating the PIN (the app was closed on that screen). */
+export const needsPin = (session: LocalSession | null): session is LocalSession => session !== null && !hasPin(session)
+
 export async function setPin(db: Db, volunteerId: string, pin: string): Promise<void> {
   const session = (await readAll(db))[volunteerId]
   if (session) await saveSession(db, { ...session, ...(await createPinRecord(pin)), failed_pins: 0 })

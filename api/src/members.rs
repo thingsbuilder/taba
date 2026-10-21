@@ -83,7 +83,7 @@ pub async fn change_role(
                 let mut doc: VolunteerDoc = store::get(&db, COLLECTION, &volunteer_id)
                     .await?
                     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "volunteer_not_found"))?;
-                if !apply(&mut doc, role, change, FirestoreInstant::now()) {
+                if !apply(&mut doc, role, change, crate::store::now()) {
                     return Ok(false);
                 }
                 tx_replace(&db, tx, COLLECTION, &volunteer_id, &doc)?;
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn grant_adds_the_role_once_and_records_who_and_when() {
         let mut d = doc();
-        let now = FirestoreInstant::now();
+        let now = crate::store::now();
         assert!(apply(&mut d, GlobalRole::Validator, Change::Grant, now));
         assert_eq!(d.global_roles, [GlobalRole::Validator]);
         assert_eq!(
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn revoke_removes_only_that_role() {
         let mut d = doc();
-        let now = FirestoreInstant::now();
+        let now = crate::store::now();
         apply(&mut d, GlobalRole::Validator, Change::Grant, now);
         apply(&mut d, GlobalRole::CivilDefense, Change::Grant, now);
         assert!(apply(&mut d, GlobalRole::Validator, Change::Revoke, now));
@@ -258,5 +258,23 @@ mod tests {
             (404, "volunteer_not_found")
         );
         assert!(all_docs(&app.state.db, "audit_log").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_changes_to_one_volunteer_all_land() {
+        let app = TestApp::new().await;
+        let (_, id) = app.login("dev", "tok", "Ana").await;
+        let db = &app.state.db;
+        let (a, b, c) = tokio::join!(
+            change_role(db, &id, GlobalRole::Validator, Change::Grant),
+            change_role(db, &id, GlobalRole::CivilDefense, Change::Grant),
+            change_role(db, &id, GlobalRole::Validator, Change::Grant),
+        );
+        // The two grants of `validator` race: exactly one of them changes anything.
+        assert!(b.unwrap());
+        assert_eq!([a.unwrap(), c.unwrap()].iter().filter(|x| **x).count(), 1);
+        let doc: VolunteerDoc = store::get(db, COLLECTION, &id).await.unwrap().unwrap();
+        assert_eq!(doc.global_roles.len(), 2);
+        assert_eq!(doc.role_grants.len(), 2);
     }
 }

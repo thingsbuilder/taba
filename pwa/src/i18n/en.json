@@ -69,5 +69,6 @@
   "error.unico_limit": "Face recognition is unavailable right now. Try again later.",
   "error.unico_degraded": "Face recognition is unavailable right now. Try again later.",
   "error.unico_unavailable": "Face recognition is unavailable right now. Try again later.",
-  "error.invalid_profile": "Check the name and the phone."
+  "error.invalid_profile": "Check the name and the phone.",
+  "switch.no_pin": "No PIN was created for {name}. Sign in again to create it."
 }

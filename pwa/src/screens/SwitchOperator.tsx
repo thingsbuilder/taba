@@ -3,7 +3,8 @@ import type { AppContext } from '../app-context'
 import { navigate } from '../nav'
 import { t } from '../i18n'
 import { isValidPin } from '../pin'
-import { type LocalSession, switchOperator } from '../sessions'
+import { type LocalSession, hasPin, switchOperator } from '../sessions'
+import { switchFailure } from '../switch-message'
 
 /** `/switch-operator`: pick a volunteer with a session on this device and confirm with the PIN. Works offline. */
 export function SwitchOperator({ ctx }: { ctx: AppContext }) {
@@ -21,8 +22,9 @@ export function SwitchOperator({ ctx }: { ctx: AppContext }) {
       await ctx.refresh()
       return navigate('/', true)
     }
-    if (result.reason === 'wrong_pin') return setMessage(t('switch.wrong', { n: result.remaining }))
-    setMessage(result.reason === 'locked' ? t('switch.locked', { name: chosen.profile.name }) : t('switch.no_session'))
+    const failure = switchFailure(result)
+    setMessage(t(failure.key, { ...failure.params, name: chosen.profile.name }))
+    if (result.reason === 'wrong_pin') return
     setChosen(null)
     await ctx.refresh()
   }
@@ -49,7 +51,7 @@ export function SwitchOperator({ ctx }: { ctx: AppContext }) {
           <ul class="list">
             {ctx.sessions.map((s) => (
               <li>
-                <button type="button" class="button button-secondary" onClick={() => { setChosen(s); setMessage(null) }}>
+                <button type="button" class="button button-secondary" onClick={() => (hasPin(s) ? (setChosen(s), setMessage(null)) : setMessage(t('switch.no_pin', { name: s.profile.name })))}>
                   {s.profile.name}
                   {s.volunteer_id === ctx.active?.volunteer_id && <span class="chip-inline">{t('switch.active')}</span>}
                 </button>

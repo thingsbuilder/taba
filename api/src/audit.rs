@@ -43,7 +43,7 @@ pub struct AuditEntry {
 
 impl AuditEntry {
     pub fn new(action: impl Into<String>, target_kind: &str, target_id: &str) -> Self {
-        let at = FirestoreInstant::now();
+        let at = crate::store::now();
         Self {
             at,
             volunteer_id: None,

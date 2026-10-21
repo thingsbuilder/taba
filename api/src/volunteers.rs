@@ -99,7 +99,7 @@ pub fn valid_language(language: &str) -> Result<String, ApiError> {
 
 impl VolunteerDoc {
     pub fn from_profile(profile: &ProfileInput) -> Result<Self, ApiError> {
-        let now = FirestoreInstant::now();
+        let now = crate::store::now();
         Ok(Self {
             name: valid_name(&profile.name)?,
             phone: profile

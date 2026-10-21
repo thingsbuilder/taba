@@ -29,6 +29,7 @@ use crate::volunteers::{self, ProfileInput, VolunteerDoc};
 const CAPTURES: &str = "captures";
 const SESSIONS: &str = "sessions";
 const CAPTURE_TTL: SignedDuration = SignedDuration::from_mins(15);
+const MAX_LOGIN_ATTEMPTS: u32 = 10;
 const RENEW_AFTER: SignedDuration = SignedDuration::from_hours(24);
 
 #[derive(Clone)]
@@ -183,7 +184,7 @@ pub async fn post_captures(
     let callback = format!("https://{}/return?capture={capture_id}", state.domain);
     let journey = state.unico.create_journey(&callback).await?;
 
-    let now = FirestoreInstant::now();
+    let now = crate::store::now();
     let doc = CaptureDoc {
         process_id: journey.process_id,
         purpose: Purpose::Login,
@@ -264,8 +265,32 @@ async fn resolve_person(
     };
     capture.status = status;
     capture.person_id = person_id.clone();
-    store::replace(&state.db, CAPTURES, capture_id, capture).await?;
-    terminal_error(status).map_or_else(|| person_id.ok_or_else(ApiError::internal), Err)
+    // A token is not written here: the login transaction records it together with `consumed`.
+    if status == CaptureStatus::Ok {
+        return person_id.ok_or_else(ApiError::internal);
+    }
+    remember_result(state, capture_id, capture).await?;
+    Err(terminal_error(status).unwrap_or_else(ApiError::internal))
+}
+
+/// Saves what Unico said about the capture (only `status` and `person_id`: a whole-document
+/// write could undo a concurrent `consumed = true`).
+async fn remember_result(
+    state: &AppState,
+    capture_id: &str,
+    capture: &CaptureDoc,
+) -> Result<(), ApiError> {
+    state
+        .db
+        .fluent()
+        .update()
+        .fields(paths!(CaptureDoc::{status, person_id}))
+        .in_col(CAPTURES)
+        .document_id(capture_id)
+        .object(capture)
+        .execute::<()>()
+        .await
+        .map_err(fs_error)
 }
 
 #[derive(Clone)]
@@ -292,7 +317,7 @@ async fn login(
     }
     let existing: Option<VolunteerDoc> =
         store::get(db, volunteers::COLLECTION, &a.person_id).await?;
-    let now = FirestoreInstant::now();
+    let now = crate::store::now();
     let is_new = existing.is_none();
     let mut volunteer = match (existing, a.profile.as_ref()) {
         (Some(v), _) if v.banned => return Err(ApiError::new(StatusCode::FORBIDDEN, "banned")),
@@ -322,6 +347,8 @@ async fn login(
         &a.capture_id,
         &CaptureDoc {
             consumed: true,
+            status: CaptureStatus::Ok,
+            person_id: Some(a.person_id.clone()),
             ..capture
         },
     )?;
@@ -362,7 +389,7 @@ pub async fn post_sessions(
     if capture.consumed {
         return Err(ApiError::new(StatusCode::CONFLICT, "capture_consumed"));
     }
-    if FirestoreInstant::now() >= capture.expires_at {
+    if crate::store::now() >= capture.expires_at {
         return Err(ApiError::new(StatusCode::GONE, "capture_expired"));
     }
     let person_id = resolve_person(&state, &request.capture_id, &mut capture).await?;
@@ -376,14 +403,42 @@ pub async fn post_sessions(
         secret: secret.clone(),
         session_days: state.config.session_days,
     };
-    let (volunteer, session) = state
-        .db
-        .run_transaction(|db, tx| {
-            let args = args.clone();
-            Box::pin(async move { login(&db, tx, &args).await.map_err(BackoffError::permanent) })
-        })
-        .await
-        .map_err(fs_error)?;
+    // Under contention Firestore aborts the transactions that lose the lock. The capture is
+    // single use, so each loser looks again: consumed by the winner means 409, otherwise retry.
+    let mut attempts = 0;
+    let (volunteer, session) = loop {
+        let logged_in = state
+            .db
+            .run_transaction(|db, tx| {
+                let args = args.clone();
+                Box::pin(
+                    async move { login(&db, tx, &args).await.map_err(BackoffError::permanent) },
+                )
+            })
+            .await
+            .map_err(fs_error);
+        match logged_in {
+            Err(busy) if busy.code == store::CONTENTION => {
+                let capture =
+                    store::get::<CaptureDoc>(&state.db, CAPTURES, &args.capture_id).await?;
+                if capture.is_some_and(|c| c.consumed) {
+                    return Err(ApiError::new(StatusCode::CONFLICT, "capture_consumed"));
+                }
+                attempts += 1;
+                if attempts == MAX_LOGIN_ATTEMPTS {
+                    return Err(busy);
+                }
+            }
+            // A new volunteer still owes the profile: keep the result, Unico is not asked again.
+            Err(e) if e.code == "profile_required" => {
+                capture.status = CaptureStatus::Ok;
+                capture.person_id = Some(person_id.clone());
+                remember_result(&state, &args.capture_id, &capture).await?;
+                return Err(e);
+            }
+            other => break other?,
+        }
+    };
 
     Ok((
         StatusCode::CREATED,
@@ -459,7 +514,7 @@ impl FromRequestParts<AppState> for Volunteer {
         let mut session: SessionDoc = store::get(&state.db, SESSIONS, &session_id)
             .await?
             .ok_or_else(unauthorized)?;
-        let now = FirestoreInstant::now();
+        let now = crate::store::now();
         // The Firestore TTL deletes expired sessions some time after `expires_at`.
         if now >= session.expires_at {
             return Err(unauthorized());
@@ -880,7 +935,7 @@ mod tests {
         let (capture_id, process_id) = new_capture(&app, DEVICE).await;
         app.unico.finish_with_token(&process_id, "tok");
         let mut doc = capture_doc(&app, &capture_id).await;
-        doc.expires_at = FirestoreInstant::now() - SignedDuration::from_secs(1);
+        doc.expires_at = crate::store::now() - SignedDuration::from_secs(1);
         store::replace(&app.state.db, CAPTURES, &capture_id, &doc)
             .await
             .unwrap();
@@ -1096,7 +1151,7 @@ mod tests {
         let app = TestApp::new().await;
         let (secret, _) = app.login(DEVICE, "tok", "Ana").await;
         let mut session = stored_session(&app, &secret).await;
-        session.expires_at = FirestoreInstant::now() - SignedDuration::from_secs(1);
+        session.expires_at = crate::store::now() - SignedDuration::from_secs(1);
         store::replace(&app.state.db, SESSIONS, &session_id(&secret), &session)
             .await
             .unwrap();
@@ -1118,8 +1173,8 @@ mod tests {
         );
 
         let mut old = before.clone();
-        old.renewed_at = FirestoreInstant::now() - SignedDuration::from_hours(25);
-        old.expires_at = FirestoreInstant::now() + SignedDuration::from_hours(24);
+        old.renewed_at = crate::store::now() - SignedDuration::from_hours(25);
+        old.expires_at = crate::store::now() + SignedDuration::from_hours(24);
         store::replace(&app.state.db, SESSIONS, &session_id(&secret), &old)
             .await
             .unwrap();
@@ -1206,5 +1261,33 @@ mod tests {
             !serde_json::to_string(&entries).unwrap().contains("Ana"),
             "audit entries hold no names"
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_open_exactly_one_session() {
+        // spec 15, criterion 6, under concurrency
+        let app = Arc::new(TestApp::new().await);
+        let (capture_id, process_id) = new_capture(&app, DEVICE).await;
+        app.unico.finish_with_token(&process_id, "tok");
+        let calls: Vec<_> = (0..40)
+            .map(|_| {
+                let (app, capture_id) = (app.clone(), capture_id.clone());
+                tokio::spawn(async move {
+                    open_session(&app, DEVICE, &capture_id, Some(profile())).await
+                })
+            })
+            .collect();
+        let mut created = 0;
+        for call in calls {
+            let (status, body) = call.await.unwrap();
+            match status {
+                StatusCode::CREATED => created += 1,
+                StatusCode::CONFLICT => assert_eq!(body["error"], "capture_consumed"),
+                other => panic!("unexpected {other}: {body}"),
+            }
+        }
+        assert_eq!(created, 1);
+        assert_eq!(all_docs(&app.state.db, SESSIONS).await.len(), 1);
+        assert_eq!(all_docs(&app.state.db, "volunteers").await.len(), 1);
     }
 }

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionResponse } from './api'
 import type { Db } from './db'
-import { MAX_FAILED_PINS, addLoginSession, applyMe, getActive, getSession, hasPin, listValid, removeSession, setActive, setPin, switchOperator, touchSession, updateProfile } from './sessions'
+import { switchFailure } from './switch-message'
+import { MAX_FAILED_PINS, needsPin, addLoginSession, applyMe, getActive, getSession, hasPin, listValid, removeSession, setActive, setPin, switchOperator, touchSession, updateProfile } from './sessions'
 import { freshDb } from './testing'
 
 const DAY = 24 * 3600_000
@@ -150,5 +151,26 @@ describe('switching operator by PIN (spec 15, criterion 57)', () => {
     await addLoginSession(db, response('cai'), NOW)
     expect(await switchOperator(db, 'cai', '123456', NOW)).toEqual({ ok: false, reason: 'no_pin' })
     await setActive(db, 'bia')
+  })
+})
+
+describe('a session whose owner never created the PIN', () => {
+  it('is flagged so the app asks for the PIN before anything else', async () => {
+    const session = await addLoginSession(db, response('ana'), NOW)
+    expect(needsPin(session)).toBe(true)
+    expect(needsPin(null)).toBe(false)
+    await setPin(db, 'ana', '123456')
+    expect(needsPin(await getActive(db, NOW))).toBe(false)
+  })
+
+  it('is not "session ended": the switch screen gets its own message', async () => {
+    await addLoginSession(db, response('ana'), NOW)
+    const result = await switchOperator(db, 'ana', '123456', NOW)
+    expect(result).toEqual({ ok: false, reason: 'no_pin' })
+    if (result.ok) throw new Error('unreachable')
+    expect(switchFailure(result).key).toBe('switch.no_pin')
+    expect(switchFailure({ ok: false, reason: 'no_session' }).key).toBe('switch.no_session')
+    expect(switchFailure({ ok: false, reason: 'locked' }).key).toBe('switch.locked')
+    expect(switchFailure({ ok: false, reason: 'wrong_pin', remaining: 2 })).toEqual({ key: 'switch.wrong', params: { n: 2 } })
   })
 })
