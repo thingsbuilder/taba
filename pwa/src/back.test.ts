@@ -9,6 +9,10 @@ it('goes to the logical parent of each inner screen', () => {
   }
 })
 
+it('goes from the diagnostics screen back to the profile', () => {
+  expect(backTarget(resolveRoute('/diagnostics'))).toBe('/profile')
+})
+
 it('falls back to the home screen for anything else', () => {
   for (const path of ['/', '/nope', '/shelter']) expect(backTarget(resolveRoute(path)), path).toBe('/')
 })

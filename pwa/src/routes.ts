@@ -1,7 +1,7 @@
 export type RouteName =
   | 'home' | 'login' | 'return' | 'switch_operator' | 'profile'
   | 'shelter_new' | 'shelter' | 'shelter_members' | 'invite' | 'endorse' | 'inbox'
-  | 'shelter_checkin' | 'shelter_people' | 'shelter_household' | 'shelter_exit' | 'person' | 'privacy'
+  | 'shelter_checkin' | 'shelter_people' | 'shelter_household' | 'shelter_exit' | 'person' | 'privacy' | 'diagnostics'
   | 'not_found'
 
 export interface Route {
@@ -23,6 +23,7 @@ const SIMPLE: Record<string, RouteName> = {
   '/shelters/new': 'shelter_new',
   '/inbox': 'inbox',
   '/privacy': 'privacy',
+  '/diagnostics': 'diagnostics',
 }
 
 // Each phase adds its routes here (spec 6.1).

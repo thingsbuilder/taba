@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { type Api, type ApiStatus, getStatus } from './api'
 import type { AppContext } from './app-context'
 import type { Db } from './db'
+import { logEvent } from './diagnostics'
 import { isDegraded } from './degraded'
 import { INSTALL_PROMPT_SNOOZE_MS, isIosOutsideStandalone, requestPersistence } from './device'
 import { useLanguage, useOnline } from './hooks'
@@ -13,6 +14,7 @@ import type { Queue } from './queue'
 import { type Route, resolveRoute } from './routes'
 import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession } from './sessions'
 import { Checkin } from './screens/Checkin'
+import { Diagnostics } from './screens/Diagnostics'
 import { Endorse } from './screens/Endorse'
 import { Exit } from './screens/Exit'
 import { Household } from './screens/Household'
@@ -97,8 +99,10 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
     if (!online || !active) return
     void api.getMe(active.secret).then(async (me) => {
       if (me.ok) await applyMe(db, active.volunteer_id, me.data.global_roles, Date.now(), me.data.memberships)
-      else if (me.status === 401 || me.status === 403) await removeSession(db, active.volunteer_id)
-      else return
+      else if (me.status === 401 || me.status === 403) {
+        logEvent('session_expired', { status: me.status, volunteer_id: active.volunteer_id })
+        await removeSession(db, active.volunteer_id)
+      } else return
       await refresh()
     })
   }, [online, active?.volunteer_id])
@@ -145,7 +149,7 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
       <QueueAlerts ctx={ctx} />
       {isDegraded(status) && <div class="banner" role="status">{t('degraded.banner')}</div>}
       {iosTab && !installDismissed && <InstallPrompt onDismiss={() => { setInstallDismissed(true); void db.put('config', Date.now(), 'install_prompt_dismissed_at') }} />}
-      {ready && (needsPin(active) && route.name !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
+      {ready && (needsPin(active) && route.name !== 'return' && route.name !== 'diagnostics' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
     </>
   )
 }
@@ -186,6 +190,8 @@ function Screen({ route, ctx, search }: { route: Route; ctx: AppContext; search:
       return <Person ctx={ctx} personId={route.id!} />
     case 'privacy':
       return <Privacy />
+    case 'diagnostics':
+      return <Diagnostics />
     default:
       return <NotFound />
   }
