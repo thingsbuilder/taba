@@ -1,4 +1,4 @@
-import { errorKey } from './app-context'
+import { checkinErrorKey } from './checkin'
 import type { QueueItem } from './db'
 
 // How the "Pendências" list names the phase 3 items and their errors (spec 9.2, 9.4).
@@ -8,17 +8,14 @@ const CODES = new Set([
   'household_has_card',
   'code_taken',
   'photo_unreadable',
-  'no_face',
-  'invalid_image',
-  'image_too_large',
   'revalidation_failed',
   'protection_role_required',
   'guardian_not_verified',
   'event_closed',
 ])
 
-/** i18n key of the message for a queue error; the codes of earlier phases keep their `error.*` key. */
-export const queueErrorKey = (code: string): string => (CODES.has(code) ? `queue.error_${code}` : errorKey(code))
+/** i18n key of the message for a queue error; the face and image errors share the check-in texts, the codes of earlier phases keep their `error.*` key. */
+export const queueErrorKey = (code: string): string => (CODES.has(code) ? `queue.error_${code}` : checkinErrorKey(code))
 
 const RULES: [RegExp, string, string?][] = [
   [/^\/v1\/shelters\/[^/]+\/checkins$/, 'queue.label_checkin'],

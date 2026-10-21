@@ -45,5 +45,7 @@ it('names phase 3 items and their conflicts', () => {
   expect(phase3Label({ method: 'PATCH', path: '/v1/shelters/s1' })).toBeNull()
   expect(queueErrorKey('person_in_other_household')).toBe('queue.error_person_in_other_household')
   expect(queueErrorKey('household_has_card')).toBe('queue.error_household_has_card')
+  // The face and image errors have one text, the check-in one.
+  for (const code of ['no_face', 'invalid_image', 'image_too_large']) expect(queueErrorKey(code)).toBe(`checkin.error.${code}`)
   expect(queueErrorKey('shelter_nearby')).toBe('error.shelter_nearby')
 })

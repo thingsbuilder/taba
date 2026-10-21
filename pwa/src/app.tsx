@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { type Api, type ApiStatus, getStatus } from './api'
 import type { AppContext } from './app-context'
 import type { Db } from './db'
+import { isDegraded } from './degraded'
 import { INSTALL_PROMPT_SNOOZE_MS, isIosOutsideStandalone, requestPersistence } from './device'
 import { useLanguage, useOnline } from './hooks'
 import { type Language, saveLanguage, setLanguage, t } from './i18n'
@@ -149,7 +150,7 @@ export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: A
       )}
       <NetworkChip queue={queue} />
       <QueueAlerts ctx={ctx} />
-      {status?.unico === 'degraded' && <div class="banner" role="status">{t('degraded.banner')}</div>}
+      {isDegraded(status) && <div class="banner" role="status">{t('degraded.banner')}</div>}
       {iosTab && !installDismissed && <InstallPrompt onDismiss={() => { setInstallDismissed(true); void db.put('config', Date.now(), 'install_prompt_dismissed_at') }} />}
       {ready && (needsPin(active) && route.name !== 'return' ? <PinSetup ctx={ctx} volunteerId={active.volunteer_id} /> : <Screen route={route} ctx={ctx} search={search} />)}
     </>

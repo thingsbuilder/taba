@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import type { ChildStatus, GuardianLink, PersonView } from '../api-phase3'
 import type { AppContext } from '../app-context'
 import { finishCapture, pollCapture, readDraft, startCapture } from '../captures'
-import { type PersonForm, checkinErrorKey, dataToForm, enqueueParts, formToData, validateForm } from '../checkin'
+import { type PersonForm, checkinErrorKey, dataToForm, formToData, validateForm } from '../checkin'
 import { CHILD_STATUSES } from '../checkin'
 import { isProtectionOrDc } from '../exit'
 import { useOnline } from '../hooks'
@@ -115,9 +115,10 @@ export function Person({ ctx, personId }: { ctx: AppContext; personId: string })
     setCamera(false)
     const blob = await photoForToken(frame)
     if (!blob) return setError('photo_too_big')
-    await enqueueParts(queue, [
-      { item: { method: 'PUT', path: `/v1/people/${personId}/biometrics`, body: {}, volunteer_id: active!.volunteer_id, shelter_id: shelterId }, blobs: { photo: blob } },
-    ])
+    await queue.enqueue(
+      { method: 'PUT', path: `/v1/people/${personId}/biometrics`, body: {}, volunteer_id: active!.volunteer_id, shelter_id: shelterId },
+      { photo: blob },
+    )
     setNotice(t('person.biometrics_queued'))
   }
 

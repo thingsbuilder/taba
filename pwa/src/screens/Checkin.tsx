@@ -4,10 +4,11 @@ import type { AppContext } from '../app-context'
 import { cameraSupported } from '../camera'
 import { finishCapture, pollCapture, readDraft, startCapture } from '../captures'
 import {
-  type FormError, type PersonForm, bodyWithCapture, checkinErrorKey, emptyForm, enqueueParts, formToData, needsThumbnail, queuedCheckin, validateForm,
+  type FormError, type PersonForm, bodyWithCapture, checkinErrorKey, emptyForm, enqueueCheckin, formToData, needsThumbnail, validateForm,
 } from '../checkin'
 import { effectiveBasis, rememberResponsible, responsibleOf } from '../consent'
 import { useOnline } from '../hooks'
+import { isDegraded } from '../degraded'
 import { t } from '../i18n'
 import { type Frame, photoForToken, thumbnailOf } from '../image'
 import { navigate, useLocation } from '../nav'
@@ -51,7 +52,7 @@ export function Checkin({ ctx, shelterId }: { ctx: AppContext; shelterId: string
   const id = useRef<string>(crypto.randomUUID())
   const resumed = useRef(false)
 
-  const degraded = ctx.status?.unico === 'degraded'
+  const degraded = isDegraded(ctx.status)
   const canSelfie = online && !degraded
   const canPhoto = cameraSupported(navigator)
 
@@ -115,11 +116,10 @@ export function Checkin({ ctx, shelterId }: { ctx: AppContext; shelterId: string
       blob = reduced
       if (needsThumbnail(data)) thumbnail = await thumbnailOf(photo)
     }
-    const parts = queuedCheckin({
+    await enqueueCheckin(queue, {
       id: id.current, data, legal_basis: effectiveBasis(basis, form.is_child), now: new Date(), shelterId, volunteerId: active!.volunteer_id,
       photo: blob, thumbnail, declined, degraded,
     })
-    await enqueueParts(queue, parts)
     // The phone's own copy, marked pending until the server confirms (the queue swaps the id on sync).
     await db.put('people', {
       id: id.current, current_shelter_id: shelterId, name: data.name, social_name: data.social_name, wristband: data.wristband,
@@ -193,6 +193,9 @@ export function Checkin({ ctx, shelterId }: { ctx: AppContext; shelterId: string
         {done.personId && !done.queued && (
           <button type="button" class="button" onClick={() => navigate(`/person/${done.personId}`)}>{t('checkin.open_person')}</button>
         )}
+        <h2 class="subtitle">{t('checkin.household_question')}</h2>
+        <button type="button" class="button button-secondary" onClick={() => navigate(`/shelter/${shelterId}/households/new`)}>{t('checkin.household_new')}</button>
+        <button type="button" class="button button-secondary" onClick={() => navigate(`/shelter/${shelterId}/households/new`)}>{t('checkin.household_join')}</button>
         <button
           type="button"
           class="button button-secondary"
@@ -225,7 +228,7 @@ export function Checkin({ ctx, shelterId }: { ctx: AppContext; shelterId: string
         <button type="button" class="back-link back-button" onClick={() => setStep('form')}>{t('checkin.back')}</button>
         <h1 class="title">{t('checkin.method_title')}</h1>
         {errorText && <p class="notice notice-error" role="alert">{errorText}</p>}
-        {degraded && <p class="notice notice-warning" role="status">{t('checkin.degraded_hint')}</p>}
+        {degraded && <p class="notice notice-warning" role="status">{t('degraded.checkin_note')}</p>}
         {!online && <p class="notice" role="status">{t('checkin.needs_signal')}</p>}
         <button type="button" class="button" disabled={busy || !canSelfie} onClick={() => void selfie()}>{t('checkin.method_a')}</button>
         <p class="caption">{t('checkin.method_a_hint')}</p>
