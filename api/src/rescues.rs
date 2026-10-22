@@ -1311,10 +1311,19 @@ mod tests {
         let calls = w.app.unico.post_count();
         let mut headers = HeaderMap::new();
         headers.insert("idempotency-key", "key-x".parse().unwrap());
-        // a first attempt paid and then died before its transaction
-        let kept = idempotency::photo_person_id(&w.app.state, &headers, &w.volunteer.id, ROUTE, {
-            async { Ok(token_id(&w.app, "tok-ana")) }
-        })
+        let request = rescue(json!({ "photo_base64": photo() }));
+        // a first attempt paid and then died before its transaction; the answer is bound to the
+        // digest of the request, which is what the retry sends again
+        let digest =
+            idempotency::digest_of(&[b"POST", b"/v1/rescues", b"", request.to_string().as_bytes()]);
+        let kept = idempotency::photo_person_id_of(
+            &w.app.state,
+            &headers,
+            &w.volunteer.id,
+            ROUTE,
+            Some(&digest),
+            async { Ok(token_id(&w.app, "tok-ana")) },
+        )
         .await
         .unwrap();
         let (status, body) = send(
@@ -1323,7 +1332,7 @@ mod tests {
             "POST",
             "/v1/rescues",
             Some("key-x"),
-            Some(rescue(json!({ "photo_base64": photo() }))),
+            Some(request),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");

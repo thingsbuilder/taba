@@ -197,9 +197,10 @@ const DISTANCE_WINDOW_SECS: i64 = 3600;
 const MAX_TRACKED: usize = 10_000;
 
 /// What the anomaly rules remember between requests.
-// ponytail: per process and lost on restart, so a restart or a second instance forgets the open
-// window and may repeat one alert or miss one; the pilot runs one instance. Move to a Firestore
-// document with a TTL if the API ever scales out.
+// ponytail: per process, at most `MAX_TRACKED` entries per table (past it the stale ones are
+// dropped). Lost on restart, and not shared between instances: a restart or a second instance
+// forgets the open window, so one alert may repeat or be missed. The pilot runs one instance;
+// move to a Firestore document with a TTL before running two.
 #[derive(Default)]
 struct Tracker {
     /// `(volunteer, activity)` -> start of the window, count in it, alert already raised.
