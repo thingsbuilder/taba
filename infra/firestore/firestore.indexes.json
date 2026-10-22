@@ -169,6 +169,60 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "deliveries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "person_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "item",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "delivered_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "deliveries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "household_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "item",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "delivered_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "deliveries",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "shelter_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "delivered_at",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": [

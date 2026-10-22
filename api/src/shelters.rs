@@ -169,6 +169,9 @@ pub struct ShelterDoc {
     pub other_site_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflicts_with: Option<String>,
+    /// What the shelter gives and the rule of each item (spec 3.5.2); set by `PUT /v1/shelters/{id}/items`.
+    #[serde(default, skip_serializing_if = "crate::deliveries::Items::is_empty")]
+    pub items: crate::deliveries::Items,
 }
 
 impl ShelterDoc {
@@ -453,6 +456,7 @@ async fn create_in(
         flagged,
         other_site_reason,
         conflicts_with: conflicts_with.clone(),
+        items: Default::default(),
     };
 
     tx_create(db, tx, COLLECTION, &new.id, &shelter)?;
