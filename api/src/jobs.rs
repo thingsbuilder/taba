@@ -48,6 +48,7 @@ pub async fn run_once(state: &AppState) -> Result<(), ApiError> {
     let steps = [
         close_events(state).await,
         notify_expiring_searches(state).await,
+        expire_family_photos(state).await,
         delete_thumbnails(state).await,
         delete_expired(state).await,
         crate::purge::run(state).await.map(|_| ()),
@@ -260,6 +261,40 @@ async fn notify_expiring_searches(state: &AppState) -> Result<(), ApiError> {
             })
             .await?;
         }
+    }
+    Ok(())
+}
+
+/// The family's photos go `PURGE_AFTER_DAYS` after the search was made at the latest, whatever
+/// became of the match (one nobody attends, a search with no event).
+async fn expire_family_photos(state: &AppState) -> Result<(), ApiError> {
+    let cutoff = minus_days(store::now(), state.config.purge_after_days);
+    let kept: Vec<SearchDoc> = state
+        .db
+        .fluent()
+        .select()
+        .from(searches::COLLECTION)
+        .filter(|q| q.for_all([q.field(path!(SearchDoc::retained_photos)).greater_than(0)]))
+        .obj()
+        .query()
+        .await
+        .map_err(fs_error)?;
+    for search in kept.into_iter().filter(|s| s.created_at < cutoff) {
+        let Some(search_id) = search.id.clone() else {
+            continue;
+        };
+        store::transact(&state.db, |db, tx| {
+            let search_id = search_id.clone();
+            Box::pin(async move {
+                if let Some(mut search) =
+                    store::get::<SearchDoc>(&db, searches::COLLECTION, &search_id).await?
+                {
+                    search_photos::discard(&db, tx, &search_id, &mut search, "max_age")?;
+                }
+                Ok(())
+            })
+        })
+        .await?;
     }
     Ok(())
 }
@@ -714,6 +749,52 @@ mod tests {
             (EventStatus::Closed, Some(ClosureReason::AllSheltersClosed))
         );
         assert!(closed.closed_at.is_some() && closed.purge_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn the_family_photos_are_erased_after_the_maximum_age_even_with_no_event() {
+        let w = world().await;
+        let owner = w.app.actor("Owner").await;
+        let old = search(&w.app, &w.event, &owner.id).await;
+        let recent = search(&w.app, &w.event, &owner.id).await;
+        for (id, created) in [(&old, ago(31, 0)), (&recent, ago(1, 0))] {
+            let mut doc: SearchDoc = store::get(&w.app.state.db, searches::COLLECTION, id)
+                .await
+                .unwrap()
+                .unwrap();
+            // No event: nothing else would ever erase it.
+            doc.event_id = None;
+            doc.retained_photos = 1;
+            doc.created_at = created;
+            store::replace(&w.app.state.db, searches::COLLECTION, id, &doc)
+                .await
+                .unwrap();
+            let photo = search_photos::PhotoDoc {
+                search_id: id.clone(),
+                photo_encrypted: Some(vec![1, 2, 3]),
+                created_at: store::now(),
+            };
+            store::replace(
+                &w.app.state.db,
+                search_photos::COLLECTION,
+                &search_photos::photo_id(id, 0),
+                &photo,
+            )
+            .await
+            .unwrap();
+        }
+        run_once(&w.app.state).await.unwrap();
+        let left = search_photos::all(&w.app.state.db).await;
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].search_id, recent);
+        let audits = all_docs(&w.app.state.db, "audit_log").await;
+        assert_eq!(
+            audits
+                .iter()
+                .filter(|e| e["action"] == "search_photos.discard.max_age")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]

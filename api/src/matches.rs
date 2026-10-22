@@ -1141,7 +1141,7 @@ mod tests {
                 let mut search: SearchDoc = store::get(&db, searches::COLLECTION, &search_id)
                     .await?
                     .unwrap();
-                search.retained_photos = search_photos::retain(&db, tx, &key, &search_id, &photos)?;
+                search.retained_photos = search_photos::write(&db, tx, &key, &search_id, &photos)?;
                 tx_replace(&db, tx, searches::COLLECTION, &search_id, &search)
             })
         })
@@ -1161,7 +1161,7 @@ mod tests {
             "en",
         )
         .await;
-        let png = vec![0x89, b'P', b'N', b'G', 1];
+        let png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1];
         let search_id = keep_photos(&w.app, &id, &[JPEG.to_vec(), png.clone()]).await;
         // Encrypted at rest.
         let stored_photo: search_photos::PhotoDoc = store::get(

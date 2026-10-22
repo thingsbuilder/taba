@@ -23,7 +23,7 @@ Registrar resgatados no ponto de desembarque, buscar desaparecidos por foto sem 
 - 1 a 5 fotos (galeria permitida), nome, apelido, observações, contato e idioma da família; `SEARCHES_PER_DAY` por voluntário (`429 search_limit`).
 - Offline pela fila, com fotos cifradas no aparelho e apagadas após o `2xx` (fase 3, `crypto.ts`). No servidor, só as fotos de busca com match são retidas (abaixo).
 - Um token por foto; guarda só os `person_id` derivados; um match em qualquer foto conta.
-- **Retenção das fotos da família (decisão do dono, 2026-10-22; PR de retenção):** se a busca já nasce com match, todas as fotos (até 5) ficam cifradas (`THUMBNAIL_KEY`) em `search_photos/{search_id}.{n}` e o mediador as vê em `/matches/:id` (`GET /v1/matches/{id}/search-photos/{n}`, auditado). Apagadas na decisão do último match aberto, no encerramento do evento e no descarte. Busca sem match no registro não retém nada, e match criado depois não encontra fotos.
+- **Retenção das fotos da família (decisão do dono, 2026-10-22; PR de retenção):** se a busca já nasce com match, todas as fotos (até 5) ficam cifradas (`THUMBNAIL_KEY`) em `search_photos/{search_id}.{n}` e o mediador as vê em `/matches/:id` (`GET /v1/matches/{id}/search-photos/{n}`, auditado). Gravadas depois da resposta da busca (o tempo da resposta não revela o match); só JPEG e PNG. Apagadas na decisão do último match aberto, no encerramento do evento, no descarte e 30 dias (`PURGE_AFTER_DAYS`) depois da busca. Busca sem match no registro não retém nada, e match criado depois não encontra fotos.
 - **Resposta sempre igual**, com ou sem match: `202 {message: "search_registered", usable_photos}`.
 - Busca ativa até o descarte do evento do abrigo de origem; cada check-in e resgate posterior é comparado.
 
