@@ -2,23 +2,33 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createApi } from './api'
 import type { Db, QueueItem } from './db'
 import {
+  adminApprovalOffered,
   adminOnDevice,
   approveByAdmin,
   buildDelivery,
   deliveryErrorKey,
+  deliveryPath,
+  enqueueDelivery,
   isDelivery,
   loadItems,
   needsOfflineApproval,
   recordDeliveryReply,
   resolveCard,
+  restoreFromDraft,
   selfieAllowed,
+  sendState,
   resultText,
   sendWithCapture,
   takeDeliveryReply,
   validateDelivery,
   waitingDeliveries,
 } from './delivery'
+import { emptyForm, enqueueCheckin, formToData } from './checkin'
+import { createHousehold, issueCard } from './households'
 import { createQueue } from './queue'
+import { emptyRescueForm, enqueueRescue, rescueBody } from './rescue'
+import { emptySearchForm, enqueueSearch } from './search'
+import { createShelter } from './shelters'
 import type { LocalSession } from './sessions'
 import { freshDb } from './testing'
 
@@ -154,34 +164,59 @@ describe('through the queue', () => {
   })
 
   // Criterion 54: everything made without signal goes out in the order it was made, and nothing stays behind.
-  it('syncs a whole offline day in order, erases the photos and zeroes the counter (criterion 54)', async () => {
+  // It is built with the real constructors of each screen, so the bodies and the queue items are the real ones.
+  it('syncs a whole offline day in order, with the key of each item, the photos encrypted and erased (criterion 54)', async () => {
     fetchMock.mockRejectedValue(new TypeError('offline'))
     const queue = make()
-    const photo = () => ({ photo: new Blob(['face']), thumbnail: new Blob(['thumb']) })
-    const sent: [string, string][] = [] // method, path in the order they were made
-    const add = async (method: string, path: string, b: unknown, photos?: Parameters<typeof queue.enqueue>[1]) => {
-      await queue.enqueue({ method, path, body: b, volunteer_id: 'v', shelter_id: SHELTER }, photos)
-      sent.push([method, path])
-    }
-    await add('POST', '/v1/shelters', { id: SHELTER, name: 'Escola' })
-    for (const id of ['p-1', 'p-2', 'p-3']) await add('POST', `/v1/shelters/${SHELTER}/checkins`, { id, capture_id: undefined }, photo())
-    await add('POST', `/v1/shelters/${SHELTER}/checkins`, { id: 'p-4', no_biometrics: true, name: 'Ana' })
-    await add('POST', `/v1/shelters/${SHELTER}/households`, { id: 'h-1', member_ids: ['p-1', 'p-2'] })
-    await add('POST', '/v1/households/h-1/cards', { code: 'ABCD1234' })
-    await add('POST', PATH, body({ id: 'd-1' }))
-    await add('POST', PATH, body({ id: 'd-2', personId: 'p-2' }))
-    await add('POST', '/v1/rescues', { id: 'r-1' }, { photo: new Blob(['face']) })
-    await add('POST', '/v1/searches', { id: 'x-1' }, { photos: [new Blob(['a']), new Blob(['b'])] })
-    expect(await queue.count()).toBe(sent.length)
-    expect((await db.getAll('blobs')).length).toBe(5)
+    const who = { volunteer_id: 'v', shelter_id: '' }
+    const face = () => new Blob(['PIXELS-OF-A-FACE-PIXELS-OF-A-FACE'])
+    const position = { lat: -30, lon: -51, accuracy: 10 }
+    const now = new Date(0)
+
+    const created = await createShelter(db, queue, 'v', { name: 'Escola', position }, () => true)
+    if (!created.ok) throw new Error('shelter')
+    const shelter = created.id
+    who.shelter_id = shelter
+    const checkin = (id: string, name: string, photo?: Blob) =>
+      enqueueCheckin(queue, { id, data: formToData({ ...emptyForm(), name }), legal_basis: 'consent', now, shelterId: shelter, volunteerId: 'v', photo, thumbnail: photo && face(), declined: false, degraded: false })
+    for (const id of ['p-1', 'p-2', 'p-3']) await checkin(id, '', face())
+    await checkin('p-4', 'Ana') // without biometrics
+    const household = await createHousehold(db, queue, who, { id: 'h-1', member_ids: ['p-1', 'p-2'], head_id: 'p-1' })
+    await issueCard(db, queue, who, household, 'ABCD1234')
+    await enqueueDelivery(queue, who, buildDelivery({ id: 'd-1', cardCode: 'ABCD1234', personId: 'p-1', item: 'cesta', quantity: 1, at: now, offline: true }))
+    await enqueueDelivery(queue, who, buildDelivery({ id: 'd-2', cardCode: 'ABCD1234', personId: 'p-2', item: 'kit', quantity: 1, at: now, offline: true }))
+    await enqueueRescue(queue, { body: rescueBody({ id: 'r-1', form: emptyRescueForm(), position, capturedAt: now }), photo: face(), thumbnail: face(), degraded: false, volunteerId: 'v' })
+    await enqueueSearch(queue, { id: 'x-1', form: { ...emptySearchForm(), name: 'Rui', family_name: 'Ana', phone: '5551999990000', relationship: 'filha' }, photos: [face(), face()], volunteerId: 'v' })
+
+    const made = (await queue.list()).map((i) => ({ id: i.id, method: i.method, path: i.path }))
+    expect(made.map((m) => `${m.method} ${m.path.replace(shelter, 'S')}`)).toEqual([
+      'POST /v1/shelters',
+      'POST /v1/shelters/S/checkins',
+      'POST /v1/shelters/S/checkins',
+      'POST /v1/shelters/S/checkins',
+      'POST /v1/shelters/S/checkins',
+      'POST /v1/shelters/S/households',
+      'POST /v1/households/h-1/cards',
+      'POST /v1/shelters/S/deliveries',
+      'POST /v1/shelters/S/deliveries',
+      'POST /v1/rescues',
+      'POST /v1/searches',
+    ])
+    expect(await queue.count()).toBe(made.length)
+    // Every photo waits encrypted: nothing of the picture is readable in what is stored.
+    const blobs = await db.getAll('blobs')
+    expect(blobs.length).toBe(5) // 3 check-ins, the rescue and the search: one blob per item with photos
+    for (const blob of blobs) expect(new TextDecoder('latin1').decode(blob.data)).not.toContain('PIXELS')
 
     // The signal is back: the first retry waits out the backoff, then everything drains.
     fetchMock.mockReset()
-    fetchMock.mockImplementation(async (url) => json(201, String(url) === PATH ? { delivery_id: 'x', status: 'ok', reasons: [] } : {}))
+    fetchMock.mockImplementation(async (url) => json(201, String(url) === deliveryPath(shelter) ? { delivery_id: 'x', status: 'ok', reasons: [] } : {}))
     clock += 11 * 60_000
     await queue.drain()
 
-    expect(fetchMock.mock.calls.map(([url, init]) => [init!.method, url])).toEqual(sent)
+    expect(fetchMock.mock.calls.map(([url, init]) => [init!.method, url])).toEqual(made.map((m) => [m.method, m.path]))
+    // Each item goes with its own id as Idempotency-Key, so a repeat after a lost answer is harmless.
+    expect(fetchMock.mock.calls.map(([, init]) => (init!.headers as Record<string, string>)['Idempotency-Key'])).toEqual(made.map((m) => m.id))
     expect(await queue.count()).toBe(0)
     expect(await db.getAll('blobs')).toEqual([])
   })
@@ -217,6 +252,28 @@ describe('selfie of a delivery', () => {
     expect(res).toEqual({ ok: false, error: 'revalidation_failed' })
     expect(queue.discard).not.toHaveBeenCalled()
     expect((await db.get('queue', 'q-1'))?.error).toBe('revalidation_failed')
+  })
+
+  it('sends the Idempotency-Key of the delivery id, as the queue sends its own', async () => {
+    fetchMock.mockResolvedValue(json(201, { delivery_id: 'd-1', status: 'ok', reasons: [] }))
+    await sendWithCapture({ db, api: api(), queue }, 'sec', SHELTER, 'c-1', { request: body() }, sleep)
+    expect((fetchMock.mock.calls[0]![1]!.headers as Record<string, string>)['Idempotency-Key']).toBe('d-1')
+  })
+
+  it('after a selfie that did not settle it, the card, the person, the item and the quantity come back from the draft', async () => {
+    await db.put('people', { id: 'p-1', name: 'Ana' })
+    await db.put('households', { id: 'h-1', member_ids: ['p-1'] })
+    await db.put('cards', { code: 'ABCD1234', household_id: 'h-1', status: 'active' })
+    const offline = createApi(async () => Promise.reject(new TypeError('offline')), async () => 'dev')
+    const draft = { request: body({ personId: 'p-1', item: 'colchao', quantity: 3 }) }
+    expect(await restoreFromDraft({ db, api: offline }, 's', false, draft, '?')).toEqual({
+      card: { code: 'ABCD1234', members: [{ id: 'p-1', name: 'Ana', level: undefined }] },
+      personId: 'p-1',
+      item: 'colchao',
+      quantity: '3',
+    })
+    // a card that is gone: nothing to restore, the screen starts over
+    expect(await restoreFromDraft({ db, api: offline }, 's', false, { request: body({ cardCode: 'ZZZZ0000' }) }, '?')).toBeNull()
   })
 
   it('a selfie that never finishes ends as selfie_timeout', async () => {
@@ -261,5 +318,40 @@ describe('card and items on the phone', () => {
     expect(await loadItems(db, online, 's', SHELTER, true)).toEqual(items)
     expect(await loadItems(db, offlineApi(), 's', SHELTER, false)).toEqual(items)
     expect(await loadItems(db, offlineApi(), 's', 'other', false)).toEqual({})
+  })
+})
+
+describe('what the screen shows of the delivery it sent', () => {
+  const item = (over: Partial<QueueItem> = {}): QueueItem => ({ id: 'q', method: 'POST', path: PATH, body: {}, volunteer_id: 'v', shelter_id: SHELTER, created_at: 1, attempts: 0, next_attempt_at: 0, state: 'pending', ...over })
+  const reply = { delivery_id: 'x', status: 'ok' as const, reasons: [] }
+  const state = (over: Partial<Parameters<typeof sendState>[0]> = {}) => sendState({ item: item(), reply: null, online: true, discarded: false, ...over })
+
+  it('sending while it waits to go, saved when there is no signal', () => {
+    expect(state()).toEqual({ kind: 'sending' })
+    expect(state({ online: false })).toEqual({ kind: 'saved' })
+  })
+  it('done with the answer, ok or in review', () => {
+    expect(state({ item: undefined, reply })).toEqual({ kind: 'done', reply })
+    expect(state({ item: undefined, reply: { ...reply, status: 'in_review' } })).toMatchObject({ kind: 'done' })
+  })
+  it('a 428 online, a 403 and a 409 revalidation_failed leave "Sending" for the list of what a person can do', () => {
+    for (const error of ['liveness_required', 'admin_approval_required', 'revalidation_failed']) {
+      expect(state({ item: item({ state: 'needs_action', error }) }), error).toEqual({ kind: 'waiting' })
+    }
+  })
+  it('another refusal is a failure with its code', () => {
+    expect(state({ item: item({ state: 'needs_action', error: 'person_not_in_household' }) })).toEqual({ kind: 'failed', error: 'person_not_in_household' })
+  })
+  it('gone with no answer: canceled when it was discarded here, still sending while the answer is being recorded', () => {
+    expect(state({ item: undefined, discarded: true })).toEqual({ kind: 'canceled' })
+    expect(state({ item: undefined })).toEqual({ kind: 'sending' })
+  })
+  it('after a failed selfie no admin approval is offered, for the 428, a refusal or no biometrics it is', () => {
+    expect(adminApprovalOffered({ error: 'revalidation_failed' })).toBe(false)
+    for (const error of ['liveness_required', 'admin_approval_required', undefined]) expect(adminApprovalOffered({ error }), String(error)).toBe(true)
+  })
+  it('takes a quantity up to 1000, as the API does', () => {
+    expect(validateDelivery({ item: 'a', quantity: '1000' })).toBeNull()
+    expect(validateDelivery({ item: 'a', quantity: '1001' })).toBe('invalid_quantity')
   })
 })

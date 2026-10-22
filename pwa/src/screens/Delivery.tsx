@@ -8,6 +8,8 @@ import {
   type CardMember,
   type DeliveryBody,
   type DeliveryDraft,
+  MAX_QUANTITY,
+  adminApprovalOffered,
   adminOnDevice,
   approveByAdmin,
   buildDelivery,
@@ -17,8 +19,10 @@ import {
   needsOfflineApproval,
   resolveCard,
   WAITING_ERRORS,
+  restoreFromDraft,
   resultText,
   selfieAllowed,
+  sendState,
   sendWithCapture,
   takeDeliveryReply,
   validateDelivery,
@@ -55,6 +59,10 @@ export function Delivery({ ctx, shelterId }: { ctx: AppContext; shelterId: strin
   const [waiting, setWaiting] = useState<QueueItem[]>([])
   const [waitingNames, setWaitingNames] = useState<Record<string, string>>({})
   const resumed = useRef(false)
+  const cardOpened = useRef(false)
+  const cardParam = new URLSearchParams(location.search).get('card')
+  const discarded = useRef(false)
+  const sentId = useRef<string | null>(null)
 
   useEffect(() => {
     if (!active) return navigate('/login', true)
@@ -74,9 +82,17 @@ export function Delivery({ ctx, shelterId }: { ctx: AppContext; shelterId: strin
         names[w.id] = p?.name || p?.wristband || t('delivery.unnamed')
       }
       setWaitingNames(names)
-      if (sent && !sent.reply && !all.some((i) => i.id === sent.queueId)) {
-        const reply = await takeDeliveryReply(db, sent.queueId)
-        if (reply) setSent({ ...sent, reply })
+      if (sent && !sent.reply) {
+        const item = all.find((i) => i.id === sent.queueId)
+        const reply = item ? null : await takeDeliveryReply(db, sent.queueId)
+        const state = sendState({ item, reply, online, discarded: discarded.current })
+        if (state.kind === 'done') setSent({ ...sent, reply: state.reply })
+        // Stopped for a selfie, an admin or an error: leave "Sending…" and show what a person can do.
+        else if (state.kind === 'waiting' || state.kind === 'canceled') setSent(null)
+        else if (state.kind === 'failed') {
+          setSent(null)
+          setError(state.error)
+        }
       }
     }
     void load()
@@ -93,10 +109,27 @@ export function Delivery({ ctx, shelterId }: { ctx: AppContext; shelterId: strin
       const res = await sendWithCapture({ db, api, queue }, active.secret, shelterId, captureId, draft)
       navigate(here, true)
       if (res.ok) setDone(res.reply)
-      else setError(res.error)
+      else {
+        setError(res.error)
+        // The selfie did not settle it: back to the card and the item, not to an empty screen.
+        const back = await restoreFromDraft({ db, api }, active.secret, online, draft, t('delivery.unnamed'))
+        if (back) {
+          setCard(back.card)
+          setPersonId(back.personId)
+          setItem(back.item)
+          setQuantity(back.quantity)
+        }
+      }
       setWorking(false)
     })()
   }, [captureId, active?.volunteer_id])
+
+  // Coming from the card of a household: it is already read.
+  useEffect(() => {
+    if (!active || !cardParam || cardOpened.current) return
+    cardOpened.current = true
+    void openCard(cardParam)
+  }, [active?.volunteer_id])
 
   if (!active) return null
   const secret = active.secret
@@ -128,6 +161,8 @@ export function Delivery({ ctx, shelterId }: { ctx: AppContext; shelterId: strin
 
   async function submit(body: DeliveryBody, volunteerId = active!.volunteer_id) {
     const queued = await enqueueDelivery(queue, { volunteer_id: volunteerId, shelter_id: shelterId }, body)
+    discarded.current = false
+    sentId.current = queued.id
     setAsking(null)
     setSent({ queueId: queued.id, reply: null, saved: !online })
   }
@@ -189,14 +224,18 @@ export function Delivery({ ctx, shelterId }: { ctx: AppContext; shelterId: strin
             <p class="body-strong">{t('delivery.waiting_line', { item: body.item, person: waitingNames[w.id] ?? '' })}</p>
             <p class="body">{t(deliveryErrorKey(w.error ?? ''))}</p>
             {settles && liveness && online && <button type="button" class="button" onClick={() => void selfie(body, w.id)}>{t('delivery.selfie_now')}</button>}
-            {settles && (admin ? (
+            {settles && adminApprovalOffered(w) && (admin ? (
               <button type="button" class="button button-secondary" onClick={() => void approveByAdmin(db, queue, w.id, admin)}>
                 {t('delivery.admin_as', { name: admin.profile.name })}
               </button>
             ) : (
               <button type="button" class="button button-secondary" onClick={() => void adminLogin()}>{t('delivery.admin_login')}</button>
             ))}
-            <button type="button" class="button button-secondary" onClick={() => confirm(t('delivery.cancel_confirm')) && void queue.discard(w.id)}>{t('delivery.cancel')}</button>
+            <button type="button" class="button button-secondary" onClick={() => {
+              if (!confirm(t('delivery.cancel_confirm'))) return
+              if (w.id === sentId.current) discarded.current = true
+              void queue.discard(w.id)
+            }}>{t('delivery.cancel')}</button>
           </div>
         )
       })}
@@ -265,7 +304,7 @@ export function Delivery({ ctx, shelterId }: { ctx: AppContext; shelterId: strin
       )}
       <label class="field">
         {t('delivery.quantity')}
-        <input type="number" min={1} max={999} inputMode="numeric" value={quantity} onInput={(e) => setQuantity(e.currentTarget.value)} />
+        <input type="number" min={1} max={MAX_QUANTITY} inputMode="numeric" value={quantity} onInput={(e) => setQuantity(e.currentTarget.value)} />
       </label>
 
       {asking ? (

@@ -230,6 +230,7 @@ export function Household({ ctx, shelterId, householdId }: { ctx: AppContext; sh
             <p class="body">{t('card.code')}</p>
             <p class="code">{formatCardCode(code)}</p>
             <p class="caption">{t('card.hint')}</p>
+            <button type="button" class="button" onClick={() => navigate(`/shelter/${shelterId}/delivery?card=${code}`)}>{t('items.donations')}</button>
             {cancelling ? (
               <>
                 <p class="notice" role="alert">{t('card.cancel_confirm')}</p>

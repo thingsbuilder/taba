@@ -15,7 +15,7 @@ import type {
   PersonSummary,
   PersonView,
 } from './api-phase3'
-import type { DeliveryRequest, DeliveryResponse, DeliveryView, Items, PutItemsRequest, PutItemsResponse, ReviewRequest } from './api-phase5'
+import type { DeliveryRequest, DeliveryResponse, DeliveryStatus, DeliveryView, Items, PutItemsRequest, PutItemsResponse, ReviewRequest } from './api-phase5'
 import type {
   MatchDecisionRequest,
   MatchDecisionResponse,
@@ -191,8 +191,9 @@ export interface ProfileInput {
 
 /** The calls of spec 8.1. A network failure is `{ ok: false, status: 0, error: 'network' }`. */
 export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>) {
-  async function call<T>(method: string, path: string, opts: { secret?: string; body?: unknown } = {}): Promise<ApiResult<T>> {
+  async function call<T>(method: string, path: string, opts: { secret?: string; body?: unknown; key?: string } = {}): Promise<ApiResult<T>> {
     const headers: Record<string, string> = { 'X-Device-Id': await deviceId() }
+    if (opts.key) headers['Idempotency-Key'] = opts.key
     if (opts.body !== undefined) headers['Content-Type'] = 'application/json'
     if (opts.secret) headers.Authorization = `Bearer ${opts.secret}`
     let res: Response
@@ -302,10 +303,12 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
 
     // Phase 5 (spec 8.6). Deliveries go through the queue; these are the direct calls.
     putItems: (secret: string, shelterId: string, body: PutItemsRequest) => call<PutItemsResponse>('PUT', `/v1/shelters/${shelterId}/items`, { secret, body }),
-    postDelivery: (secret: string, shelterId: string, body: DeliveryRequest) =>
-      call<DeliveryResponse>('POST', `/v1/shelters/${shelterId}/deliveries`, { secret, body }),
-    listDeliveries: (secret: string, shelterId: string, status?: string) =>
-      call<{ deliveries: DeliveryView[] }>('GET', `/v1/shelters/${shelterId}/deliveries${status ? `?status=${status}` : ''}`, { secret }),
+    /** `key` is the `Idempotency-Key`: the queue sends its item id; the direct send after a selfie sends the delivery id. */
+    postDelivery: (secret: string, shelterId: string, body: DeliveryRequest, key?: string) =>
+      call<DeliveryResponse>('POST', `/v1/shelters/${shelterId}/deliveries`, { secret, body, key }),
+    /** `status` is required: the list is read by `(shelter, status)`. */
+    listDeliveries: (secret: string, shelterId: string, status: DeliveryStatus) =>
+      call<{ deliveries: DeliveryView[] }>('GET', `/v1/shelters/${shelterId}/deliveries?status=${status}`, { secret }),
     reviewDelivery: (secret: string, id: string, body: ReviewRequest) => call<Record<string, never>>('POST', `/v1/deliveries/${id}/review`, { secret, body }),
 
     // Alerts (spec 8.8)

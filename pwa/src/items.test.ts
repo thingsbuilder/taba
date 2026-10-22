@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { itemsErrorKey, itemsFromRows, newRow, rowsFromItems, validateRows } from './items'
+import { MAX_ITEMS, canAddRow, itemsErrorKey, itemsFromRows, newRow, rowsFromItems, validateRows } from './items'
 
 describe('items rows', () => {
   it('round-trips the map, with the period at 7 when absent', () => {
@@ -33,4 +33,23 @@ it('gives 403 and 409 their own texts', () => {
   expect(itemsErrorKey(403)).toBe('items.error_forbidden')
   expect(itemsErrorKey(409)).toBe('items.error_closed')
   expect(itemsErrorKey(500)).toBeNull()
+})
+
+describe('the limits of the API', () => {
+  const row = (name: string, over: Partial<ReturnType<typeof newRow>> = {}) => ({ ...newRow(), name, ...over })
+  it('refuses a name over 60 characters and takes one of exactly 60', () => {
+    expect(validateRows([row('x'.repeat(61))])).toBe('items.error_name_long')
+    expect(validateRows([row('x'.repeat(60))])).toBeNull()
+  })
+  it('refuses a period over 365 days and takes 365', () => {
+    expect(validateRows([row('A', { periodDays: '366' })])).toBe('items.error_period')
+    expect(validateRows([row('A', { periodDays: '365' })])).toBeNull()
+  })
+  it('takes 50 items and no more, and stops offering "add" at 50', () => {
+    const fifty = Array.from({ length: MAX_ITEMS }, (_, n) => row(`item${n}`))
+    expect(validateRows(fifty)).toBeNull()
+    expect(validateRows([...fifty, row('one more')])).toBe('items.error_too_many')
+    expect(canAddRow(fifty.slice(1))).toBe(true)
+    expect(canAddRow(fifty)).toBe(false)
+  })
 })

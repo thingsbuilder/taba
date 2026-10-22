@@ -43,12 +43,15 @@ export function buildDelivery(i: {
 export const enqueueDelivery = (queue: Pick<Queue, 'enqueue'>, who: { volunteer_id: string | null; shelter_id: string }, body: DeliveryBody) =>
   queue.enqueue({ method: 'POST', path: deliveryPath(who.shelter_id), body, ...who })
 
+/** The same most as the API takes. */
+export const MAX_QUANTITY = 1000
+
 export type DeliveryFormError = 'item_required' | 'invalid_quantity'
 
 export function validateDelivery(i: { item: string; quantity: string }): DeliveryFormError | null {
   if (i.item.trim() === '') return 'item_required'
   const n = Number(i.quantity)
-  return Number.isInteger(n) && n >= 1 ? null : 'invalid_quantity'
+  return Number.isInteger(n) && n >= 1 && n <= MAX_QUANTITY ? null : 'invalid_quantity'
 }
 
 // ---- errors ----
@@ -60,6 +63,40 @@ export const deliveryErrorKey = (code: string): string => (LOCAL_ERRORS.has(code
 
 /** The server asked for a selfie or an admin, or the selfie did not match: a selfie or an admin's approval can still settle the item. */
 export const WAITING_ERRORS = new Set(['liveness_required', 'admin_approval_required', 'revalidation_failed'])
+
+/** An admin's approval cannot settle a selfie of ANOTHER person: after `revalidation_failed` it is not offered. */
+export const adminApprovalOffered = (item: Pick<QueueItem, 'error'>): boolean => item.error !== 'revalidation_failed'
+
+/** What the screen shows of the delivery it just sent, from the queue item and the answer the queue recorded. */
+export type SendState =
+  | { kind: 'sending' }
+  | { kind: 'saved' }
+  | { kind: 'done'; reply: DeliveryResponse }
+  | { kind: 'waiting' }
+  | { kind: 'failed'; error: string }
+  | { kind: 'canceled' }
+
+export function sendState(i: { item: QueueItem | undefined; reply: DeliveryResponse | null; online: boolean; discarded: boolean }): SendState {
+  if (i.reply) return { kind: 'done', reply: i.reply }
+  if (i.item?.state === 'needs_action') return WAITING_ERRORS.has(i.item.error ?? '') ? { kind: 'waiting' } : { kind: 'failed', error: i.item.error ?? 'generic' }
+  if (i.item) return { kind: i.online ? 'sending' : 'saved' }
+  // Gone with no answer: it was canceled here, or the answer is about to be recorded.
+  return i.discarded ? { kind: 'canceled' } : { kind: 'sending' }
+}
+
+/** What the screen needs to come back to the card and the item after a selfie that did not settle it. */
+export async function restoreFromDraft(
+  deps: { db: Db; api: Api },
+  secret: string,
+  online: boolean,
+  draft: DeliveryDraft,
+  unnamed: string,
+): Promise<{ card: { code: string; members: CardMember[] }; personId: string; item: string; quantity: string } | null> {
+  const res = await resolveCard(deps.db, deps.api, secret, online, draft.request.card_code, unnamed)
+  if (!res.ok) return null
+  const r = draft.request
+  return { card: { code: r.card_code, members: res.members }, personId: r.person_id, item: r.item, quantity: String(r.quantity) }
+}
 
 /** Whether a selfie can settle a waiting item: the server says `admin_approval_only` for a person without biometrics. */
 export const selfieAllowed = (item: Pick<QueueItem, 'error' | 'detail'>): boolean =>
@@ -103,7 +140,7 @@ export async function sendWithCapture(
   draft: DeliveryDraft,
   sleep?: (ms: number) => Promise<void>,
 ): Promise<CaptureOutcome> {
-  const res = await pollCapture(() => deps.api.postDelivery(secret, shelterId, { ...draft.request, capture_id: captureId }), sleep)
+  const res = await pollCapture(() => deps.api.postDelivery(secret, shelterId, { ...draft.request, capture_id: captureId }, draft.request.id), sleep)
   await finishCapture(deps.db, captureId)
   if (!res.ok) {
     if (draft.queue_id && res.error === 'revalidation_failed') {

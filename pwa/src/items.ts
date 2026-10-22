@@ -1,6 +1,10 @@
 import type { ItemScope, ItemSpec, Items } from './api-phase5'
 
 export const DEFAULT_PERIOD_DAYS = 7
+/** The limits the API enforces (`PUT /v1/shelters/{id}/items`). */
+export const MAX_ITEMS = 50
+export const MAX_NAME_CHARS = 60
+export const MAX_PERIOD_DAYS = 365
 
 /** One row of the items screen. `periodDays` stays a string so the field can be empty while typing. */
 export interface ItemRow {
@@ -23,14 +27,16 @@ export const rowsFromItems = (items: Items): ItemRow[] =>
   }))
 
 const periodOf = (row: ItemRow): number => Number(row.periodDays)
-const validPeriod = (row: ItemRow): boolean => row.oncePerEvent || (row.periodDays.trim() !== '' && Number.isInteger(periodOf(row)) && periodOf(row) >= 1)
+const validPeriod = (row: ItemRow): boolean => row.oncePerEvent || (row.periodDays.trim() !== '' && Number.isInteger(periodOf(row)) && periodOf(row) >= 1 && periodOf(row) <= MAX_PERIOD_DAYS)
 
 /** i18n key of the first problem, or null. Names are unique ignoring case and surrounding spaces. */
 export function validateRows(rows: ItemRow[]): string | null {
   const seen = new Set<string>()
+  if (rows.length > MAX_ITEMS) return 'items.error_too_many'
   for (const row of rows) {
     const name = row.name.trim().toLowerCase()
     if (name === '') return 'items.error_name_empty'
+    if ([...row.name.trim()].length > MAX_NAME_CHARS) return 'items.error_name_long'
     if (seen.has(name)) return 'items.error_name_duplicate'
     seen.add(name)
     if (!validPeriod(row)) return 'items.error_period'
@@ -47,6 +53,9 @@ export function itemsFromRows(rows: ItemRow[]): Items {
   }
   return items
 }
+
+/** Whether another row can be added: the API takes at most `MAX_ITEMS` items. */
+export const canAddRow = (rows: ItemRow[]): boolean => rows.length < MAX_ITEMS
 
 /** `403` and `409` get their own texts; the rest follow the shared error codes. */
 export function itemsErrorKey(status: number): string | null {

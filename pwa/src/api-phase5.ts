@@ -52,9 +52,9 @@ export interface LivenessRequiredDetail {
 export interface DeliveryReason {
   kind: ReasonKind
   previous_delivery_id?: string
-  /** For "sent to review: another delivery on <date>". */
+  /** For "sent to review: another delivery on <date>". Left out for an unconfirmed requester unless the other delivery is its own (3.5.3 item 6). */
   previous_delivered_at?: string
-  /** Left out when the shelter of the other delivery is not confirmed (4.7). */
+  /** Only when the requester is confirmed and so is the other shelter, or the other delivery is the requester's own (4.7). */
   previous_shelter_name?: string
 }
 

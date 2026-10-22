@@ -3,7 +3,7 @@ import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
 import { useOnline } from '../hooks'
 import { t } from '../i18n'
-import { type ItemRow, itemsErrorKey, itemsFromRows, newRow, rowsFromItems, validateRows } from '../items'
+import { type ItemRow, MAX_NAME_CHARS, MAX_PERIOD_DAYS, canAddRow, itemsErrorKey, itemsFromRows, newRow, rowsFromItems, validateRows } from '../items'
 import { navigate } from '../nav'
 import { roleIn } from '../sessions'
 import { BackLink } from './BackLink'
@@ -56,7 +56,7 @@ export function Items({ ctx, shelterId }: { ctx: AppContext; shelterId: string }
         <section class="card" key={i}>
           <label class="field">
             {t('items.name')}
-            <input type="text" maxLength={80} value={row.name} onInput={(e) => edit(i, { name: e.currentTarget.value })} />
+            <input type="text" maxLength={MAX_NAME_CHARS} value={row.name} onInput={(e) => edit(i, { name: e.currentTarget.value })} />
           </label>
           <label class="field">
             {t('items.scope')}
@@ -72,7 +72,7 @@ export function Items({ ctx, shelterId }: { ctx: AppContext; shelterId: string }
           {!row.oncePerEvent && (
             <label class="field">
               {t('items.period_days')}
-              <input type="number" min={1} inputMode="numeric" value={row.periodDays} onInput={(e) => edit(i, { periodDays: e.currentTarget.value })} />
+              <input type="number" min={1} max={MAX_PERIOD_DAYS} inputMode="numeric" value={row.periodDays} onInput={(e) => edit(i, { periodDays: e.currentTarget.value })} />
             </label>
           )}
           <label class="check">
@@ -82,7 +82,8 @@ export function Items({ ctx, shelterId }: { ctx: AppContext; shelterId: string }
           <button type="button" class="button button-secondary" onClick={() => { setSaved(false); setRows((rows ?? []).filter((_, j) => j !== i)) }}>{t('items.remove')}</button>
         </section>
       ))}
-      {rows && <button type="button" class="button button-secondary" onClick={() => setRows([...rows, newRow()])}>{t('items.add')}</button>}
+      {rows && <button type="button" class="button button-secondary" disabled={!canAddRow(rows)} onClick={() => setRows([...rows, newRow()])}>{t('items.add')}</button>}
+      {rows && !canAddRow(rows) && <p class="caption" role="status">{t('items.error_too_many')}</p>}
       {error && <p class="notice notice-error" role="alert">{error}</p>}
       {saved && <p class="notice" role="status">{t('items.saved')}</p>}
       {rows && <button type="button" class="button" disabled={!online} onClick={() => void save()}>{t('shelter.save')}</button>}

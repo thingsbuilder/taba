@@ -5,7 +5,7 @@ import { errorKey } from '../app-context'
 import { useOnline } from '../hooks'
 import { t } from '../i18n'
 import { navigate } from '../nav'
-import { reasonText, reviewErrorKey } from '../review'
+import { reasonText, reviewErrorKey, reviewMeta } from '../review'
 import { roleIn } from '../sessions'
 import { BackLink } from './BackLink'
 
@@ -51,9 +51,8 @@ export function Review({ ctx, shelterId }: { ctx: AppContext; shelterId: string 
         <section class="card notice-warning" key={d.id}>
           <p class="body-strong">{d.item} × {d.quantity}</p>
           <p class="body">{d.person_name ?? t('review.no_person')}</p>
-          <p class="caption">
-            {[d.delivered_by_name, new Date(d.delivered_at).toLocaleString()].filter(Boolean).join(' · ')}
-          </p>
+          <p class="caption">{reviewMeta(d, t('review.approved_by'))}</p>
+          {d.review_note && <p class="body">{t('review.note_of', { note: d.review_note })}</p>}
           {d.reasons.map((r, i) => {
             const text = reasonText(r)
             return <p class="body" key={i}>{t(text.key, text.params)}</p>
