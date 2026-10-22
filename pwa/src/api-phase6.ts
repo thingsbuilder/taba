@@ -12,6 +12,9 @@ export interface ShelterToConfirm {
   flagged: boolean
   city: string | null
   state: string | null
+  lat: number
+  lon: number
+  created_by_name: string | null
 }
 
 /** One event of `GET /v1/dashboard/events`. */
@@ -68,6 +71,8 @@ export interface EventDashboard {
   id: string
   name: string
   status: EventStatus
+  /** The fixed notice of spec 3.10: it counts people in shelters, not those displaced elsewhere. */
+  notice: string
   totals: Counts
   shelters: ShelterRow[]
   movement: { last_24h: number; last_7d: number }
