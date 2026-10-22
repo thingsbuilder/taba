@@ -1,7 +1,7 @@
 export type RouteName =
   | 'home' | 'login' | 'return' | 'switch_operator' | 'profile'
   | 'shelter_new' | 'shelter' | 'shelter_members' | 'invite' | 'endorse' | 'inbox'
-  | 'shelter_checkin' | 'shelter_people' | 'shelter_household' | 'shelter_exit' | 'shelter_delivery' | 'shelter_items' | 'shelter_review' | 'person' | 'privacy' | 'diagnostics'
+  | 'shelter_checkin' | 'shelter_people' | 'shelter_household' | 'shelter_exit' | 'shelter_delivery' | 'shelter_items' | 'shelter_review' | 'dashboard' | 'person' | 'privacy' | 'diagnostics'
   | 'rescue' | 'search' | 'roles' | 'match' | 'family'
   | 'not_found'
 
@@ -27,6 +27,7 @@ const SIMPLE: Record<string, RouteName> = {
   '/rescue': 'rescue',
   '/search': 'search',
   '/roles': 'roles',
+  '/dashboard': 'dashboard',
   '/diagnostics': 'diagnostics',
 }
 

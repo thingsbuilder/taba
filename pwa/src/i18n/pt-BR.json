@@ -838,5 +838,9 @@
   "review.error_decided": "Esta entrega já foi decidida.",
   "review.error_forbidden": "Só o admin do abrigo revisa entregas.",
   "review.error_not_found": "Entrega não encontrada.",
+  "__dashboard__": "",
+  "dashboard.title": "Painel",
+  "__export__": "",
+  "export.title": "Exportar CSV",
   "__end__": ""
 }

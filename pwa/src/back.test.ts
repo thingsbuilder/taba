@@ -16,7 +16,7 @@ it('goes from the diagnostics screen back to the profile', () => {
 it('goes from the match check back to the inbox, and from the other phase 4 screens to the home screen', () => {
   expect(backTarget(resolveRoute('/matches/m1'))).toBe('/inbox')
   expect(backTarget(resolveRoute('/roles'))).toBe('/profile')
-  for (const path of ['/rescue', '/search']) expect(backTarget(resolveRoute(path)), path).toBe('/')
+  for (const path of ['/rescue', '/search', '/dashboard']) expect(backTarget(resolveRoute(path)), path).toBe('/')
 })
 
 it('goes from the phase 5 screens back to the shelter', () => {

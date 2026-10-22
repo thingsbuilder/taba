@@ -838,5 +838,9 @@
   "review.error_decided": "This delivery was already decided.",
   "review.error_forbidden": "Only the shelter admin reviews deliveries.",
   "review.error_not_found": "Delivery not found.",
+  "__dashboard__": "",
+  "dashboard.title": "Dashboard",
+  "__export__": "",
+  "export.title": "Export CSV",
   "__end__": ""
 }
