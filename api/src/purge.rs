@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use firestore::jiff::tz::TimeZone;
 use firestore::{FirestoreDb, FirestoreInstant, FirestoreTimestamp};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -596,20 +597,23 @@ impl<'a> Pass<'a> {
             (rescues::COLLECTION, "received_at", "rescues_without_event"),
             (people::COLLECTION, "updated_at", "people_without_event"),
         ] {
-            // ponytail: reads every old document of the collection (two fields) once a day in a
-            // dry run; add a null-event index if that shows in the bill.
-            let old: Vec<WithoutEvent> = self
+            // Streamed, so memory stays flat; it reads each old document (two fields) once a day,
+            // and only in a dry run.
+            let mut old = self
                 .db()
                 .fluent()
                 .select()
                 .fields(["event_id", "event_ids"])
                 .from(collection)
                 .filter(|q| q.for_all([q.field(age_field).less_than(FirestoreTimestamp(cutoff))]))
-                .obj()
-                .query()
+                .obj::<WithoutEvent>()
+                .stream_query_with_errors()
                 .await
                 .map_err(fs_error)?;
-            let n = old.iter().filter(|d| d.has_no_event()).count() as u32;
+            let mut n = 0u32;
+            while let Some(doc) = old.next().await {
+                n += u32::from(doc.map_err(fs_error)?.has_no_event());
+            }
             if n > 0 {
                 bump(&mut counts, label, n);
             }
@@ -1100,8 +1104,9 @@ impl<'a> Pass<'a> {
     async fn purge_deliveries(&mut self) -> Result<(), ApiError> {
         let mut candidates = events_with(self.db(), EventStatus::Purged).await?;
         candidates.extend(events_with(self.db(), EventStatus::Closed).await?);
-        // ponytail: one small query per such event each hour, for ever; an event with no
-        // deliveries left could be marked so it drops out.
+        // ponytail: one empty query (one read) per purged or closed event each hour, for ever:
+        // 24 reads a day per event, so about a thousand events use the free daily quota of
+        // reads. Past that, mark the event once its deliveries are gone so it drops out.
         for event in candidates {
             if self.exhausted() {
                 return Ok(());

@@ -252,12 +252,19 @@ async fn person_ids_of(
                 headers.insert("idempotency-key", value);
             }
         }
-        let asked =
-            idempotency::photo_person_id(state, &headers, &owner.volunteer_id, ROUTE, async {
+        let digest = idempotency::digest_of(&[photo]);
+        let asked = idempotency::photo_person_id_of(
+            state,
+            &headers,
+            &owner.volunteer_id,
+            ROUTE,
+            Some(&digest),
+            async {
                 let token = state.unico.token_from_image(photo).await?;
                 Ok(state.person_id_for_token(&token))
-            })
-            .await;
+            },
+        )
+        .await;
         match asked {
             Ok(person_id) => found.push(person_id),
             Err(error) if is_unusable_photo(&error) => {}

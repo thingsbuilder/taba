@@ -48,8 +48,6 @@ pub struct AppState {
     pub shelter_lock: Arc<tokio::sync::Mutex<()>>,
     /// When each event's `last_activity_at` was last written (spec 4.3.3).
     pub event_activity: Arc<Mutex<HashMap<String, Instant>>>,
-    /// One lock per `Idempotency-Key` being served, so two copies of a request run one after the other.
-    pub idempotency_locks: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl FromRef<AppState> for FirestoreDb {
@@ -98,7 +96,6 @@ impl AppState {
             domain: domain.into(),
             shelter_lock: Arc::default(),
             event_activity: Arc::default(),
-            idempotency_locks: Arc::default(),
         })
     }
 

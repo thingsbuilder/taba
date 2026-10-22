@@ -150,8 +150,9 @@ pub struct Unico {
     /// degraded mode (unit tests of the retry rules).
     status_db: Option<FirestoreDb>,
     /// `Unavailable` answers since the last one that was not.
-    // ponytail: in-process counter; fine with the single e2-micro instance. With more than one,
-    // keep the count in `system/status`.
+    // ponytail: in-process counter, reset by a restart. With N instances each counts alone, so
+    // the degraded mode (shared in `system/status`) is entered after up to N times the
+    // threshold of failures; keep the count in `system/status` before running more than one.
     failures: AtomicU32,
 }
 

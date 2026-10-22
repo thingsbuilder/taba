@@ -271,9 +271,10 @@ pub async fn get_search_link(
 // ---- POST /v1/search-links/{code}/submit ----
 
 /// A sliding window per key, in this process's memory.
-// ponytail: the counters live in memory (single e2-micro instance) and reset on restart; the
-// per-link attempts in Firestore still cap the damage. With more than one instance, count in
-// Firestore with a TTL document per key and hour.
+// ponytail: the counters live in memory, at most 10 000 keys (past it the idle ones are dropped),
+// and reset on restart. With N instances the limit is N times higher; the per-link attempts in
+// Firestore still cap the damage. Count in Firestore with a TTL document per key and hour before
+// running more than one instance.
 fn allow(key: &str, max: usize) -> bool {
     static HITS: OnceLock<Mutex<HashMap<String, Vec<Instant>>>> = OnceLock::new();
     let mut hits = HITS
