@@ -7,6 +7,7 @@ import { useConflictNames } from '../pending-hook'
 import { pendingViews } from '../pending'
 import { openMatches } from '../match'
 import { canSearch } from '../search'
+import { canSeeDashboard } from '../dashboard'
 import { InviteCodeField } from './InviteCodeField'
 import { signOut } from './signout'
 import type { QueueItem } from '../db'
@@ -16,6 +17,7 @@ export function Home({ ctx }: { ctx: AppContext }) {
   const online = useOnline()
   const [alerts, setAlerts] = useState<number | null>(null)
   const [matches, setMatches] = useState(0)
+  const [toConfirm, setToConfirm] = useState(0)
   const [items, setItems] = useState<QueueItem[]>([])
   const conflicts = useConflictNames(ctx.db, items)
   useEffect(() => {
@@ -28,6 +30,10 @@ export function Home({ ctx }: { ctx: AppContext }) {
     void ctx.api.listAlerts(active.secret).then((res) => setAlerts(res.ok ? res.data.alerts.length : null))
     // Open matches wait for someone to check them; a volunteer who attends no queue gets none.
     void ctx.api.listMatches(active.secret).then((res) => setMatches(res.ok ? openMatches(res.data.matches).length : 0))
+    if (canSeeDashboard(active.global_roles)) {
+      void ctx.api.getDashboardEvents(active.secret).then((res) =>
+        setToConfirm(res.ok ? res.data.events.reduce((n, e) => n + e.unconfirmed_shelters.length, 0) : 0))
+    }
   }, [online, active?.volunteer_id])
 
   if (!active) {
@@ -62,6 +68,14 @@ export function Home({ ctx }: { ctx: AppContext }) {
       </button>
       <button type="button" class="button button-secondary" onClick={() => navigate('/rescue')}>{t('rescue.title')}</button>
       {canSearch(active) && <button type="button" class="button button-secondary" onClick={() => navigate('/search')}>{t('search.title')}</button>}
+      {canSeeDashboard(active.global_roles) && (
+        <>
+          <button type="button" class="button button-secondary" onClick={() => navigate('/dashboard')}>{t('dashboard.title')}</button>
+          {toConfirm > 0 && (
+            <button type="button" class="button button-secondary" onClick={() => navigate('/dashboard')}>{t('dashboard.to_confirm_count', { count: toConfirm })}</button>
+          )}
+        </>
+      )}
       {pending.length > 0 && (
         <section class="card">
           <h2 class="subtitle">{t('pending.title')}</h2>
