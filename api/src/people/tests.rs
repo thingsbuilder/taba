@@ -1911,26 +1911,16 @@ async fn replaying_a_checkin_cannot_lower_or_change_the_child_state() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    for (data, refused) in [
-        (json!({ "child_status": "unaccompanied" }), true),
-        (json!({ "is_child": false }), true),
+    // none of them is refused: the stay is recorded and the child state stays as protection left it
+    for data in [
+        json!({ "child_status": "unaccompanied" }),
+        json!({ "is_child": false }),
         // the same state, with an edit that is not about the child
-        (
-            json!({ "child_status": "with_guardian", "name": "Ana" }),
-            false,
-        ),
+        json!({ "child_status": "with_guardian", "name": "Ana" }),
     ] {
         let replay = child_checkin(&id, data.clone());
         let (status, body) = call(&w.app, &w.volunteer, "POST", &path, Some(replay)).await;
-        if refused {
-            assert_eq!(
-                (status, body["error"].as_str()),
-                (StatusCode::FORBIDDEN, Some("protection_role_required")),
-                "{data}"
-            );
-        } else {
-            assert_eq!(status, StatusCode::CREATED, "{data}: {body}");
-        }
+        assert_eq!(status, StatusCode::CREATED, "{data}: {body}");
         let person = stored(&w.app, &id).await;
         assert!(person.is_child, "{data}");
         assert_eq!(

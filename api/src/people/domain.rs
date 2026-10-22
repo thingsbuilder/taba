@@ -271,8 +271,8 @@ pub(super) struct Registered {
 }
 
 /// The person after the check-in: created, or raised, edited and given a stay. A person who
-/// already exists keeps their child state unless the volunteer may change it, so repeating
-/// a check-in changes and raises nothing.
+/// already exists keeps their child state unless the volunteer may change it: what the
+/// check-in says against it is ignored, so repeating a check-in changes and raises nothing.
 pub(super) fn register(
     existing: Option<PersonDoc>,
     c: &Checkin,
@@ -283,7 +283,20 @@ pub(super) fn register(
         existing.unwrap_or_else(|| new_person(&c.person_id, c.level, c.legal_basis, now));
     person.level = person.level.raised_to(c.level);
     person.biometrics_declined |= c.declined;
-    let child_alert = c.data.apply(&mut person, is_new || c.may_alter_child)?;
+    // A repeated check-in (offline replay, another shelter) must still record the stay: what it
+    // says about the child that this volunteer may not change is ignored, not refused.
+    let mut data = c.data.clone();
+    if !is_new && !c.may_alter_child {
+        let ask = ChildChange {
+            is_child: data.is_child,
+            child_status: data.child_status,
+        };
+        if children::change_child_state(&mut person.clone(), ask, false).is_err() {
+            data.is_child = None;
+            data.child_status = None;
+        }
+    }
+    let child_alert = data.apply(&mut person, is_new || c.may_alter_child)?;
     if let Some(sealed) = &c.thumbnail {
         if person.name.is_none() && person.wristband.is_none() {
             person.thumbnail_encrypted = Some(sealed.clone());
