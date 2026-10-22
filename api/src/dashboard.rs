@@ -46,6 +46,9 @@ pub const NOTICE: &str = "Conta desabrigados (pessoas em abrigo). Desalojados (e
 // ponytail: per-process cache on a single instance, no lock against two builds at once; swap for
 // a shared cache if the API ever runs on more than one instance.
 const CACHE_TTL: Duration = Duration::from_secs(30);
+/// The list is the screen the Civil Defense leaves open: a few counts per event, so it is rebuilt
+/// less often than the detail.
+const LIST_TTL: Duration = Duration::from_secs(300);
 /// The exits cost one read per person of the event, so they are rebuilt less often than the counts.
 const MOVES_TTL: Duration = Duration::from_secs(600);
 /// People read to build the exits of one event.
@@ -250,6 +253,12 @@ static LIST: TtlCache<Value> = TtlCache::new();
 static DETAIL: TtlCache<EventDashboard> = TtlCache::new();
 static MOVES: TtlCache<Moves> = TtlCache::new();
 
+// Test only: the scans of people (`pets_of`, `scan_moves`) this thread has started.
+#[cfg(test)]
+thread_local! {
+    static SCANS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 // ---- counting ----
 
 /// One cut of the people in a shelter.
@@ -394,6 +403,8 @@ async fn run_cuts(
 }
 
 async fn pets_of(db: &FirestoreDb, shelter_id: &str) -> Result<u32, ApiError> {
+    #[cfg(test)]
+    SCANS.with(|n| n.set(n.get() + 1));
     #[derive(Deserialize)]
     struct Pets {
         #[serde(default)]
@@ -566,6 +577,8 @@ fn current_year() -> i64 {
 /// The exits of the event: stays closed by a check-in elsewhere in the last 24 h and 7 days, and
 /// the other closed stays by `exit_destination`.
 async fn scan_moves(db: &FirestoreDb, event_id: &str) -> Result<Moves, ApiError> {
+    #[cfg(test)]
+    SCANS.with(|n| n.set(n.get() + 1));
     #[derive(Deserialize)]
     struct Stays {
         #[serde(default)]
@@ -805,8 +818,8 @@ fn daily_csv_body(dashboard: &EventDashboard, date: &str) -> String {
             "children_unaccompanied",
             "indigenous",
             "migrant",
-            "households",
-            "pets",
+            "households_created_here",
+            "pets_in_households_created_here",
         ]
         .map(String::from),
     );
@@ -891,7 +904,7 @@ pub async fn list_events(
 ) -> Result<Json<Value>, ApiError> {
     require_reader(&volunteer)?;
     let list = LIST
-        .get_or(state.db.get_database_path(), CACHE_TTL, || {
+        .get_or(state.db.get_database_path(), LIST_TTL, || {
             build_list(&state.db)
         })
         .await?;
@@ -1579,7 +1592,7 @@ mod tests {
 unique_people,verified,assisted,no_biometrics,age_0_11,age_12_17,age_18_59,age_60_plus,age_unknown,\
 pregnant,lactating,disability_mobility,disability_visual,disability_hearing,disability_intellectual,\
 disability_psychosocial,disability_other,children_separated,children_unaccompanied,indigenous,migrant,\
-households,pets"
+households_created_here,pets_in_households_created_here"
         );
         let width = lines[0].split(',').count();
         let a: Vec<&str> = lines
@@ -1675,6 +1688,20 @@ households,pets"
         DETAIL.clear();
         let (_, third) = get_json(&w, &w.civil_defense, &path).await;
         assert_eq!(third["totals"]["unique_people"], 12);
+    }
+
+    #[tokio::test]
+    async fn the_list_reads_counts_only_and_the_detail_scans_the_people() {
+        let w = world().await;
+        let scans = || SCANS.with(|n| n.get());
+        LIST.clear();
+        let before = scans();
+        let (status, _) = get_json(&w, &w.civil_defense, "/v1/dashboard/events").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(scans(), before, "the list scanned people");
+        let path = format!("/v1/dashboard/events/{}", w.event);
+        get_json(&w, &w.civil_defense, &path).await;
+        assert!(scans() > before, "the detail scans the people");
     }
 
     #[tokio::test]

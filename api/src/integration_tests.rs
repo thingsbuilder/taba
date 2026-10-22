@@ -2640,3 +2640,73 @@ async fn the_discard_deletes_what_the_event_gathered_only_with_the_key_on_and_ps
     assert_eq!(purged.status, crate::events::EventStatus::Purged);
     assert!(purged.purged_at.is_some() && purged.stats.is_some());
 }
+
+async fn alert_kinds(app: &TestApp, who: &Actor) -> Vec<String> {
+    let (_, body) = call(app, who, "GET", "/v1/alerts", None).await;
+    body["alerts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["kind"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_rescue_feeds_the_anomalies_once_and_a_replay_does_not_count() {
+    let mut s = scene().await;
+    std::sync::Arc::make_mut(&mut s.app.state.config).anomaly_rescues_per_10min = 2;
+    let validator = actor_with(&s.app, "Validator", GlobalRole::Validator).await;
+    // The tracker of the anomalies is per process and keyed by volunteer: a volunteer of this test alone.
+    let rescuer = s
+        .app
+        .join(
+            &s.app.invite(&s.admin, &s.shelter, "qr", "volunteer").await,
+            &format!("Rescuer-{}", new_id()),
+        )
+        .await;
+    let (lat, lon) = north_of_origin(200_000.0);
+    let rescue = |id: &str| json!({ "id": id, "photo_base64": photo(), "lat": lat, "lon": lon, "accuracy": 12.0, "captured_at": store::now().to_string() });
+    let first = new_id();
+    tokens(&s.app, &["tok-anom-1", "tok-anom-2", "tok-anom-3"]);
+    for _ in 0..3 {
+        let (status, body) = call(
+            &s.app,
+            &rescuer,
+            "POST",
+            "/v1/rescues",
+            Some(rescue(&first)),
+        )
+        .await;
+        assert!(
+            status == StatusCode::CREATED || status == StatusCode::OK,
+            "{body}"
+        );
+    }
+    let (status, body) = call(
+        &s.app,
+        &rescuer,
+        "POST",
+        "/v1/rescues",
+        Some(rescue(&new_id())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    // Two rescues made, three sent: the replays did not count toward the limit of two.
+    let kinds = alert_kinds(&s.app, &validator).await;
+    assert!(kinds.contains(&"out_of_area".to_string()), "{kinds:?}");
+    assert!(!kinds.contains(&"anomaly_volume".to_string()), "{kinds:?}");
+    let (status, body) = call(
+        &s.app,
+        &rescuer,
+        "POST",
+        "/v1/rescues",
+        Some(rescue(&new_id())),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        alert_kinds(&s.app, &validator)
+            .await
+            .contains(&"anomaly_volume".to_string())
+    );
+}

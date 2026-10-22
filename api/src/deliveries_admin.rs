@@ -204,6 +204,10 @@ async fn volunteer_name(
     if let Some(name) = cache.get(id) {
         return Ok(name.clone());
     }
+    // A pseudonymized delivery has no volunteer.
+    if id.is_empty() {
+        return Ok(None);
+    }
     let doc: Option<VolunteerDoc> = store::get(db, volunteers::COLLECTION, id).await?;
     let name = doc.map(|d| d.name);
     cache.insert(id.to_string(), name.clone());

@@ -117,12 +117,13 @@ const WRITE_AUDIT: &[(&str, &str, &str)] = &[
 /// or to the export of a shelter) and the action each records.
 const READ_AUDIT: &[(&str, &str, &str)] = &[
     ("GET", "/v1/shelters/{id}/export.csv", "export.shelter"),
+    ("GET", "/v1/matches", "match.list"),
     ("GET", "/v1/matches/{id}", "match.view"),
     ("GET", "/v1/matches/{id}/thumbnail", "thumbnail.view"),
     ("GET", "/v1/people/{person_id}/thumbnail", "thumbnail.view"),
 ];
 
-/// The source of every module, tests aside.
+/// The source of every module, test modules left out.
 fn sources() -> Vec<(String, String)> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     std::fs::read_dir(dir)
@@ -132,7 +133,9 @@ fn sources() -> Vec<(String, String)> {
         .filter(|p| !p.to_string_lossy().ends_with("conformance_tests.rs"))
         .map(|p| {
             let text = std::fs::read_to_string(&p).unwrap();
-            (p.file_name().unwrap().to_string_lossy().into(), text)
+            // Test modules close each file: the action has to be in the code that runs.
+            let production = text.split("#[cfg(test)]\nmod ").next().unwrap().to_string();
+            (p.file_name().unwrap().to_string_lossy().into(), production)
         })
         .collect()
 }
@@ -199,9 +202,12 @@ fn every_audited_read_is_a_route_and_is_written_by_some_module() {
 fn every_audit_action_of_the_table_is_written_by_some_module() {
     let sources = sources();
     for (_, path, action) in WRITE_AUDIT {
-        // `role.grant` and `role.revoke` are built as `role.{verb}.{role}`.
+        // `role.grant` and `role.revoke` are built as `role.{verb}.{role}`, `delivery.create` as
+        // `delivery.{kind}{offline}{clamped}`.
         let literal = if action.starts_with("role.") {
             "role.{verb}".to_string()
+        } else if *action == "delivery.create" {
+            "\"delivery.{}{}{}\"".to_string()
         } else {
             format!("\"{action}\"")
         };
@@ -217,7 +223,14 @@ fn every_audit_action_of_the_table_is_written_by_some_module() {
 #[test]
 fn no_route_of_spec_16_is_registered() {
     for (method, path) in registered_routes() {
-        for banned in ["merge", "remote", "safe", "photo", "shelters-to-endorse"] {
+        for banned in [
+            "merge",
+            "remote",
+            "safe",
+            "photo",
+            "shelters-to-endorse",
+            "events/nearby",
+        ] {
             assert!(
                 !path.contains(banned),
                 "{method} {path}: spec 16 is built after the pilot"
@@ -254,7 +267,13 @@ async fn the_routes_of_spec_16_answer_404() {
 #[test]
 fn no_collection_of_spec_16_is_written() {
     for (file, text) in sources() {
-        for banned in ["\"merges\"", "\"safe_checks\"", "\"safe_check\""] {
+        for banned in [
+            "\"merges\"",
+            "\"safe_checks\"",
+            "\"safe_check\"",
+            "\"photos\"",
+            "declared_event_ids",
+        ] {
             assert!(!text.contains(banned), "{file} mentions {banned}");
         }
     }
@@ -270,6 +289,7 @@ const TOKENS: &[&str] = &[
     "RAWTOKEN-P3",
     "RAWTOKEN-P5",
     "RAWTOKEN-LATE",
+    "RAWTOKEN-P6",
     // The tokens `TestApp::actor` and `join` give the volunteers of the tour.
     "tok-Admin",
     "tok-Vol",
@@ -431,8 +451,11 @@ async fn actions_with_basis(app: &TestApp) -> Vec<(String, Option<String>)> {
 
 #[tokio::test]
 async fn the_tour_audits_every_write_and_leaves_no_token_or_photo_anywhere() {
+    let mut app = TestApp::new().await;
+    // No delivery is drawn for the Unico: the review of the tour is the duplicate one.
+    std::sync::Arc::make_mut(&mut app.state.config).delivery_sample_rate = 0.0;
     let t = Tour {
-        app: TestApp::new().await,
+        app,
         bodies: Mutex::new(vec![]),
     };
     let app = &t.app;
@@ -601,6 +624,55 @@ async fn the_tour_audits_every_write_and_leaves_no_token_or_photo_anywhere() {
         created,
     )
     .await;
+    // Items, two deliveries of the same item (the second goes to review) and the admin's decision.
+    t.call(
+        &admin,
+        "PUT",
+        &format!("/v1/shelters/{shelter}/items"),
+        Some(
+            json!({ "items": { "kit": { "scope": "per_household", "period_days": 7,
+            "once_per_event": false, "high_value": false } } }),
+        ),
+        ok,
+    )
+    .await;
+    let deliver = |id: String| {
+        json!({ "id": id, "card_code": "ABCD2345", "person_id": p1, "item": "kit", "quantity": 1,
+            "delivered_at": store::now().to_string() })
+    };
+    t.call(
+        &vol,
+        "POST",
+        &format!("/v1/shelters/{shelter}/deliveries"),
+        Some(deliver(new_id())),
+        created,
+    )
+    .await;
+    let second_delivery = t
+        .call(
+            &vol,
+            "POST",
+            &format!("/v1/shelters/{shelter}/deliveries"),
+            Some(deliver(new_id())),
+            created,
+        )
+        .await;
+    assert_eq!(
+        second_delivery["status"],
+        json!("in_review"),
+        "{second_delivery}"
+    );
+    t.call(
+        &admin,
+        "POST",
+        &format!(
+            "/v1/deliveries/{}/review",
+            second_delivery["delivery_id"].as_str().unwrap()
+        ),
+        Some(json!({ "decision": "reviewed_ok", "note": "familia grande" })),
+        ok,
+    )
+    .await;
     t.call(
         &vol,
         "POST",
@@ -729,6 +801,147 @@ async fn the_tour_audits_every_write_and_leaves_no_token_or_photo_anywhere() {
     )
     .await;
 
+    // A child with a verified guardian, late biometrics, an exit and an edited rescue.
+    let child = t
+        .checkin(
+            &vol,
+            &shelter,
+            json!({ "no_biometrics": true, "legal_basis": "child_protection",
+                "data": { "name": "Menina", "is_child": true, "child_status": "with_guardian" } }),
+        )
+        .await;
+    // A guardian is a person verified by liveness, which only the SDK gives: the document is put.
+    let guardian = new_id();
+    let mut guardian_doc =
+        crate::exits::fixtures::person(crate::people::Level::Verified, Some(&shelter));
+    guardian_doc.event_ids = vec![event_id.clone()];
+    store::replace(&app.state.db, "people", &guardian, &guardian_doc)
+        .await
+        .unwrap();
+    t.call(
+        &vol,
+        "POST",
+        &format!("/v1/people/{child}/guardians"),
+        Some(json!({ "guardian_id": guardian, "link": "declared" })),
+        ok,
+    )
+    .await;
+    let p6 = t
+        .checkin(&vol, &shelter, json!({ "no_biometrics": true }))
+        .await;
+    let capture = t
+        .call(
+            &vol,
+            "POST",
+            "/v1/captures",
+            Some(json!({ "purpose": "biometrics", "expected_person_id": p6 })),
+            created,
+        )
+        .await;
+    let capture_id = capture["capture_id"].as_str().unwrap();
+    let stored: crate::auth::CaptureDoc = store::get(&app.state.db, "captures", capture_id)
+        .await
+        .unwrap()
+        .unwrap();
+    app.unico
+        .finish_with_token(&stored.process_id, "RAWTOKEN-P6");
+    t.call(
+        &vol,
+        "PUT",
+        &format!("/v1/people/{p6}/biometrics"),
+        Some(json!({ "capture_id": capture_id })),
+        ok,
+    )
+    .await;
+    let leaving = t
+        .checkin(&vol, &shelter, json!({ "no_biometrics": true }))
+        .await;
+    t.call(
+        &vol,
+        "POST",
+        &format!("/v1/shelters/{shelter}/exits"),
+        Some(json!({ "person_id": leaving, "exit_destination": "own_home" })),
+        ok,
+    )
+    .await;
+    let rescue_id = new_id();
+    t.tokens(&["RAWTOKEN-P3"]);
+    t.call(
+        &vol,
+        "POST",
+        "/v1/rescues",
+        Some(
+            json!({ "id": rescue_id, "lat": ORIGIN.0, "lon": ORIGIN.1, "accuracy": 10.0,
+            "captured_at": store::now().to_string(),
+            "photo_base64": STANDARD.encode(FACE) }),
+        ),
+        created,
+    )
+    .await;
+    t.call(
+        &vol,
+        "PATCH",
+        &format!("/v1/rescues/{rescue_id}"),
+        Some(json!({ "landing_point": "Cais" })),
+        ok,
+    )
+    .await;
+
+    // An in-person endorsement of a new shelter, the Civil Defense revoking it, a ban and the export.
+    let newcomer = app.actor("Newcomer").await;
+    let new_shelter = app
+        .create_shelter(&newcomer, "Novo", north_of_origin(20_000.0))
+        .await;
+    let code = t
+        .call(
+            &newcomer,
+            "POST",
+            &format!("/v1/shelters/{new_shelter}/endorsements/in-person/code"),
+            Some(json!({ "lat": north_of_origin(20_000.0).0, "lon": ORIGIN.1, "accuracy": 10.0 })),
+            created,
+        )
+        .await;
+    t.call(
+        &admin,
+        "POST",
+        "/v1/endorsements/in-person",
+        Some(
+            json!({ "code": code["code"], "endorser_shelter_id": shelter,
+            "lat": north_of_origin(20_000.0).0, "lon": ORIGIN.1, "accuracy": 10.0 }),
+        ),
+        ok,
+    )
+    .await;
+    t.call(
+        &civil_defense,
+        "POST",
+        &format!("/v1/shelters/{new_shelter}/revoke"),
+        Some(json!({ "reason": "o local não existe" })),
+        ok,
+    )
+    .await;
+    t.call(
+        &civil_defense,
+        "POST",
+        &format!("/v1/volunteers/{}/ban", fourth.id),
+        Some(json!({ "reason": "fraude" })),
+        ok,
+    )
+    .await;
+    let (status, _, exported) = app
+        .request(
+            "GET",
+            &format!("/v1/shelters/{shelter}/export.csv"),
+            &[
+                ("authorization", format!("Bearer {}", admin.secret).as_str()),
+                ("x-device-id", admin.device.as_str()),
+            ],
+            None,
+        )
+        .await;
+    t.bodies.lock().unwrap().push(exported.to_string());
+    assert_eq!(status, ok, "{exported}");
+
     // The `taba unico resume` path.
     degraded::enter_limit(&app.state.db).await.unwrap();
     assert!(degraded::resume(&app.state.db).await.unwrap());
@@ -839,6 +1052,18 @@ async fn the_tour_audits_every_write_and_leaves_no_token_or_photo_anywhere() {
         ("role.grant.mediator", "public_policy"),
         ("role.revoke.mediator", "public_policy"),
         ("unico.resume", "public_policy"),
+        ("shelter.create", "fraud_prevention"),
+        ("shelter.revoke", "fraud_prevention"),
+        ("shelter.items", "fraud_prevention"),
+        ("endorsement.create", "fraud_prevention"),
+        ("volunteer.ban", "fraud_prevention"),
+        ("delivery.create", "fraud_prevention"),
+        ("delivery.review", "fraud_prevention"),
+        ("person.exit", "consent"),
+        ("person.biometrics", "consent"),
+        ("person.guardian", "child_protection"),
+        ("rescue.update", "vital_interest"),
+        ("export.shelter", "public_policy"),
     ] {
         assert!(
             entries.contains(&(expected.0.to_string(), Some(expected.1.to_string()))),

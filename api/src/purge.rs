@@ -191,6 +191,24 @@ fn audit_purge(
     )
 }
 
+/// The target id of the `purge.dry_run` entry for data no event owns.
+const NO_EVENT: &str = "no_event";
+
+/// The event fields of a search or rescue (`event_id`) or a person (`event_ids`).
+#[derive(Deserialize)]
+struct WithoutEvent {
+    #[serde(default)]
+    event_id: Option<String>,
+    #[serde(default)]
+    event_ids: Vec<String>,
+}
+
+impl WithoutEvent {
+    fn has_no_event(&self) -> bool {
+        self.event_id.is_none() && self.event_ids.is_empty()
+    }
+}
+
 // ---- queries (ids only, by the field the contract indexes) ----
 
 #[derive(Deserialize)]
@@ -550,8 +568,49 @@ impl<'a> Pass<'a> {
         self.purge_deliveries().await?;
         self.purge_volunteers().await?;
         if self.dry {
+            self.count_without_event().await?;
             self.log_dry_run().await?;
         }
+        Ok(())
+    }
+
+    /// Dry run only: searches, rescues and people with no event, older than `PURGE_AFTER_DAYS`.
+    /// No event's end discards them and the pass does not delete them by age (pending decision of
+    /// the owner); they are counted under the id `no_event` of `purge.dry_run`.
+    async fn count_without_event(&mut self) -> Result<(), ApiError> {
+        let cutoff = micros_ahead(
+            self.now,
+            -i64::from(self.state.config.purge_after_days) * DAY_MICROS,
+        );
+        let mut counts = Counts::new();
+        for (collection, age_field, label) in [
+            (searches::COLLECTION, "created_at", "searches_without_event"),
+            (rescues::COLLECTION, "received_at", "rescues_without_event"),
+            (people::COLLECTION, "updated_at", "people_without_event"),
+        ] {
+            // ponytail: reads every old document of the collection (two fields) once an hour in a
+            // dry run; add a null-event index if that shows in the bill.
+            let old: Vec<WithoutEvent> = self
+                .db()
+                .fluent()
+                .select()
+                .fields(["event_id", "event_ids"])
+                .from(collection)
+                .filter(|q| q.for_all([q.field(age_field).less_than(FirestoreTimestamp(cutoff))]))
+                .obj()
+                .query()
+                .await
+                .map_err(fs_error)?;
+            let n = old.iter().filter(|d| d.has_no_event()).count() as u32;
+            if n > 0 {
+                bump(&mut counts, label, n);
+            }
+        }
+        if counts.is_empty() {
+            return Ok(());
+        }
+        tracing::info!(counts = ?counts, "data without an event past the retention, not discarded");
+        self.dry_by_event.insert(NO_EVENT.into(), counts);
         Ok(())
     }
 
@@ -960,6 +1019,10 @@ impl<'a> Pass<'a> {
                         }
                         delivery.person_id = None;
                         delivery.card_code = None;
+                        delivery.delivered_by = String::new();
+                        delivery.approved_by = None;
+                        delivery.reviewed_by = None;
+                        delivery.review_note = None;
                         delivery.pseudonymized = true;
                         tx_replace(&db, tx, deliveries::COLLECTION, &id, &delivery)?;
                         done += 1;
@@ -1111,7 +1174,7 @@ mod tests {
     use crate::exits::fixtures::person;
     use crate::households::HouseholdDoc;
     use crate::matches::{MatchDoc, MatchStatus, MediatorKind};
-    use crate::people::Level;
+    use crate::people::{Level, PersonDoc};
     use crate::rescues::RescueDoc;
     use crate::searches::{Family, MissingPerson, SearchDoc, SearchStatus, SearchVia};
     use crate::test_support::{Actor, ORIGIN, TestApp, all_docs, new_id};
@@ -1258,13 +1321,13 @@ mod tests {
             delivered_at: now,
             received_at: now,
             verification: Verification::Card,
-            approved_by: None,
+            approved_by: Some(w.admin.id.clone()),
             status: DeliveryStatus::Ok,
             reasons: vec![],
             offline_claimed: false,
             delivered_at_clamped: false,
-            reviewed_by: None,
-            review_note: None,
+            reviewed_by: Some(w.admin.id.clone()),
+            review_note: Some("checked by hand".into()),
             pseudonymized: false,
         };
         put(&w.app, deliveries::COLLECTION, &id, &doc).await;
@@ -1450,6 +1513,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_dry_run_counts_old_data_without_an_event_and_nothing_deletes_it() {
+        for enabled in [false, true] {
+            let w = world_with(enabled).await;
+            let (old, recent) = (ago(31, 0), ago(1, 0));
+            let (search, _) = search_in(&w).await;
+            let mut doc: SearchDoc = store::get(&w.app.state.db, searches::COLLECTION, &search)
+                .await
+                .unwrap()
+                .unwrap();
+            doc.event_id = None;
+            doc.created_at = old;
+            put(&w.app, searches::COLLECTION, &search, &doc).await;
+            let recent_search = new_id();
+            doc.created_at = recent;
+            put(&w.app, searches::COLLECTION, &recent_search, &doc).await;
+            let rescue = rescue_in(&w).await;
+            let mut doc: RescueDoc = store::get(&w.app.state.db, rescues::COLLECTION, &rescue)
+                .await
+                .unwrap()
+                .unwrap();
+            doc.event_id = None;
+            doc.received_at = old;
+            put(&w.app, rescues::COLLECTION, &rescue, &doc).await;
+            let orphan = person_in(&w, &[], None).await;
+            let mut doc: PersonDoc = store::get(&w.app.state.db, people::COLLECTION, &orphan)
+                .await
+                .unwrap()
+                .unwrap();
+            doc.updated_at = old;
+            put(&w.app, people::COLLECTION, &orphan, &doc).await;
+            // A person of an event is not data without an event, however old.
+            let owned = person_in(&w, &[&w.event], None).await;
+            let mut doc: PersonDoc = store::get(&w.app.state.db, people::COLLECTION, &owned)
+                .await
+                .unwrap()
+                .unwrap();
+            doc.updated_at = old;
+            put(&w.app, people::COLLECTION, &owned, &doc).await;
+
+            run(&w.app.state).await.unwrap();
+            for (collection, id) in [
+                (searches::COLLECTION, &search),
+                (rescues::COLLECTION, &rescue),
+                (people::COLLECTION, &orphan),
+            ] {
+                assert!(exists(&w.app, collection, id).await);
+            }
+            let dry = audited(&w.app, "purge.dry_run").await;
+            if enabled {
+                assert!(dry.is_empty());
+                continue;
+            }
+            assert_eq!(dry.len(), 1);
+            assert_eq!(dry[0]["target_id"], json!("no_event"));
+            assert_eq!(dry[0]["counts"]["searches_without_event"], json!(1));
+            assert_eq!(dry[0]["counts"]["rescues_without_event"], json!(1));
+            assert_eq!(dry[0]["counts"]["people_without_event"], json!(1));
+        }
+    }
+
+    #[tokio::test]
     async fn the_dry_run_counts_what_the_real_run_deletes() {
         let mut w = world_with(false).await;
         fill(&w).await;
@@ -1526,6 +1650,8 @@ mod tests {
         for d in &docs {
             assert!(d.pseudonymized);
             assert!(d.person_id.is_none() && d.card_code.is_none() && d.household_id.is_none());
+            assert!(d.delivered_by.is_empty() && d.approved_by.is_none());
+            assert!(d.reviewed_by.is_none() && d.review_note.is_none());
             assert_eq!((d.item.as_str(), d.quantity), ("water", 2));
             assert_eq!(d.shelter_name, "A");
         }
