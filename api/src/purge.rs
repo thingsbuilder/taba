@@ -22,11 +22,11 @@ use firestore::{FirestoreDb, FirestoreInstant, FirestoreTimestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::audit::AuditEntry;
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::AppState;
 use crate::deliveries::{self, DeliveryDoc};
 use crate::error::ApiError;
-use crate::events::{self, EventDoc, EventStats, EventStatus};
+use crate::events::{self, EventDoc, EventStatus};
 use crate::members::{self, MembershipDoc, MembershipStatus, ShelterRole};
 use crate::shelters::{self, ShelterStatus};
 use crate::store::{self, fs_error, tx_create, tx_delete, tx_replace};
@@ -57,7 +57,6 @@ const STATE: &str = "purge_state";
 const LOCK_DOC: &str = "lock";
 const DAILY_DOC: &str = "daily";
 const PSEUDONYMS: &str = "purge_pseudonyms";
-const AUDIT_LOG: &str = "audit_log";
 
 /// What one pass did (or, with `PURGE_ENABLED` off, would have done).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -168,19 +167,6 @@ fn day_of(at: FirestoreInstant, tz: &str) -> String {
 
 // ---- audit ----
 
-/// `purge.*` entry: ids only plus the counts of what the transaction removed.
-#[derive(Serialize, Deserialize)]
-struct PurgeAudit {
-    #[serde(with = "firestore::serialize_as_timestamp")]
-    at: FirestoreInstant,
-    action: String,
-    target_kind: String,
-    target_id: String,
-    counts: BTreeMap<String, u32>,
-    #[serde(with = "firestore::serialize_as_timestamp")]
-    expires_at: FirestoreInstant,
-}
-
 type Counts = BTreeMap<String, u32>;
 
 fn bump(counts: &mut Counts, label: &str, n: u32) {
@@ -195,16 +181,14 @@ fn audit_purge(
     target_id: &str,
     counts: Counts,
 ) -> Result<(), ApiError> {
-    let base = AuditEntry::new(action, target_kind, target_id);
-    let entry = PurgeAudit {
-        at: base.at,
-        action: base.action,
-        target_kind: base.target_kind,
-        target_id: base.target_id,
-        counts,
-        expires_at: base.expires_at,
-    };
-    tx_create(db, tx, AUDIT_LOG, &uuid::Uuid::new_v4().to_string(), &entry)
+    // The entry of the audit module, with the counts of what the transaction removed (ids only, never a person).
+    audit::add(
+        db,
+        tx,
+        &AuditEntry::new(action, target_kind, target_id)
+            .basis(LegalBasis::PublicPolicy)
+            .with_counts(counts),
+    )
 }
 
 // ---- queries (ids only, by the field the contract indexes) ----
@@ -338,51 +322,6 @@ async fn events_due(
         }
     }
     Ok(true)
-}
-
-// ---- stats ----
-
-/// The numbers an event keeps (spec 7, `events.stats`).
-// stage 6 swap: the shelter-export owner provides `export::event_stats`; replace this body
-// by a call to it when that lands.
-async fn event_stats(
-    db: &FirestoreDb,
-    event_id: &str,
-    shelter_ids: &[String],
-) -> Result<EventStats, ApiError> {
-    let mut households = HashSet::new();
-    for shelter in shelter_ids {
-        households.extend(
-            ids_where(
-                db,
-                households::COLLECTION,
-                "created_shelter_id",
-                shelter,
-                None,
-            )
-            .await?,
-        );
-    }
-    let people: Vec<Id> = db
-        .fluent()
-        .select()
-        .fields(["event_ids"])
-        .from(people::COLLECTION)
-        .filter(|q| q.for_all([q.field("event_ids").array_contains(event_id)]))
-        .obj()
-        .query()
-        .await
-        .map_err(fs_error)?;
-    let rescues = ids_where(db, rescues::COLLECTION, "event_id", event_id, None).await?;
-    let deliveries = ids_where(db, deliveries::COLLECTION, "event_id", event_id, None).await?;
-    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
-    Ok(EventStats {
-        shelters: count(shelter_ids.len()),
-        unique_people: count(people.len()),
-        households: count(households.len()),
-        rescues: count(rescues.len()),
-        deliveries: count(deliveries.len()),
-    })
 }
 
 // ---- documents the guards read ----
@@ -802,7 +741,7 @@ impl<'a> Pass<'a> {
         let shelter_ids =
             ids_where(self.db(), shelters::COLLECTION, "event_id", event_id, None).await?;
         if !self.dry && event.stats.is_none() {
-            self.write_stats(event_id, &shelter_ids).await?;
+            self.write_stats(event_id).await?;
         }
         self.pseudonymize(event_id).await?;
 
@@ -941,8 +880,8 @@ impl<'a> Pass<'a> {
         Ok((ops, households))
     }
 
-    async fn write_stats(&self, event_id: &str, shelter_ids: &[String]) -> Result<(), ApiError> {
-        let stats = event_stats(self.db(), event_id, shelter_ids).await?;
+    async fn write_stats(&self, event_id: &str) -> Result<(), ApiError> {
+        let stats = crate::export::event_stats(self.db(), event_id).await?;
         store::transact(self.db(), |db, tx| {
             let id = event_id.to_string();
             Box::pin(async move {
@@ -1163,6 +1102,9 @@ impl<'a> Pass<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::EventStats;
+
+    const AUDIT_LOG: &str = "audit_log";
     use crate::alerts::{AlertDoc, AlertKind};
     use crate::cards::{CardDoc, CardStatus};
     use crate::deliveries::{DeliveryStatus, ItemScope, Verification};

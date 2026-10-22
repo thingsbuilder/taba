@@ -113,6 +113,15 @@ const WRITE_AUDIT: &[(&str, &str, &str)] = &[
     ("POST", "/v1/alerts/{id}/resolve", "alert.resolve"),
 ];
 
+/// The reads that are audited too (spec 4.10: every access to a thumbnail, to the data of a match
+/// or to the export of a shelter) and the action each records.
+const READ_AUDIT: &[(&str, &str, &str)] = &[
+    ("GET", "/v1/shelters/{id}/export.csv", "export.shelter"),
+    ("GET", "/v1/matches/{id}", "match.view"),
+    ("GET", "/v1/matches/{id}/thumbnail", "thumbnail.view"),
+    ("GET", "/v1/people/{person_id}/thumbnail", "thumbnail.view"),
+];
+
 /// The source of every module, tests aside.
 fn sources() -> Vec<(String, String)> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -165,6 +174,23 @@ fn every_write_route_has_an_audit_action() {
         assert!(
             writes.contains(route),
             "audit row of a route that is gone: {route:?}"
+        );
+    }
+}
+
+#[test]
+fn every_audited_read_is_a_route_and_is_written_by_some_module() {
+    let routes = registered_routes();
+    let sources = sources();
+    for (method, path, action) in READ_AUDIT {
+        assert!(
+            routes.contains(&(method.to_string(), path.to_string())),
+            "{method} {path} is not a route"
+        );
+        let literal = format!("\"{action}\"");
+        assert!(
+            sources.iter().any(|(_, text)| text.contains(&literal)),
+            "{path}: nothing writes {action}"
         );
     }
 }
@@ -882,8 +908,6 @@ async fn an_unconfirmed_shelter_cannot_search_nor_export_and_sees_only_its_own_s
     );
 
     // No export.
-    // ponytail: the export route of stage 0 still answers 501; the 403 below is checked as soon
-    // as the owner of `export.rs` lands, and the 501 branch goes away with the stub.
     let (status, _, answer) = app
         .request(
             "GET",
@@ -892,9 +916,7 @@ async fn an_unconfirmed_shelter_cannot_search_nor_export_and_sees_only_its_own_s
             None,
         )
         .await;
-    if status != StatusCode::NOT_IMPLEMENTED {
-        assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
-    }
+    assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
 }
 
 // ---- the scan itself must see what it looks for ----

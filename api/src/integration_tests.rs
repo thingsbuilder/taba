@@ -2230,3 +2230,413 @@ async fn an_admin_approval_where_no_selfie_would_be_asked_is_an_ordinary_deliver
             .any(|a| a.starts_with("delivery.admin_approval"))
     );
 }
+
+// ---- phase 6: the dashboard, the exports, the anomalies and the discard together ----
+
+use axum::body::Body;
+use axum::http::Request;
+use http_body_util::BodyExt;
+use tower::ServiceExt;
+
+/// A request with the actor's session whose answer is text (a CSV), not JSON.
+async fn text(app: &TestApp, who: &Actor, path: &str) -> (StatusCode, String) {
+    let request = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("authorization", format!("Bearer {}", who.secret))
+        .header("x-device-id", who.device.as_str())
+        .body(Body::empty())
+        .unwrap();
+    let response = crate::router(app.state.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+async fn doc_count(app: &TestApp, collection: &str) -> usize {
+    all_docs(&app.state.db, collection).await.len()
+}
+
+fn current_year() -> i64 {
+    i64::from(
+        store::now()
+            .to_zoned(firestore::jiff::tz::TimeZone::UTC)
+            .year(),
+    )
+}
+
+#[tokio::test]
+async fn anomalies_reach_the_validator_and_the_civil_defense_and_never_the_admin() {
+    let mut s = scene().await;
+    std::sync::Arc::make_mut(&mut s.app.state.config).anomaly_checkins_per_10min = 2;
+    let validator = actor_with(&s.app, "Validator", GlobalRole::Validator).await;
+    let dc = actor_with(&s.app, "DC", GlobalRole::CivilDefense).await;
+    for n in 0..3 {
+        let (status, body) = call(&s.app, &s.volunteer, "POST", &format!("/v1/shelters/{}/checkins", s.shelter), Some(checkin_body(json!({ "id": new_id(), "no_biometrics": true, "data": { "name": format!("P{n}") } })))).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let kinds = |body: &Value| -> Vec<String> {
+        body["alerts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["kind"].as_str().unwrap().to_string())
+            .collect()
+    };
+    for who in [&validator, &dc] {
+        let (status, body) = call(&s.app, who, "GET", "/v1/alerts", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            kinds(&body).contains(&"anomaly_volume".to_string()),
+            "{body}"
+        );
+    }
+    // The admin of the shelter, who is also who the volunteer works for, never sees it in the box of "Avisos".
+    for who in [&s.admin, &s.volunteer] {
+        let (_, body) = call(&s.app, who, "GET", "/v1/alerts", None).await;
+        assert!(
+            !kinds(&body)
+                .iter()
+                .any(|k| k.starts_with("anomaly_") || k == "out_of_area"),
+            "{body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_dashboard_counts_the_event_and_the_csv_has_a_line_per_shelter_and_no_person() {
+    let s = scene().await;
+    let validator = actor_with(&s.app, "Validator", GlobalRole::Validator).await;
+    let dc = actor_with(&s.app, "DC", GlobalRole::CivilDefense).await;
+    let other = s.app.actor("Other").await;
+    let other_shelter = s
+        .app
+        .create_shelter(&other, "Galpão", north_of_origin(5_000.0))
+        .await;
+    let shelter: crate::shelters::ShelterDoc =
+        store::get(&s.app.state.db, crate::shelters::COLLECTION, &s.shelter)
+            .await
+            .unwrap()
+            .unwrap();
+    let event = shelter.event_id.clone().unwrap();
+    let year = current_year();
+
+    // An assisted pregnant adult, a child without biometrics (a household with two dogs), a verified
+    // old person with a disability, an exit, and one person at the unconfirmed shelter.
+    let (status, ana) = checkin_photo(&s.app, &s.volunteer, &s.shelter, "tok-dash-ana", json!({ "data": { "name": "Ana Souza", "birth_year": year - 30, "vulnerabilities": { "pregnant": true, "lactating": false, "disability": [] } } })).await;
+    assert_eq!(status, StatusCode::CREATED, "{ana}");
+    let ana_id = s.app.state.person_id_for_token("tok-dash-ana");
+    let bruno = new_id();
+    let (status, body) = call(&s.app, &s.volunteer, "POST", &format!("/v1/shelters/{}/checkins", s.shelter), Some(checkin_body(json!({ "id": bruno, "no_biometrics": true, "data": { "name": "Bruno Lima", "birth_year": year - 5 } })))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let mut old = crate::exits::fixtures::person(crate::people::Level::Verified, Some(&s.shelter));
+    old.name = Some("Carla Dias".into());
+    old.birth_year = Some((year - 70) as u16);
+    old.event_ids = vec![event.clone()];
+    old.vulnerabilities.disability = vec![crate::people::Disability::Mobility];
+    let carla = new_id();
+    crate::exits::fixtures::put(&s.app, &carla, &old).await;
+    let leaving = new_id();
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/shelters/{}/checkins", s.shelter),
+        Some(checkin_body(
+            json!({ "id": leaving, "no_biometrics": true, "data": { "name": "Davi Rocha" } }),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/shelters/{}/exits", s.shelter),
+        Some(json!({ "person_id": leaving, "exit_destination": "own_home" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call(
+        &s.app,
+        &other,
+        "POST",
+        &format!("/v1/shelters/{other_shelter}/checkins"),
+        Some(checkin_body(
+            json!({ "id": new_id(), "no_biometrics": true, "data": { "name": "Eva Costa" } }),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let household = new_id();
+    let (status, body) = call(&s.app, &s.volunteer, "POST", &format!("/v1/shelters/{}/households", s.shelter), Some(json!({ "id": household, "member_ids": [ana_id, bruno], "head_id": ana_id, "pets": [{ "species": "dog", "count": 2 }], "client_created_at": store::now().to_string() }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    // A delivery, a rescue, and a search that meets the rescued person: a match for the central queue.
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/households/{household}/cards"),
+        Some(json!({ "code": CARD, "client_issued_at": store::now().to_string() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = call(
+        &s.app,
+        &s.admin,
+        "PUT",
+        &format!("/v1/shelters/{}/items", s.shelter),
+        Some(json!({ "items": { "kit": spec("per_person", false, false) } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, delivered) =
+        deliver(&s.app, &s.volunteer, &s.shelter, &ana_id, "kit", json!({})).await;
+    assert_eq!(status, StatusCode::CREATED, "{delivered}");
+    let (status, _) = register_search(&s.app, &s.admin, "tok-dash-rescued").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    tokens(&s.app, &["tok-dash-rescued"]);
+    let (status, body) = call(&s.app, &s.volunteer, "POST", "/v1/rescues", Some(json!({ "id": new_id(), "photo_base64": photo(), "lat": ORIGIN.0, "lon": ORIGIN.1, "accuracy": 12.0, "captured_at": store::now().to_string() }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // Who reads it: a validator and the Civil Defense; nobody else.
+    let paths = [
+        "/v1/dashboard/events".to_string(),
+        format!("/v1/dashboard/events/{event}"),
+        format!("/v1/dashboard/events/{event}/daily.csv"),
+    ];
+    for path in &paths {
+        for who in [&validator, &dc] {
+            assert_eq!(text(&s.app, who, path).await.0, StatusCode::OK, "{path}");
+        }
+        for who in [&s.admin, &s.volunteer, &other] {
+            assert_eq!(
+                text(&s.app, who, path).await.0,
+                StatusCode::FORBIDDEN,
+                "{path}"
+            );
+        }
+    }
+
+    // The numbers (criteria 52 and 53).
+    let (_, list) = call(&s.app, &validator, "GET", "/v1/dashboard/events", None).await;
+    let listed = list["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == json!(event))
+        .unwrap();
+    assert_eq!(
+        listed["unconfirmed_shelters"][0]["id"],
+        json!(other_shelter)
+    );
+    assert_eq!(
+        listed["unconfirmed_shelters"][0]["created_by_name"],
+        "Other"
+    );
+    let (status, dash) = call(
+        &s.app,
+        &dc,
+        "GET",
+        &format!("/v1/dashboard/events/{event}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{dash}");
+    assert_eq!(dash["notice"], crate::dashboard::NOTICE);
+    let t = &dash["totals"];
+    assert_eq!(t["unique_people"], 4, "{dash}"); // Ana, Bruno, Carla and Eva; Davi left
+    assert_eq!(
+        t["by_level"],
+        json!({ "verified": 1, "assisted": 1, "no_biometrics": 2 })
+    );
+    assert_eq!(
+        (
+            t["age_bands"]["18_59"].as_u64(),
+            t["age_bands"]["0_11"].as_u64(),
+            t["age_bands"]["60_plus"].as_u64()
+        ),
+        (Some(1), Some(1), Some(1))
+    );
+    assert_eq!(
+        (
+            t["pregnant"].as_u64(),
+            t["disability"]["mobility"].as_u64(),
+            t["households"].as_u64(),
+            t["pets"].as_u64()
+        ),
+        (Some(1), Some(1), Some(1), Some(2))
+    );
+    assert_eq!(dash["exits_by_destination"]["own_home"], 1);
+    assert_eq!(dash["rescues"], 1);
+    assert_eq!(dash["open_matches"]["central"], 1, "{dash}");
+    let rows = dash["shelters"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    let row = |id: &str| rows.iter().find(|r| r["id"] == json!(id)).unwrap();
+    assert_eq!(
+        (
+            row(&s.shelter)["confirmation"].as_str(),
+            row(&s.shelter)["occupancy"].as_u64()
+        ),
+        (Some("confirmed"), Some(3))
+    );
+    assert_eq!(
+        (
+            row(&other_shelter)["confirmation"].as_str(),
+            row(&other_shelter)["occupancy"].as_u64()
+        ),
+        (Some("unconfirmed"), Some(1))
+    );
+
+    // The daily CSV: a line per shelter, no name and no person id.
+    let (_, csv) = text(&s.app, &validator, &paths[2]).await;
+    assert_eq!(csv.lines().count(), 3, "{csv}");
+    for hidden in [
+        "Ana",
+        "Bruno",
+        "Carla",
+        "Eva",
+        "Davi",
+        ana_id.as_str(),
+        bruno.as_str(),
+        carla.as_str(),
+        leaving.as_str(),
+    ] {
+        assert!(!csv.contains(hidden), "{hidden} in {csv}");
+    }
+    assert!(csv.contains("Galpão"), "the shelter name is there: {csv}");
+
+    // The export of a shelter (criterion 16): the admin of the confirmed one gets it, with no
+    // person id nor thumbnail; the unconfirmed shelter gets 403.
+    let (status, export) = text(
+        &s.app,
+        &s.admin,
+        &format!("/v1/shelters/{}/export.csv", s.shelter),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{export}");
+    for hidden in [ana_id.as_str(), bruno.as_str(), carla.as_str(), "thumbnail"] {
+        assert!(!export.contains(hidden), "{hidden} in {export}");
+    }
+    assert!(export.contains("Ana Souza"));
+    assert_eq!(
+        text(
+            &s.app,
+            &s.volunteer,
+            &format!("/v1/shelters/{}/export.csv", s.shelter)
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        text(
+            &s.app,
+            &other,
+            &format!("/v1/shelters/{other_shelter}/export.csv")
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn the_discard_deletes_what_the_event_gathered_only_with_the_key_on_and_pseudonymizes_the_deliveries()
+ {
+    let mut d = donations().await;
+    let (shelter, volunteer) = (d.s.shelter.clone(), d.s.volunteer.clone());
+    let (status, delivered) =
+        deliver(&d.s.app, &volunteer, &shelter, &d.p1, "cesta", json!({})).await;
+    assert_eq!(status, StatusCode::CREATED, "{delivered}");
+    let (status, _) = register_search(&d.s.app, &d.s.admin, "tok-discard").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    // An event closed 40 days ago, whose date of discard has passed.
+    let stored: crate::shelters::ShelterDoc =
+        store::get(&d.s.app.state.db, crate::shelters::COLLECTION, &shelter)
+            .await
+            .unwrap()
+            .unwrap();
+    let event_id = stored.event_id.unwrap();
+    let mut event: crate::events::EventDoc =
+        store::get(&d.s.app.state.db, crate::events::COLLECTION, &event_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let ago = |days: u64| store::now() - std::time::Duration::from_secs(days * 86_400);
+    event.status = crate::events::EventStatus::Closed;
+    event.closed_at = Some(ago(40));
+    event.purge_at = Some(ago(10));
+    event.delivery_purge_at = Some(store::now() + std::time::Duration::from_secs(50 * 86_400));
+    store::replace(
+        &d.s.app.state.db,
+        crate::events::COLLECTION,
+        &event_id,
+        &event,
+    )
+    .await
+    .unwrap();
+    let (people, households, searches, deliveries) = (
+        doc_count(&d.s.app, "people").await,
+        doc_count(&d.s.app, "households").await,
+        doc_count(&d.s.app, "searches").await,
+        doc_count(&d.s.app, "deliveries").await,
+    );
+    assert!(people > 0 && households > 0 && searches > 0 && deliveries > 0);
+
+    // The key is off by default: the pass only counts, nothing is deleted.
+    assert!(!d.s.app.state.config.purge_enabled);
+    crate::jobs::run_once(&d.s.app.state).await.unwrap();
+    assert_eq!(
+        (
+            doc_count(&d.s.app, "people").await,
+            doc_count(&d.s.app, "households").await,
+            doc_count(&d.s.app, "searches").await,
+            doc_count(&d.s.app, "deliveries").await
+        ),
+        (people, households, searches, deliveries)
+    );
+    for doc in all_docs(&d.s.app.state.db, "deliveries").await {
+        assert!(
+            doc.get("person_id").is_some() && doc["pseudonymized"] != json!(true),
+            "{doc}"
+        );
+    }
+
+    // With the key on: people, households and searches go; the deliveries stay, pseudonymized; the event stays with its stats.
+    std::sync::Arc::make_mut(&mut d.s.app.state.config).purge_enabled = true;
+    crate::jobs::run_once(&d.s.app.state).await.unwrap();
+    assert_eq!(
+        (
+            doc_count(&d.s.app, "people").await,
+            doc_count(&d.s.app, "households").await,
+            doc_count(&d.s.app, "searches").await
+        ),
+        (0, 0, 0)
+    );
+    let kept = all_docs(&d.s.app.state.db, "deliveries").await;
+    assert_eq!(kept.len(), deliveries);
+    for doc in &kept {
+        assert!(
+            doc.get("person_id").is_none()
+                && doc.get("card_code").is_none()
+                && doc.get("household_id").is_none(),
+            "{doc}"
+        );
+        assert!(
+            doc["household_pseudonym"].is_string() && doc["pseudonymized"] == json!(true),
+            "{doc}"
+        );
+    }
+    let purged: crate::events::EventDoc =
+        store::get(&d.s.app.state.db, crate::events::COLLECTION, &event_id)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(purged.status, crate::events::EventStatus::Purged);
+    assert!(purged.purged_at.is_some() && purged.stats.is_some());
+}

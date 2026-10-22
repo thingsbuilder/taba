@@ -47,6 +47,9 @@ pub struct AuditEntry {
     pub target_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legal_basis: Option<LegalBasis>,
+    /// What an operation that changes many documents changed, by collection (the discard); never ids of people.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counts: Option<std::collections::BTreeMap<String, u32>>,
     #[serde(with = "firestore::serialize_as_timestamp")]
     pub expires_at: FirestoreInstant,
 }
@@ -64,6 +67,7 @@ impl AuditEntry {
             target_kind: target_kind.into(),
             target_id: target_id.into(),
             legal_basis: None,
+            counts: None,
             expires_at: at + firestore::jiff::SignedDuration::from_secs(RETENTION_SECONDS),
         }
     }
@@ -80,6 +84,11 @@ impl AuditEntry {
 
     pub fn in_shelter(mut self, shelter_id: &str) -> Self {
         self.shelter_id = Some(shelter_id.into());
+        self
+    }
+
+    pub fn with_counts(mut self, counts: std::collections::BTreeMap<String, u32>) -> Self {
+        self.counts = Some(counts);
         self
     }
 
