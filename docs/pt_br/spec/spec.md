@@ -347,7 +347,7 @@ O registro é feito **no ponto de desembarque ou triagem**, não no barco.
 2. A tela diz, antes de tudo: **"Esta busca não substitui o registro de desaparecimento na delegacia."** [dec. k, A5].
 3. O operador registra: nome, apelido e observações do desaparecido; nome, telefone, parentesco e idioma da família; de 1 a 5 fotos (galeria permitida, é a exceção). Limite: `SEARCHES_PER_DAY` buscas por voluntário por dia (padrão 10), contado no dia do fuso `TZ_PILOT` (padrão `America/Sao_Paulo`): a cota recomeça à meia-noite desse fuso, e não às 21h [dec. k, Q8].
 4. `POST /v1/searches`. Sem sinal, vai pela fila; as fotos ficam **cifradas no aparelho** (6.1.7) e são **apagadas logo após o envio** (`2xx`) [dec. k, Q45]. No servidor, as fotos só ficam retidas nas condições do item 5.
-5. Servidor gera um token por foto (`api+humantoken`), guarda só os `person_id` derivados (`searches.person_ids`, nível "busca": não vira pessoa) e compara com `people`. Um match em qualquer foto conta. **Retenção das fotos da família** [decisão do dono, 2026-10-22]: se a busca já nasce com match (alguma foto casou com uma pessoa já registrada), o servidor guarda **todas** as fotos enviadas (até 5), cifradas com `THUMBNAIL_KEY` como a miniatura, em `search_photos/{search_id}.{n}` (um documento por foto, cada um abaixo de 1 MiB), para o mediador conferir o rosto em `/matches/:id`. Busca sem match no momento do registro não retém nada; um match criado depois (check-in ou resgate posterior) **não** encontra fotos, porque elas não são guardadas na expectativa de um match. As fotos só são gravadas depois que a resposta da busca sai (o tempo da resposta não revela o match, 10.3); só JPEG e PNG são retidos; se a gravação falhar, a busca fica sem fotos e a falha é auditada (`search_photos.retain_failed`). As fotos são apagadas quando o último match aberto da busca é decidido, quando o evento da busca encerra, no descarte do evento ou `PURGE_AFTER_DAYS` (30 dias) depois da criação da busca (match que ninguém atende, busca sem evento), o que vier primeiro. Em modo degradado, a busca espera na fila.
+5. Servidor gera um token por foto (`api+humantoken`), guarda só os `person_id` derivados (`searches.person_ids`, nível "busca": não vira pessoa) e compara com `people`. Um match em qualquer foto conta. **Retenção das fotos da família** [decisão do dono, 2026-10-22, opção B]: o servidor guarda **todas** as fotos enviadas (até 5) de **toda busca ativa** com foto utilizável, com ou sem match, cifradas com `THUMBNAIL_KEY` como a miniatura, em `search_photos/{search_id}.{n}` (um documento por foto, cada um abaixo de 1 MiB). Assim um match criado depois (check-in ou resgate posterior) também mostra as fotos ao mediador em `/matches/:id`. Só quem atende um match **aberto** as vê; busca sem match: ninguém. As fotos só são gravadas depois que a resposta da busca sai (o tempo da resposta é o mesmo com ou sem match, 10.3); só JPEG e PNG são retidos; se a gravação falhar, a busca fica sem fotos e a falha é auditada (`search_photos.retain_failed`). **Regra de apagamento:** quando a pessoa é encontrada (algum match da busca foi aceito e nenhum está aberto), quando o evento da busca encerra, no descarte do evento ou `PURGE_AFTER_DAYS` (30 dias) depois da criação da busca, o que vier primeiro. `decline` e `not_the_person` **não** apagam: a busca segue ativa para outras pessoas (4.8). Em modo degradado, a busca espera na fila.
 6. **A resposta é sempre a mesma**, com ou sem match: `202 {message: "search_registered", usable_photos}`. O app mostra "Busca registrada. Se a pessoa for encontrada e concordar, a equipe entrará em contato com a família." Nem o operador fica sabendo se houve match.
 7. `usable_photos` diz quantas fotos geraram token, para o operador pedir outras.
 8. A busca fica ativa até o descarte do evento do abrigo de origem; cada check-in ou resgate posterior é comparado com as buscas ativas [dec. k, Q25].
@@ -410,7 +410,7 @@ Contatos de referência do evento (`reference_contacts: {civil_defense_phone, ch
 | `verified` | Captura com liveness | Abrigo, doação, ser responsável por criança | final |
 | `assisted` | Foto pela câmera do app | Abrigo, doação pelo cartão [dec. k, Q42 rejeitada], localização e reunificação | → `verified` na primeira captura com liveness, sem cadastro novo [dec. i, Q1] |
 | `no_biometrics` | Registro por nome/pulseira (recusa, sem rosto, modo degradado) [dec. k, C1] | Abrigo e doação; fora da busca por foto | → `assisted` ou `verified` por `PUT /people/{id}/biometrics` (4.12) |
-| "busca" | Foto da família | Nada em `people`; fica só em `searches.person_ids`. As fotos só ficam, cifradas, em `search_photos` enquanto houver match aberto (3.7 item 5) | não vira pessoa |
+| "busca" | Foto da família | Nada em `people`; fica só em `searches.person_ids`. As fotos ficam, cifradas, em `search_photos` enquanto a busca estiver ativa, no máximo 30 dias (3.7 item 5) | não vira pessoa |
 
 Nível nunca desce. A decisão k atualiza a tabela original de níveis: `assisted` e `no_biometrics` recebem doação.
 
@@ -470,7 +470,7 @@ Quem decide primeiro (admin ou `mediator`) fecha o match para os demais; o papel
 
 Fluxo:
 1. Vê o aviso em "Avisos" (`GET /v1/matches`): nome, apelido, parentesco e observações informados pela família; nome da pessoa no cadastro; miniatura se houver; abrigo. **Não vê o contato da família ainda.**
-2. **Confere com a pessoa** os dados informados pela família antes de qualquer decisão [dec. k, A6]. A tela mostra esses dados como lista de conferência, a miniatura do abrigado e, quando existirem, as fotos que a família enviou (só online, apagadas na decisão).
+2. **Confere com a pessoa** os dados informados pela família antes de qualquer decisão [dec. k, A6]. A tela mostra esses dados como lista de conferência, a miniatura do abrigado e, quando existirem, as fotos que a família enviou (só online).
 3. A pessoa decide; se estiver incapacitada, quem atende decide (`decided_by = operator`).
 4. `POST /v1/matches/{id}/decision {decision: accept|decline|not_the_person, decided_by: person|operator, note}`.
 5. `accept`: a resposta traz `family {name, phone, relationship, language}` e `whatsapp_link` (`https://wa.me/<phone>?text=<mensagem>`, no idioma da família). A tela orienta: **"Depois de combinar o contato, apague este número do seu celular."** [dec. k, A4]. Localização nunca é enviada automaticamente.
@@ -802,13 +802,13 @@ Datas: `Timestamp`. `client_*` = hora do celular; sem prefixo = hora do servidor
 `person_id`, `volunteer_id`, `device_id`, `lat`, `lon`, `accuracy_m`, `landing_point?`, `captured_at` (cliente), `received_at`, `event_id?`, `destination_shelter_id?`, `note?`.
 
 ### `searches/{search_id}` (UUID do cliente)
-`created_by` (o voluntário em nome de quem a busca está: quem a digitou ou quem gerou o link da família), `via: volunteer|family_link`, `origin_shelter_id?`, `event_id?`, `person_ids: []` (HMAC dos tokens das fotos), `photos_sent`, `usable_photos`, `retained_photos` (quantas fotos da família estão guardadas em `search_photos`; 0 na maioria), `missing_person: {name, nickname?, notes}`, `family: {name, phone, relationship, language}`, `status: active|closed`, `expiry_notified_at?`, `created_at`.
+`created_by` (o voluntário em nome de quem a busca está: quem a digitou ou quem gerou o link da família), `via: volunteer|family_link`, `origin_shelter_id?`, `event_id?`, `person_ids: []` (HMAC dos tokens das fotos), `photos_sent`, `usable_photos`, `retained_photos` (quantas fotos da família estão guardadas em `search_photos`), `missing_person: {name, nickname?, notes}`, `family: {name, phone, relationship, language}`, `status: active|closed`, `expiry_notified_at?`, `created_at`.
 
 ### `search_links/{code}` (128 bits aleatórios, base64url)
 `created_by`, `shelter_id`, `event_id?`, `status: active|used|canceled`, `created_at`, `expires_at` (12 h; TTL), `used_at?`, `search_id?`, `attempts`.
 
 ### `search_photos/{search_id}.{n}`
-`search_id`, `photo_encrypted` (bytes: nonce || AES-256-GCM da foto, com `THUMBNAIL_KEY`), `created_at`. Só existe enquanto a busca tem match aberto; apagada na decisão do último match aberto, no encerramento do evento, no descarte e `PURGE_AFTER_DAYS` depois da criação da busca.
+`search_id`, `photo_encrypted` (bytes: nonce || AES-256-GCM da foto, com `THUMBNAIL_KEY`), `created_at`. Existe enquanto a busca está ativa; apagada quando a pessoa é encontrada, no encerramento do evento, no descarte e `PURGE_AFTER_DAYS` depois da criação da busca.
 
 ### `matches/{sha256(search_id|person_id)}`
 `search_id`, `person_id`, `is_child: bool`, `mediator_kind: shelter|central|protection`, `mediator_shelter_id?`, `status: open|accepted|declined|not_the_person`, `decided_by?: person|operator`, `decided_by_volunteer?`, `decided_at?`, `note?`, `created_at`.
@@ -989,7 +989,7 @@ Itens que referenciam um abrigo, pessoa ou núcleo criado offline vêm depois de
 - **Evento:** fica só com `name`, datas e `stats`, `status = purged`.
 - **Perfis de voluntário:** apagados 365 dias após `last_seen_at`, exceto banidos [dec. k, Q21].
 - **Auditoria:** TTL de 1 ano [dec. k, Q21].
-- **Fotos de pessoas** não ficam no servidor, com uma exceção [decisão do dono, 2026-10-22]: as fotos que a família enviou numa busca que já tem match ficam cifradas em `search_photos` até o match ser decidido, o evento encerrar ou o descarte (3.7 item 5). Todas as outras só existem na memória do processo durante a chamada à Unico [dec. e]. No celular, ficam cifradas e são apagadas após o `2xx` (6.1.7).
+- **Fotos de pessoas** não ficam no servidor, com uma exceção [decisão do dono, 2026-10-22]: as fotos que a família enviou numa busca ficam cifradas em `search_photos` enquanto a busca estiver ativa, até 30 dias, e são apagadas quando a pessoa é encontrada, no fim do evento ou no descarte (3.7 item 5). Todas as outras só existem na memória do processo durante a chamada à Unico [dec. e]. No celular, ficam cifradas e são apagadas após o `2xx` (6.1.7).
 
 #### 10.1.3 Transparência [dec. k, C1, M2]
 - Texto curto em cada tela de coleta (check-in, busca): finalidade, prazo de guarda, quem acessa, base legal, responsável.

@@ -278,14 +278,14 @@ async fn commit_search(
     usable_photos: u32,
     limit: Option<u32>,
     tz: &str,
-) -> Result<(u32, u32), ApiError> {
+) -> Result<u32, ApiError> {
     store::transact(db, |db, tx| {
         let (owner, input, tz) = (owner.clone(), input.clone(), tz.to_string());
         let person_ids = person_ids.to_vec();
         Box::pin(async move {
             if let Some(existing) = store::get::<SearchDoc>(&db, COLLECTION, &input.id).await? {
                 return if existing.created_by == owner.volunteer_id {
-                    Ok((existing.usable_photos, 0))
+                    Ok(existing.usable_photos)
                 } else {
                     Err(search_id_taken())
                 };
@@ -293,7 +293,7 @@ async fn commit_search(
             if let Some(limit) = limit {
                 take_daily_slot(&db, tx, &owner.volunteer_id, limit, &tz).await?;
             }
-            let opened = matching::on_search_registered(&db, tx, &input.id, &person_ids).await?;
+            matching::on_search_registered(&db, tx, &input.id, &person_ids).await?;
             let search = SearchDoc {
                 id: None,
                 created_by: owner.volunteer_id.clone(),
@@ -321,7 +321,7 @@ async fn commit_search(
                 entry = entry.on_device(device);
             }
             audit::add(&db, tx, &entry)?;
-            Ok((usable_photos, opened))
+            Ok(usable_photos)
         })
     })
     .await
@@ -370,7 +370,7 @@ async fn register(
     if usable_photos == 0 && owner.via == SearchVia::FamilyLink {
         return Ok(RegisterOutcome { usable_photos: 0 });
     }
-    let (usable_photos, opened) = commit_search(
+    let usable_photos = commit_search(
         &state.db,
         &owner,
         &input,
@@ -380,9 +380,10 @@ async fn register(
         &state.config.tz_pilot,
     )
     .await?;
-    // The family's photos are kept (encrypted) when the search already has a match. The writing
-    // is done after the answer, so the time of the answer does not tell whether there was a match.
-    if opened > 0 {
+    // The family's photos are kept (encrypted) while the search is active, match or not, so a
+    // match made later can show them. The writing is done after the answer, which therefore takes
+    // the same time whether or not there was a match.
+    if usable_photos > 0 {
         search_photos::retain_later(
             state.db.clone(),
             state.thumbnail_key().to_vec(),
