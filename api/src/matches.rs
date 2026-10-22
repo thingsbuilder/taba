@@ -1,32 +1,37 @@
 //! Mediation of a search (spec 4.8, 7, 8.7): the three queues, the check and the decision.
 
-use std::collections::HashMap;
+mod domain;
+mod persist;
+
+use std::collections::{BTreeSet, HashMap};
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
-use firestore::{FirestoreDb, FirestoreInstant, path};
+use firestore::FirestoreInstant;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
-use crate::members::ShelterRole;
 use crate::people::{self, PersonDoc};
 use crate::search_photos;
-use crate::searches::{self, Family, SearchDoc};
-use crate::shelters::{self, Confirmation, ShelterDoc};
-use crate::store::{self, fs_error, tx_replace};
+use crate::searches::{self, SearchDoc};
+use crate::shelters::ShelterDoc;
+use crate::store::{self, tx_replace};
 use crate::thumbnail;
-use crate::volunteers::GlobalRole;
+use domain::{Decision, attends, clean_note, decide, queues_of, sees_history, whatsapp_link};
+use persist::{audit_now, get_many, load_match, match_audit, queue_page, shelter_name};
+
+pub use domain::queue_for;
 
 pub const COLLECTION: &str = "matches";
-/// A page of one queue and status.
-// ponytail: each queue is read per status and joined with its search in memory; fine for a pilot's
-// volume, add a cursor and the searched name on the match itself if a queue passes a hundred.
+/// The most matches one queue lists per status.
+// ponytail: past 100 in one queue and status the listing keeps the newest 100 and answers
+// `has_more: true`; there is no cursor to read the rest. Add one if a queue passes that.
 const LIST_LIMIT: u32 = 100;
 const MAX_NOTE_CHARS: usize = 500;
 
@@ -46,6 +51,15 @@ pub enum MatchStatus {
     Accepted,
     Declined,
     NotThePerson,
+}
+
+impl MatchStatus {
+    const ALL: [MatchStatus; 4] = [
+        MatchStatus::Open,
+        MatchStatus::Accepted,
+        MatchStatus::Declined,
+        MatchStatus::NotThePerson,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,24 +97,6 @@ pub struct MatchDoc {
     pub created_at: FirestoreInstant,
 }
 
-/// The queue of a match for `person`, who is now in `shelter` if anywhere (spec 4.8): a child goes
-/// to `protection` whatever the shelter; a confirmed shelter keeps its own match (and its id);
-/// an unconfirmed shelter or none goes to `central`.
-pub fn queue_for(
-    person: &PersonDoc,
-    shelter: Option<&ShelterDoc>,
-) -> (MediatorKind, Option<String>) {
-    if person.is_child {
-        return (MediatorKind::Protection, None);
-    }
-    match shelter {
-        Some(s) if s.confirmation == Confirmation::Confirmed && s.id.is_some() => {
-            (MediatorKind::Shelter, s.id.clone())
-        }
-        _ => (MediatorKind::Central, None),
-    }
-}
-
 fn forbidden() -> ApiError {
     ApiError::new(StatusCode::FORBIDDEN, "forbidden")
 }
@@ -115,112 +111,6 @@ fn invalid_request(message: String) -> ApiError {
     error
 }
 
-fn name_of<T: Serialize>(value: T) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_default()
-}
-
-/// Whether `volunteer` attends the queue of `m` (spec 4.8, 2.3): `protection` and the Civil Defense
-/// the protection queue; `mediator` and the Civil Defense the central one; the shelter queue goes
-/// to the admins of that confirmed shelter, to any `mediator` and to the Civil Defense.
-/// A child's match is on the protection queue, so the admins of a shelter never reach it.
-fn attends(volunteer: &Volunteer, m: &MatchDoc) -> bool {
-    let civil_defense = volunteer.has_global(GlobalRole::CivilDefense);
-    let mediator = volunteer.has_global(GlobalRole::Mediator);
-    match m.mediator_kind {
-        MediatorKind::Protection => civil_defense || volunteer.has_global(GlobalRole::Protection),
-        MediatorKind::Central => civil_defense || mediator,
-        MediatorKind::Shelter => {
-            civil_defense
-                || mediator
-                || m.mediator_shelter_id.as_deref().is_some_and(|shelter| {
-                    volunteer.memberships.iter().any(|membership| {
-                        membership.shelter_id == shelter
-                            && membership.role == ShelterRole::Admin
-                            && membership.confirmation == Confirmation::Confirmed
-                    })
-                })
-        }
-    }
-}
-
-/// `mediator`, `protection` and the Civil Defense see a person's history while attending.
-fn sees_history(volunteer: &Volunteer) -> bool {
-    volunteer.has_global(GlobalRole::Mediator)
-        || volunteer.has_global(GlobalRole::Protection)
-        || volunteer.has_global(GlobalRole::CivilDefense)
-}
-
-async fn load_match(db: &FirestoreDb, id: &str) -> Result<MatchDoc, ApiError> {
-    store::get(db, COLLECTION, id)
-        .await?
-        .ok_or_else(match_not_found)
-}
-
-/// The matches of one queue in one status, newest first.
-async fn queue_page(
-    db: &FirestoreDb,
-    kind: MediatorKind,
-    shelter_id: Option<&str>,
-    status: MatchStatus,
-) -> Result<Vec<MatchDoc>, ApiError> {
-    let (kind, status) = (name_of(kind), name_of(status));
-    db.fluent()
-        .select()
-        .from(COLLECTION)
-        .filter(|q| {
-            let mut conditions = vec![
-                q.field(path!(MatchDoc::mediator_kind)).eq(kind.clone()),
-                q.field(path!(MatchDoc::status)).eq(status.clone()),
-            ];
-            if let Some(shelter_id) = shelter_id {
-                conditions.push(
-                    q.field(path!(MatchDoc::mediator_shelter_id))
-                        .eq(shelter_id.to_string()),
-                );
-            }
-            q.for_all(conditions)
-        })
-        .order_by([(
-            path!(MatchDoc::created_at),
-            firestore::FirestoreQueryDirection::Descending,
-        )])
-        .limit(LIST_LIMIT)
-        .obj()
-        .query()
-        .await
-        .map_err(fs_error)
-}
-
-/// The queues a volunteer attends: a kind, and one shelter or the whole network.
-fn queues_of(volunteer: &Volunteer) -> Vec<(MediatorKind, Option<String>)> {
-    let civil_defense = volunteer.has_global(GlobalRole::CivilDefense);
-    let mut queues = vec![];
-    if civil_defense || volunteer.has_global(GlobalRole::Protection) {
-        queues.push((MediatorKind::Protection, None));
-    }
-    if civil_defense || volunteer.has_global(GlobalRole::Mediator) {
-        queues.push((MediatorKind::Central, None));
-        queues.push((MediatorKind::Shelter, None));
-    } else {
-        for membership in &volunteer.memberships {
-            if membership.role == ShelterRole::Admin
-                && membership.confirmation == Confirmation::Confirmed
-            {
-                queues.push((MediatorKind::Shelter, Some(membership.shelter_id.clone())));
-            }
-        }
-    }
-    queues
-}
-
-async fn shelter_name(db: &FirestoreDb, shelter_id: &str) -> Result<Option<String>, ApiError> {
-    let shelter: Option<ShelterDoc> = store::get(db, shelters::COLLECTION, shelter_id).await?;
-    Ok(shelter.map(|s| s.name))
-}
-
 /// `GET /v1/matches`: the queues the volunteer attends (spec 4.8), open ones first, then the
 /// decided ones newest first. No contact of the family.
 pub async fn list_matches(
@@ -232,51 +122,55 @@ pub async fn list_matches(
         return Err(forbidden());
     }
     let mut found = vec![];
+    let mut has_more = false;
     for (kind, shelter_id) in &queues {
-        for status in [
-            MatchStatus::Open,
-            MatchStatus::Accepted,
-            MatchStatus::Declined,
-            MatchStatus::NotThePerson,
-        ] {
-            found.extend(queue_page(&state.db, *kind, shelter_id.as_deref(), status).await?);
+        for status in MatchStatus::ALL {
+            let page = queue_page(&state.db, *kind, shelter_id.as_deref(), status).await?;
+            let (page, more) = domain::cap(page, LIST_LIMIT);
+            has_more |= more;
+            found.extend(page);
         }
     }
     found.retain(|m| attends(&volunteer, m));
-    found.sort_by_key(|m| {
-        (
-            m.status != MatchStatus::Open,
-            std::cmp::Reverse(m.created_at),
-        )
-    });
-    let mut names: HashMap<String, Option<String>> = HashMap::new();
-    let mut listed = vec![];
-    for m in &found {
-        // A search that was purged leaves nothing to check the person against.
-        let Some(search) =
-            store::get::<SearchDoc>(&state.db, searches::COLLECTION, &m.search_id).await?
-        else {
-            continue;
-        };
-        let shelter = match &m.mediator_shelter_id {
-            Some(id) => {
-                if !names.contains_key(id) {
-                    names.insert(id.clone(), shelter_name(&state.db, id).await?);
-                }
-                names[id].clone()
-            }
-            None => None,
-        };
-        listed.push(json!({
-            "id": m.id,
-            "status": m.status,
-            "mediator_kind": m.mediator_kind,
-            "is_child": m.is_child,
-            "missing_person_name": search.missing_person.name,
-            "shelter_name": shelter,
-            "created_at": m.created_at.to_string(),
-        }));
-    }
+    domain::sort_for_listing(&mut found);
+    let search_ids: BTreeSet<_> = found.iter().map(|m| m.search_id.clone()).collect();
+    let shelter_ids: BTreeSet<_> = found
+        .iter()
+        .filter_map(|m| m.mediator_shelter_id.clone())
+        .collect();
+    let searches: HashMap<String, SearchDoc> = get_many(
+        &state.db,
+        searches::COLLECTION,
+        search_ids.into_iter().collect(),
+    )
+    .await?;
+    let shelters: HashMap<String, ShelterDoc> = get_many(
+        &state.db,
+        crate::shelters::COLLECTION,
+        shelter_ids.into_iter().collect(),
+    )
+    .await?;
+    let listed: Vec<Value> = found
+        .iter()
+        .filter_map(|m| {
+            // A search that was purged leaves nothing to check the person against.
+            let search = searches.get(&m.search_id)?;
+            let shelter = m
+                .mediator_shelter_id
+                .as_ref()
+                .and_then(|id| shelters.get(id))
+                .map(|s| &s.name);
+            Some(json!({
+                "id": m.id,
+                "status": m.status,
+                "mediator_kind": m.mediator_kind,
+                "is_child": m.is_child,
+                "missing_person_name": search.missing_person.name,
+                "shelter_name": shelter,
+                "created_at": m.created_at.to_string(),
+            }))
+        })
+        .collect();
     if !listed.is_empty() {
         // The listing names the missing persons: a read of match data (spec 4.10).
         let entry = AuditEntry::new("match.list", "match_queue", &volunteer.id)
@@ -284,7 +178,7 @@ pub async fn list_matches(
             .basis(LegalBasis::VitalInterest);
         audit_now(&state, entry).await?;
     }
-    Ok(Json(json!({ "matches": listed })))
+    Ok(Json(json!({ "matches": listed, "has_more": has_more })))
 }
 
 /// The stays of a person, for who attends the match (spec 4.11).
@@ -302,29 +196,6 @@ fn history_view(person: &PersonDoc) -> Value {
         })
         .collect();
     json!({ "stays": stays })
-}
-
-async fn audit_now(state: &AppState, entry: AuditEntry) -> Result<(), ApiError> {
-    store::transact(&state.db, |db, tx| {
-        let entry = entry.clone();
-        Box::pin(async move { audit::add(&db, tx, &entry) })
-    })
-    .await
-}
-
-fn match_audit(
-    action: &str,
-    volunteer: &Volunteer,
-    m: &MatchDoc,
-    target: (&str, &str),
-) -> AuditEntry {
-    let entry = AuditEntry::new(action, target.0, target.1)
-        .by(&volunteer.id)
-        .basis(LegalBasis::VitalInterest);
-    match &m.mediator_shelter_id {
-        Some(shelter) => entry.in_shelter(shelter),
-        None => entry,
-    }
 }
 
 /// `GET /v1/matches/{id}`: what the check needs, without the family's contact. The history of the
@@ -456,29 +327,12 @@ pub async fn get_match_search_photo(
         .into_response())
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Decision {
-    Accept,
-    Decline,
-    NotThePerson,
-}
-
-impl Decision {
-    fn status(self) -> MatchStatus {
-        match self {
-            Decision::Accept => MatchStatus::Accepted,
-            Decision::Decline => MatchStatus::Declined,
-            Decision::NotThePerson => MatchStatus::NotThePerson,
-        }
-    }
-
-    fn action(self) -> &'static str {
-        match self {
-            Decision::Accept => "match.accept",
-            Decision::Decline => "match.decline",
-            Decision::NotThePerson => "match.not_the_person",
-        }
+/// The audit action of a decision.
+fn decision_action(decision: Decision) -> &'static str {
+    match decision {
+        Decision::Accept => "match.accept",
+        Decision::Decline => "match.decline",
+        Decision::NotThePerson => "match.not_the_person",
     }
 }
 
@@ -488,41 +342,6 @@ struct DecisionBody {
     decision: Decision,
     decided_by: DecidedBy,
     note: Option<String>,
-}
-
-fn percent_encode(text: &str) -> String {
-    text.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                (b as char).to_string()
-            }
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
-}
-
-/// The first message to the family (spec 11.1), in the language they chose. It says nothing
-/// about where the person is. An unknown language gets Portuguese.
-fn whatsapp_message(language: &str) -> &'static str {
-    match language {
-        "en" => {
-            "Hello! This is about the search you registered on Taba. We found the person you are looking for and the contact with you was authorized. Can we talk here?"
-        }
-        "es" => {
-            "¡Hola! Te escribimos por la búsqueda que registraste en Taba. Encontramos a la persona que buscas y se autorizó el contacto contigo. ¿Podemos hablar por aquí?"
-        }
-        _ => {
-            "Olá! Falamos sobre a busca que você registrou no Taba. Encontramos a pessoa que você procura e o contato com você foi autorizado. Podemos conversar por aqui?"
-        }
-    }
-}
-
-fn whatsapp_link(family: &Family) -> String {
-    let digits: String = family.phone.chars().filter(char::is_ascii_digit).collect();
-    format!(
-        "https://wa.me/{digits}?text={}",
-        percent_encode(whatsapp_message(&family.language))
-    )
 }
 
 /// `POST /v1/matches/{id}/decision`: `accept | decline | not_the_person`; the first to decide closes
@@ -538,43 +357,28 @@ pub async fn post_decision(
 ) -> Result<Json<Value>, ApiError> {
     let body: DecisionBody =
         serde_json::from_value(body).map_err(|err| invalid_request(err.to_string()))?;
-    let note = body
-        .note
-        .map(|n| n.trim().to_string())
-        .filter(|n| !n.is_empty());
-    if note
-        .as_deref()
-        .is_some_and(|n| n.chars().count() > MAX_NOTE_CHARS)
-    {
-        return Err(invalid_request("note is too long".into()));
-    }
+    let note = clean_note(body.note)?;
     let (decision, decided_by) = (body.decision, body.decided_by);
     let family = store::transact(&state.db, |db, tx| {
         let (match_id, volunteer, note) = (match_id.clone(), volunteer.clone(), note.clone());
         Box::pin(async move {
-            let mut m = load_match(&db, &match_id).await?;
-            if !attends(&volunteer, &m) {
-                return Err(forbidden());
-            }
-            if m.status != MatchStatus::Open {
-                return Err(ApiError::match_already_decided());
-            }
-            let family = match decision {
-                Decision::Accept => {
-                    let search: SearchDoc = store::get(&db, searches::COLLECTION, &m.search_id)
-                        .await?
-                        .ok_or_else(match_not_found)?;
-                    Some(search.family)
-                }
-                _ => None,
+            let m = load_match(&db, &match_id).await?;
+            let m = decide(&volunteer, m, decision, decided_by, note, store::now())?;
+            let family = if decision.is_accept() {
+                let search: SearchDoc = store::get(&db, searches::COLLECTION, &m.search_id)
+                    .await?
+                    .ok_or_else(match_not_found)?;
+                Some(search.family)
+            } else {
+                None
             };
-            m.status = decision.status();
-            m.decided_by = Some(decided_by);
-            m.decided_by_volunteer = Some(volunteer.id.clone());
-            m.decided_at = Some(store::now());
-            m.note = note;
             tx_replace(&db, tx, COLLECTION, &match_id, &m)?;
-            let entry = match_audit(decision.action(), &volunteer, &m, ("match", &match_id));
+            let entry = match_audit(
+                decision_action(decision),
+                &volunteer,
+                &m,
+                ("match", &match_id),
+            );
             audit::add(&db, tx, &entry)?;
             // The family's photos go when the person is found: a match accepted and none open.
             // A decline keeps them: the search stays active for other people (spec 4.8).
@@ -597,11 +401,14 @@ pub async fn post_decision(
 
 #[cfg(test)]
 mod tests {
+    use super::persist::name_of;
     use super::*;
     use crate::audit::LegalBasis;
     use crate::matching::match_id;
     use crate::people::{Level, Needs, Origin, Vulnerabilities};
+    use crate::searches::Family;
     use crate::test_support::{ORIGIN, TestApp, north_of_origin};
+    use crate::volunteers::GlobalRole;
     use crate::{shelters, store};
 
     pub fn person(id: &str, shelter: Option<&str>, is_child: bool) -> PersonDoc {
@@ -1036,6 +843,44 @@ mod tests {
         );
         assert_eq!(body["matches"][2]["status"], "declined");
         assert!(!body.to_string().contains("99999"));
+    }
+
+    async fn listing(app: &TestApp, who: &Actor) -> (usize, Value) {
+        let (status, body) = app.send("GET", "/v1/matches", &who.secret, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        (
+            body["matches"].as_array().unwrap().len(),
+            body["has_more"].clone(),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_listing_says_when_a_queue_holds_more_than_it_shows() {
+        let w = world().await;
+        let limit = LIST_LIMIT as usize;
+        for _ in 1..limit {
+            seed(&w.app, MediatorKind::Central, None, false, "en").await;
+        }
+        assert_eq!(
+            listing(&w.app, &w.mediator).await,
+            (limit - 1, json!(false))
+        );
+        seed(&w.app, MediatorKind::Central, None, false, "en").await;
+        assert_eq!(listing(&w.app, &w.mediator).await, (limit, json!(false)));
+        seed(&w.app, MediatorKind::Central, None, false, "en").await;
+        assert_eq!(listing(&w.app, &w.mediator).await, (limit, json!(true)));
+    }
+
+    #[tokio::test]
+    async fn a_match_whose_search_was_purged_is_not_listed() {
+        let w = world().await;
+        let kept = seed(&w.app, MediatorKind::Central, None, false, "en").await;
+        let mut orphan = stored(&w.app, &kept).await;
+        orphan.search_id = "purged".into();
+        store::replace(&w.app.state.db, COLLECTION, "orphan", &orphan)
+            .await
+            .unwrap();
+        assert_eq!(listed(&w.app, &w.mediator).await, [kept]);
     }
 
     #[tokio::test]
@@ -1626,32 +1471,5 @@ mod tests {
             })
             .count();
         assert_eq!(decisions, 1);
-    }
-
-    #[test]
-    fn the_whatsapp_link_keeps_only_the_digits_and_encodes_the_text() {
-        let family = |phone: &str, language: &str| Family {
-            name: "J".into(),
-            phone: phone.into(),
-            relationship: "x".into(),
-            language: language.into(),
-        };
-        let link = whatsapp_link(&family("+55 (51) 99999-0000", "en"));
-        let (head, text) = link.split_once("?text=").unwrap();
-        assert_eq!(head, "https://wa.me/5551999990000");
-        assert!(text.starts_with("Hello%21%20"));
-        assert!(
-            text.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"%-._~".contains(&b))
-        );
-        assert_ne!(whatsapp_message("pt-BR"), whatsapp_message("en"));
-        assert_ne!(whatsapp_message("es"), whatsapp_message("en"));
-        // no place, no shelter, no name in the first message
-        for language in ["pt-BR", "en", "es"] {
-            let text = whatsapp_message(language).to_lowercase();
-            assert!(
-                !text.contains("abrigo") && !text.contains("shelter") && !text.contains("refugio")
-            );
-        }
     }
 }

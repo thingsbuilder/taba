@@ -100,6 +100,12 @@ export interface PersonView {
   updated_at: string
 }
 
+/** A page of `GET /v1/shelters/{id}/people` and of the needs-selfie list; `has_more` says the list stops at the page limit. */
+export interface PeoplePage {
+  people: PersonSummary[]
+  has_more: boolean
+}
+
 /** One row of `GET /v1/shelters/{id}/people` and of the needs-selfie list. */
 export interface PersonSummary {
   id: string

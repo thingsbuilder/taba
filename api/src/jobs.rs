@@ -2,13 +2,25 @@
 //! deletes thumbnails, expires captures, invites and endorsement codes. Every step is idempotent
 //! (it reads what is still to do inside its own transaction), so a run that repeats or overlaps
 //! another one changes nothing twice. The discard at `purge_at` is `purge.rs`.
+//!
+//! Each step runs with a deadline and its own outcome: one that fails or runs out of time does not
+//! stop the others, and every failure is logged with the step's name. The scans that have no
+//! natural bound read the collection as a stream (memory does not grow with the collection) and
+//! stop after `WORK_BUDGET` writes; what is left is found again by the next run, since each step
+//! recomputes its pending work from the database.
 
 use std::collections::HashSet;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
-use firestore::{FirestoreDb, FirestoreInstant, FirestoreTimestamp, path};
+use firestore::{FirestoreDb, FirestoreInstant, FirestoreResult, FirestoreTimestamp, path};
+use futures::StreamExt;
+use futures::stream::BoxStream;
 use serde::Deserialize;
 use serde_json::json;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use crate::alerts::{self, AlertDoc, AlertKind};
 use crate::audit::{self, AuditEntry, LegalBasis};
@@ -25,35 +37,158 @@ use crate::shelters::{self, ShelterDoc, ShelterStatus};
 use crate::store::{self, fs_error, tx_delete, tx_replace};
 
 const INTERVAL: Duration = Duration::from_secs(3600);
+/// What one step may take. The discard holds a 20 minute lease, so a step cut off here leaves
+/// it to lapse by itself soon after.
+const STEP_DEADLINE: Duration = Duration::from_secs(15 * 60);
+/// How long `shutdown` waits for a pass in the middle of a step.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// Writes of one transaction (Firestore takes 500).
 const BATCH_WRITES: usize = 400;
+/// Documents a step changes in one run before it stops and leaves the rest to the next run.
+const WORK_BUDGET: usize = 5_000;
+/// Events listed at once. Events are disasters, not volumes: there are a handful of open ones.
+/// A listing that fills this is logged, and the events past it wait until some close.
+const MAX_EVENTS: usize = 1_000;
 const DAY_MICROS: i64 = 86_400_000_000;
 
+/// The loop of the hourly task, which `serve` stops before it exits.
+pub struct Jobs {
+    stop: watch::Sender<bool>,
+    task: JoinHandle<()>,
+}
+
 /// Starts the loop; `serve` calls it once.
-pub fn spawn(state: AppState) {
-    tokio::spawn(async move {
+pub fn spawn(state: AppState) -> Jobs {
+    let (stop, mut stopped) = watch::channel(false);
+    let task = tokio::spawn(async move {
         let mut tick = tokio::time::interval(INTERVAL);
         loop {
-            tick.tick().await;
-            if let Err(err) = run_once(&state).await {
-                tracing::error!(code = err.code, "hourly task failed");
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = stopped.changed() => break,
+            }
+            // A pass cut off by the stop is safe: every write is a transaction.
+            tokio::select! {
+                _ = run_once(&state) => {}
+                _ = stopped.changed() => {
+                    tracing::info!("hourly task interrupted by shutdown");
+                    break;
+                }
             }
         }
     });
+    Jobs { stop, task }
+}
+
+impl Jobs {
+    /// Asks the loop to stop and waits for it, up to `SHUTDOWN_GRACE`.
+    pub async fn shutdown(self) {
+        let _ = self.stop.send(true);
+        match tokio::time::timeout(SHUTDOWN_GRACE, self.task).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::error!(%error, "hourly task ended abnormally"),
+            Err(_) => tracing::warn!("hourly task did not stop in time"),
+        }
+    }
+}
+
+/// A step that did not finish well.
+#[derive(Debug)]
+pub struct StepFailure {
+    pub step: &'static str,
+    pub error: ApiError,
+}
+
+type StepFuture<'a> = Pin<Box<dyn Future<Output = Result<(), ApiError>> + Send + 'a>>;
+
+/// Runs the steps one after the other, each within `deadline`. A step that fails or runs out of
+/// time does not stop the others; every failure is logged and all of them are returned.
+async fn run_steps(
+    steps: Vec<(&'static str, StepFuture<'_>)>,
+    deadline: Duration,
+) -> Vec<StepFailure> {
+    let mut failures = Vec::new();
+    for (step, work) in steps {
+        let started = tokio::time::Instant::now();
+        let outcome = match tokio::time::timeout(deadline, work).await {
+            Ok(result) => result,
+            Err(_) => Err(ApiError::new(
+                axum::http::StatusCode::GATEWAY_TIMEOUT,
+                "job_step_timeout",
+            )),
+        };
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        match outcome {
+            Ok(()) => tracing::info!(step, elapsed_ms, "hourly step done"),
+            Err(error) => {
+                tracing::error!(step, code = error.code, elapsed_ms, "hourly step failed");
+                failures.push(StepFailure { step, error });
+            }
+        }
+    }
+    failures
 }
 
 /// One pass of the task; tests call it directly. A step that fails does not stop the others;
-/// the first failure is returned.
+/// every failure is logged and the first is returned.
 pub async fn run_once(state: &AppState) -> Result<(), ApiError> {
-    let steps = [
-        close_events(state).await,
-        notify_expiring_searches(state).await,
-        expire_family_photos(state).await,
-        delete_thumbnails(state).await,
-        delete_expired(state).await,
-        crate::purge::run(state).await.map(|_| ()),
+    let steps: Vec<(&'static str, StepFuture<'_>)> = vec![
+        ("close_events", Box::pin(close_events(state))),
+        (
+            "notify_expiring_searches",
+            Box::pin(notify_expiring_searches(state)),
+        ),
+        (
+            "expire_family_photos",
+            Box::pin(expire_family_photos(state)),
+        ),
+        ("delete_thumbnails", Box::pin(delete_thumbnails(state))),
+        ("delete_expired", Box::pin(delete_expired(state))),
+        (
+            "purge",
+            Box::pin(async { crate::purge::run(state).await.map(|_| ()) }),
+        ),
     ];
-    steps.into_iter().collect()
+    let mut failures = run_steps(steps, STEP_DEADLINE).await;
+    if failures.len() > 1 {
+        let steps: Vec<_> = failures.iter().map(|f| f.step).collect();
+        tracing::error!(?steps, "several steps of the hourly task failed");
+    }
+    match failures.is_empty() {
+        true => Ok(()),
+        false => Err(failures.swap_remove(0).error),
+    }
+}
+
+/// How much a step may still change in this run.
+struct Budget {
+    step: &'static str,
+    left: usize,
+}
+
+impl Budget {
+    fn new(step: &'static str) -> Self {
+        Self {
+            step,
+            left: WORK_BUDGET,
+        }
+    }
+
+    fn spend(&mut self, n: usize) {
+        self.left = self.left.saturating_sub(n);
+    }
+
+    /// `true` once the budget is gone; logs it, as the backlog the next run takes up.
+    fn spent(&self) -> bool {
+        if self.left == 0 {
+            tracing::warn!(
+                step = self.step,
+                budget = WORK_BUDGET,
+                "work budget reached; the rest waits for the next run"
+            );
+        }
+        self.left == 0
+    }
 }
 
 /// A document with its id, for queries over types that do not carry one.
@@ -79,14 +214,24 @@ async fn events_with(
     db: &FirestoreDb,
     status: EventStatus,
 ) -> Result<Vec<Listed<EventDoc>>, ApiError> {
-    db.fluent()
+    let listed: Vec<Listed<EventDoc>> = db
+        .fluent()
         .select()
         .from(events::COLLECTION)
         .filter(|q| q.for_all([q.field(path!(EventDoc::status)).eq(status)]))
+        .limit(MAX_EVENTS as u32)
         .obj()
         .query()
         .await
-        .map_err(fs_error)
+        .map_err(fs_error)?;
+    if listed.len() == MAX_EVENTS {
+        tracing::warn!(
+            limit = MAX_EVENTS,
+            ?status,
+            "events listing is full; the events past it wait"
+        );
+    }
+    Ok(listed)
 }
 
 // ---- 1. close events (spec 4.3 item 4) ----
@@ -122,7 +267,6 @@ async fn close_events(state: &AppState) -> Result<(), ApiError> {
         state.config.purge_after_days,
         state.config.delivery_retention_days,
     );
-    // ponytail: every active event is listed each hour; fine for a pilot's handful of events.
     for event in events_with(&state.db, EventStatus::Active).await? {
         store::transact(&state.db, |db, tx| {
             let id = event.id.clone();
@@ -180,16 +324,15 @@ async fn has_accepted_match(db: &FirestoreDb, search_id: &str) -> Result<bool, A
 
 /// Tells the volunteer of every active search without an accepted match, once, that the event
 /// closed and when its data goes away. It looks at every closed event, so a run that stopped
-/// halfway is finished by the next one.
-// ponytail: the active searches of closed events are read each hour until their purge; a search
-// whose match was accepted is checked every time. Fine for a pilot; close the search when its
-// match is accepted to take it out of this query.
+/// halfway is finished by the next one. The searches of an event are read as a stream; the
+/// ones already notified are skipped without a write, and the step stops at its work budget.
 async fn notify_expiring_searches(state: &AppState) -> Result<(), ApiError> {
+    let mut budget = Budget::new("notify_expiring_searches");
     for event in events_with(&state.db, EventStatus::Closed).await? {
         let Some(purge_at) = event.doc.purge_at else {
             continue;
         };
-        let active: Vec<SearchDoc> = state
+        let mut active = state
             .db
             .fluent()
             .select()
@@ -200,101 +343,128 @@ async fn notify_expiring_searches(state: &AppState) -> Result<(), ApiError> {
                     q.field(path!(SearchDoc::status)).eq(SearchStatus::Active),
                 ])
             })
-            .obj()
-            .query()
+            .obj::<SearchDoc>()
+            .stream_query_with_errors()
             .await
             .map_err(fs_error)?;
-        // The event is over: the family's photos kept for a match go now, not at the discard.
-        for search in active.iter().filter(|s| s.retained_photos > 0) {
+        let mut pending: Vec<String> = Vec::new();
+        while let Some(search) = active.next().await {
+            let search = search.map_err(fs_error)?;
             let Some(search_id) = search.id.clone() else {
                 continue;
             };
-            store::transact(&state.db, |db, tx| {
-                let search_id = search_id.clone();
-                Box::pin(async move {
-                    if let Some(mut search) =
-                        store::get::<SearchDoc>(&db, searches::COLLECTION, &search_id).await?
-                    {
-                        search_photos::discard(&db, tx, &search_id, &mut search, "event_closed")?;
-                    }
-                    Ok(())
-                })
-            })
-            .await?;
+            // The event is over: the family's photos kept for a match go now, not at the discard.
+            if search.retained_photos > 0 {
+                discard_family_photos(state, &search_id, "event_closed").await?;
+                budget.spend(1);
+            }
+            if search.expiry_notified_at.is_none() {
+                pending.push(search_id);
+            }
+            // A search and its alert: two writes.
+            if pending.len() == BATCH_WRITES / 2 {
+                notify_chunk(state, &event.id, purge_at, &pending).await?;
+                budget.spend(pending.len());
+                pending.clear();
+            }
+            if budget.spent() {
+                return Ok(());
+            }
         }
-        let pending: Vec<String> = active
-            .into_iter()
-            .filter(|s| s.expiry_notified_at.is_none())
-            .filter_map(|s| s.id)
-            .collect();
-        // A search and its alert: two writes.
-        for chunk in pending.chunks(BATCH_WRITES / 2) {
-            store::transact(&state.db, |db, tx| {
-                let (chunk, event_id) = (chunk.to_vec(), event.id.clone());
-                Box::pin(async move {
-                    for search_id in chunk {
-                        let Some(mut search) =
-                            store::get::<SearchDoc>(&db, searches::COLLECTION, &search_id).await?
-                        else {
-                            continue;
-                        };
-                        if search.status != SearchStatus::Active
-                            || search.expiry_notified_at.is_some()
-                            || has_accepted_match(&db, &search_id).await?
-                        {
-                            continue;
-                        }
-                        search.expiry_notified_at = Some(store::now());
-                        tx_replace(&db, tx, searches::COLLECTION, &search_id, &search)?;
-                        let alert = AlertDoc::personal(
-                            AlertKind::SearchExpiring,
-                            "search",
-                            &search_id,
-                            &search.created_by,
-                            json!({ "purge_at": purge_at.to_string() }),
-                        )
-                        .in_event(&event_id);
-                        alerts::add(&db, tx, &alert)?;
-                    }
-                    Ok(())
-                })
-            })
-            .await?;
-        }
+        notify_chunk(state, &event.id, purge_at, &pending).await?;
+        budget.spend(pending.len());
     }
     Ok(())
 }
 
+async fn notify_chunk(
+    state: &AppState,
+    event_id: &str,
+    purge_at: FirestoreInstant,
+    chunk: &[String],
+) -> Result<(), ApiError> {
+    if chunk.is_empty() {
+        return Ok(());
+    }
+    store::transact(&state.db, |db, tx| {
+        let (chunk, event_id) = (chunk.to_vec(), event_id.to_string());
+        Box::pin(async move {
+            for search_id in chunk {
+                let Some(mut search) =
+                    store::get::<SearchDoc>(&db, searches::COLLECTION, &search_id).await?
+                else {
+                    continue;
+                };
+                if search.status != SearchStatus::Active
+                    || search.expiry_notified_at.is_some()
+                    || has_accepted_match(&db, &search_id).await?
+                {
+                    continue;
+                }
+                search.expiry_notified_at = Some(store::now());
+                tx_replace(&db, tx, searches::COLLECTION, &search_id, &search)?;
+                let alert = AlertDoc::personal(
+                    AlertKind::SearchExpiring,
+                    "search",
+                    &search_id,
+                    &search.created_by,
+                    json!({ "purge_at": purge_at.to_string() }),
+                )
+                .in_event(&event_id);
+                alerts::add(&db, tx, &alert)?;
+            }
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// Discards the family's photos kept for a search, in a transaction that reads it again.
+async fn discard_family_photos(
+    state: &AppState,
+    search_id: &str,
+    reason: &'static str,
+) -> Result<(), ApiError> {
+    store::transact(&state.db, |db, tx| {
+        let search_id = search_id.to_string();
+        Box::pin(async move {
+            if let Some(mut search) =
+                store::get::<SearchDoc>(&db, searches::COLLECTION, &search_id).await?
+            {
+                search_photos::discard(&db, tx, &search_id, &mut search, reason)?;
+            }
+            Ok(())
+        })
+    })
+    .await
+}
+
 /// The family's photos go `PURGE_AFTER_DAYS` after the search was made at the latest, whatever
-/// became of the match (one nobody attends, a search with no event).
+/// became of the match (one nobody attends, a search with no event). Read as a stream; stops at
+/// the work budget.
 async fn expire_family_photos(state: &AppState) -> Result<(), ApiError> {
     let cutoff = minus_days(store::now(), state.config.purge_after_days);
-    let kept: Vec<SearchDoc> = state
+    let mut budget = Budget::new("expire_family_photos");
+    let mut kept = state
         .db
         .fluent()
         .select()
         .from(searches::COLLECTION)
         .filter(|q| q.for_all([q.field(path!(SearchDoc::retained_photos)).greater_than(0)]))
-        .obj()
-        .query()
+        .obj::<SearchDoc>()
+        .stream_query_with_errors()
         .await
         .map_err(fs_error)?;
-    for search in kept.into_iter().filter(|s| s.created_at < cutoff) {
-        let Some(search_id) = search.id.clone() else {
+    while let Some(search) = kept.next().await {
+        let search = search.map_err(fs_error)?;
+        let Some(search_id) = search.id.filter(|_| search.created_at < cutoff) else {
             continue;
         };
-        store::transact(&state.db, |db, tx| {
-            let search_id = search_id.clone();
-            Box::pin(async move {
-                if let Some(mut search) =
-                    store::get::<SearchDoc>(&db, searches::COLLECTION, &search_id).await?
-                {
-                    search_photos::discard(&db, tx, &search_id, &mut search, "max_age")?;
-                }
-                Ok(())
-            })
-        })
-        .await?;
+        discard_family_photos(state, &search_id, "max_age").await?;
+        budget.spend(1);
+        if budget.spent() {
+            break;
+        }
     }
     Ok(())
 }
@@ -335,80 +505,99 @@ fn orphan_expired(
     event_ids.is_empty() && current_shelter_id.is_none() && updated_at < cutoff
 }
 
-/// Deletes the thumbnail of every person whose events are all closed.
-// ponytail: every person with a thumbnail is listed each hour (their event ids only); fine while
-// the unidentified people of the open events number in the hundreds.
+/// Deletes the thumbnail of every person whose events are all closed. The people with a
+/// thumbnail are read as a stream (their event ids only); the step stops at its work budget.
 async fn delete_thumbnails(state: &AppState) -> Result<(), ApiError> {
     let active: HashSet<String> = events_with(&state.db, EventStatus::Active)
         .await?
         .into_iter()
         .map(|e| e.id)
         .collect();
-    let with_thumbnail: Vec<Listed<PersonEvents>> = state
+    let mut with_thumbnail = state
         .db
         .fluent()
         .select()
         .fields(["event_ids", "current_shelter_id", "updated_at"])
         .from(people::COLLECTION)
         .filter(|q| q.for_all([q.field(path!(PersonDoc::thumbnail_encrypted)).is_not_null()]))
-        .obj()
-        .query()
+        .obj::<Listed<PersonEvents>>()
+        .stream_query_with_errors()
         .await
         .map_err(fs_error)?;
     let cutoff = minus_days(store::now(), state.config.purge_after_days);
-    let due: Vec<String> = with_thumbnail
-        .into_iter()
-        .filter(|p| {
-            (!p.doc.event_ids.is_empty() && p.doc.event_ids.iter().all(|e| !active.contains(e)))
-                || orphan_expired(
-                    &p.doc.event_ids,
-                    p.doc.current_shelter_id.as_deref(),
-                    p.doc.updated_at,
-                    cutoff,
-                )
-        })
-        .map(|p| p.id)
-        .collect();
+    let mut budget = Budget::new("delete_thumbnails");
+    let mut due: Vec<String> = Vec::new();
     // A person and the audit entry: two writes.
-    for chunk in due.chunks(BATCH_WRITES / 2) {
-        store::transact(&state.db, |db, tx| {
-            let chunk = chunk.to_vec();
-            Box::pin(async move {
-                for person_id in chunk {
-                    let Some(mut person) =
-                        store::get::<PersonDoc>(&db, people::COLLECTION, &person_id).await?
-                    else {
-                        continue;
-                    };
-                    // The person may have checked in to a new event since the listing.
-                    if person.thumbnail_encrypted.is_none() {
-                        continue;
-                    }
-                    let orphan = orphan_expired(
-                        &person.event_ids,
-                        person.current_shelter_id.as_deref(),
-                        person.updated_at,
-                        cutoff,
-                    );
-                    if !orphan && !all_events_closed(&db, &person.event_ids).await? {
-                        continue;
-                    }
-                    person.thumbnail_encrypted = None;
-                    person.updated_at = store::now();
-                    tx_replace(&db, tx, people::COLLECTION, &person_id, &person)?;
-                    audit::add(
-                        &db,
-                        tx,
-                        &AuditEntry::new("person.thumbnail_purge", "person", &person_id)
-                            .basis(LegalBasis::PublicPolicy),
-                    )?;
-                }
-                Ok(())
-            })
-        })
-        .await?;
+    while let Some(person) = with_thumbnail.next().await {
+        let person = person.map_err(fs_error)?;
+        let is_due = (!person.doc.event_ids.is_empty()
+            && person.doc.event_ids.iter().all(|e| !active.contains(e)))
+            || orphan_expired(
+                &person.doc.event_ids,
+                person.doc.current_shelter_id.as_deref(),
+                person.doc.updated_at,
+                cutoff,
+            );
+        if !is_due {
+            continue;
+        }
+        due.push(person.id);
+        if due.len() == BATCH_WRITES / 2 {
+            purge_thumbnails(state, &due, cutoff).await?;
+            budget.spend(due.len());
+            due.clear();
+            if budget.spent() {
+                return Ok(());
+            }
+        }
     }
-    Ok(())
+    purge_thumbnails(state, &due, cutoff).await
+}
+
+async fn purge_thumbnails(
+    state: &AppState,
+    due: &[String],
+    cutoff: FirestoreInstant,
+) -> Result<(), ApiError> {
+    if due.is_empty() {
+        return Ok(());
+    }
+    store::transact(&state.db, |db, tx| {
+        let chunk = due.to_vec();
+        Box::pin(async move {
+            for person_id in chunk {
+                let Some(mut person) =
+                    store::get::<PersonDoc>(&db, people::COLLECTION, &person_id).await?
+                else {
+                    continue;
+                };
+                // The person may have checked in to a new event since the listing.
+                if person.thumbnail_encrypted.is_none() {
+                    continue;
+                }
+                let orphan = orphan_expired(
+                    &person.event_ids,
+                    person.current_shelter_id.as_deref(),
+                    person.updated_at,
+                    cutoff,
+                );
+                if !orphan && !all_events_closed(&db, &person.event_ids).await? {
+                    continue;
+                }
+                person.thumbnail_encrypted = None;
+                person.updated_at = store::now();
+                tx_replace(&db, tx, people::COLLECTION, &person_id, &person)?;
+                audit::add(
+                    &db,
+                    tx,
+                    &AuditEntry::new("person.thumbnail_purge", "person", &person_id)
+                        .basis(LegalBasis::PublicPolicy),
+                )?;
+            }
+            Ok(())
+        })
+    })
+    .await
 }
 
 // ---- 3. expired captures, invites and endorsement codes (spec 6.2.6 item 4) ----
@@ -453,61 +642,85 @@ async fn delete_if_expired(
     Ok(())
 }
 
-fn expired_ids(listed: Vec<Expiring>, now: FirestoreInstant) -> Vec<String> {
-    listed
-        .into_iter()
-        .filter(|d| d.expires_at <= now)
-        .filter_map(|d| d.id)
-        .collect()
+/// Reads the listed documents as they come and deletes the expired ones, `BATCH_WRITES` at a
+/// time, until the budget is gone.
+async fn sweep(
+    state: &AppState,
+    budget: &mut Budget,
+    collection: &'static str,
+    mut listed: BoxStream<'_, FirestoreResult<Expiring>>,
+    keep: fn(&Expiring) -> bool,
+) -> Result<(), ApiError> {
+    let now = store::now();
+    let mut ids = Vec::new();
+    while let Some(doc) = listed.next().await {
+        let doc = doc.map_err(fs_error)?;
+        if doc.expires_at > now {
+            continue;
+        }
+        ids.extend(doc.id);
+        if ids.len() == BATCH_WRITES {
+            delete_if_expired(state, collection, std::mem::take(&mut ids), keep).await?;
+            budget.spend(BATCH_WRITES);
+            if budget.spent() {
+                return Ok(());
+            }
+        }
+    }
+    budget.spend(ids.len());
+    delete_if_expired(state, collection, ids, keep).await
 }
 
 async fn delete_expired(state: &AppState) -> Result<(), ApiError> {
     let now = store::now();
+    let mut budget = Budget::new("delete_expired");
     // Captures: the Firestore TTL also removes them, some time after `expires_at`.
-    let captures: Vec<Expiring> = state
+    let captures = state
         .db
         .fluent()
         .select()
         .from("captures")
         .filter(|q| q.for_all([q.field("expires_at").less_than(FirestoreTimestamp(now))]))
-        .obj()
-        .query()
+        .obj::<Expiring>()
+        .stream_query_with_errors()
         .await
         .map_err(fs_error)?;
-    delete_if_expired(state, "captures", expired_ids(captures, now), |_| false).await?;
+    sweep(state, &mut budget, "captures", captures, |_| false).await?;
 
-    let invites: Vec<Expiring> = state
+    let invites = state
         .db
         .fluent()
         .select()
         .from(invites::COLLECTION)
         .filter(|q| q.for_all([q.field("status").eq(InviteStatus::Active)]))
-        .obj()
-        .query()
+        .obj::<Expiring>()
+        .stream_query_with_errors()
         .await
         .map_err(fs_error)?;
-    delete_if_expired(state, invites::COLLECTION, expired_ids(invites, now), |d| {
-        d.status.as_deref() != Some("active")
-    })
-    .await?;
+    if budget.left > 0 {
+        sweep(state, &mut budget, invites::COLLECTION, invites, |d| {
+            d.status.as_deref() != Some("active")
+        })
+        .await?;
+    }
 
-    let codes: Vec<Expiring> = state
+    let codes = state
         .db
         .fluent()
         .select()
         .from(endorsements::COLLECTION)
         .filter(|q| q.for_all([q.field("used").eq(false)]))
-        .obj()
-        .query()
+        .obj::<Expiring>()
+        .stream_query_with_errors()
         .await
         .map_err(fs_error)?;
-    delete_if_expired(
-        state,
-        endorsements::COLLECTION,
-        expired_ids(codes, now),
-        |d| d.used,
-    )
-    .await
+    if budget.left > 0 {
+        sweep(state, &mut budget, endorsements::COLLECTION, codes, |d| {
+            d.used
+        })
+        .await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1168,5 +1381,67 @@ mod tests {
             all_docs(&w.app.state.db, "captures").await.len(),
             before + 1
         );
+    }
+
+    fn failing(code: &'static str) -> StepFuture<'static> {
+        Box::pin(async move { Err(ApiError::new(axum::http::StatusCode::BAD_GATEWAY, code)) })
+    }
+
+    #[tokio::test]
+    async fn a_failed_or_slow_step_does_not_stop_the_others_and_every_failure_is_kept() {
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = ran.clone();
+        let steps: Vec<(&'static str, StepFuture<'static>)> = vec![
+            ("first", failing("first_failed")),
+            (
+                "slow",
+                Box::pin(async {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    Ok(())
+                }),
+            ),
+            ("second", failing("second_failed")),
+            (
+                "last",
+                Box::pin(async move {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(())
+                }),
+            ),
+        ];
+        let failures = run_steps(steps, Duration::from_millis(100)).await;
+        let seen: Vec<_> = failures.iter().map(|f| (f.step, f.error.code)).collect();
+        assert_eq!(
+            seen,
+            [
+                ("first", "first_failed"),
+                ("slow", "job_step_timeout"),
+                ("second", "second_failed")
+            ]
+        );
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn the_loop_stops_when_asked_even_in_the_middle_of_a_pass() {
+        let app = crate::test_support::TestApp::new().await;
+        // The first tick is immediate, so a pass is under way when the stop arrives.
+        let jobs = spawn(app.state.clone());
+        let started = tokio::time::Instant::now();
+        jobs.shutdown().await;
+        assert!(
+            started.elapsed() < SHUTDOWN_GRACE,
+            "the loop ended after the stop"
+        );
+    }
+
+    #[test]
+    fn the_budget_runs_out_and_stays_out() {
+        let mut budget = Budget::new("test");
+        assert!(!budget.spent());
+        budget.spend(WORK_BUDGET - 1);
+        assert!(!budget.spent());
+        budget.spend(5);
+        assert!(budget.spent());
     }
 }

@@ -1,5 +1,6 @@
 import type { AlertView } from './api'
-import { getLanguage } from './i18n'
+import type { EventDashboard } from './api-phase6'
+import { getLanguage, t } from './i18n'
 
 // Civil Defense panel helpers (spec 3.10): who sees it, number formats, the file download and the anomalies.
 
@@ -20,6 +21,13 @@ export const formatRatio = (ratio: number | null): string =>
 
 export const formatDecimal = (n: number | null): string =>
   n === null ? '–' : new Intl.NumberFormat(getLanguage(), { maximumFractionDigits: 2 }).format(n)
+
+/** The "updated at" time of an answer, in the language of the app. */
+export const formatGeneratedAt = (iso: string): string => new Date(iso).toLocaleString(getLanguage())
+
+/** The partial notice of a detail (`null` when it is complete or an older API said nothing about it). */
+export const partialNotice = (d: Pick<EventDashboard, 'complete' | 'partial_indicators'>): string | null =>
+  d.complete === false ? t('dashboard.partial', { what: (d.partial_indicators ?? []).map((k) => t(`dashboard.partial.${k}`)).join(', ') }) : null
 
 /** `403` has its own text; the rest follow the shared error codes. */
 export const dashboardErrorKey = (status: number): string | null => (status === 403 ? 'dashboard.error_forbidden' : null)

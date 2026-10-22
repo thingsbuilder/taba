@@ -49,6 +49,7 @@ export function People({ ctx, shelterId }: { ctx: AppContext; shelterId: string 
   const [query, setQuery] = useState('')
   const [people, setPeople] = useState<PersonSummary[] | null>(null)
   const [needsSelfie, setNeedsSelfie] = useState<PersonSummary[]>([])
+  const [hasMore, setHasMore] = useState({ all: false, needs_selfie: false })
   const [items, setItems] = useState<QueueItem[]>([])
   const [fromCache, setFromCache] = useState(false)
 
@@ -74,14 +75,19 @@ export function People({ ctx, shelterId }: { ctx: AppContext; shelterId: string 
       if (!alive) return
       if (res.ok) {
         setPeople(res.data.people)
+        setHasMore((cur) => ({ ...cur, all: res.data.has_more === true }))
         setFromCache(false)
-        await cachePeople(db, shelterId, res.data.people)
+        await cachePeople(db, shelterId, res.data.people, res.data.has_more === true)
       } else {
         setPeople(await cachedPeople(db, shelterId))
         setFromCache(true)
       }
     })
-    void api.listNeedsSelfie(active.secret, shelterId).then((res) => alive && res.ok && setNeedsSelfie(res.data.people))
+    void api.listNeedsSelfie(active.secret, shelterId).then((res) => {
+      if (!alive || !res.ok) return
+      setNeedsSelfie(res.data.people)
+      setHasMore((cur) => ({ ...cur, needs_selfie: res.data.has_more === true }))
+    })
     return () => {
       alive = false
     }
@@ -111,6 +117,7 @@ export function People({ ctx, shelterId }: { ctx: AppContext; shelterId: string 
           <input type="search" value={query} onInput={(e) => setQuery(e.currentTarget.value)} />
         </label>
         {fromCache && <p class="notice" role="status">{people && people.length > 0 ? t('person.cached') : t('person.needs_signal_list')}</p>}
+        {!fromCache && hasMore[tab] && <p class="notice notice-warning" role="status">{t('person.has_more')}</p>}
         <ul class="list">
           {pending.map((p) => (
             <li key={p.queue_id}>

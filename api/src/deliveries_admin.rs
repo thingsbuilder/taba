@@ -1,6 +1,6 @@
 //! The admin side of the deliveries (spec 3.5.2, 3.5.3 item 8, 8.6): `PUT /v1/shelters/{id}/items`,
-//! `GET /v1/shelters/{id}/deliveries?status=` and `POST /v1/deliveries/{id}/review`. The types are
-//! in `deliveries.rs`.
+//! `GET /v1/shelters/{id}/deliveries?status=` and `POST /v1/deliveries/{id}/review`. The types and
+//! the review transition are in `deliveries/`.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -14,7 +14,8 @@ use serde_json::{Value, json};
 use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::deliveries::{
-    self, DeliveryDoc, DeliveryStatus, ItemScope, Items, Reason, ReasonKind, Verification,
+    self, DeliveryDoc, DeliveryStatus, ItemScope, Items, Reason, ReasonKind, ReviewDecision,
+    Verification,
 };
 use crate::error::ApiError;
 use crate::events;
@@ -27,7 +28,8 @@ const MAX_ITEMS: usize = 50;
 const MAX_ITEM_NAME_CHARS: usize = 60;
 const MAX_PERIOD_DAYS: u32 = 365;
 const MAX_NOTE_CHARS: usize = 500;
-/// Deliveries per page of the review list.
+/// Deliveries per page of the review list; the answer says `has_more` when the shelter has more
+/// of that status than one page holds.
 const LIST_LIMIT: u32 = 100;
 
 fn forbidden() -> ApiError {
@@ -42,10 +44,6 @@ fn invalid(field: &str) -> ApiError {
 
 fn delivery_not_found() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "delivery_not_found")
-}
-
-fn not_in_review() -> ApiError {
-    ApiError::new(StatusCode::CONFLICT, "delivery_not_in_review")
 }
 
 // ---- PUT /v1/shelters/{id}/items ----
@@ -228,8 +226,31 @@ async fn person_name(
     Ok(name)
 }
 
+/// Documents of the other deliveries and shelters read while building one page: many rows name the
+/// same earlier delivery or shelter.
+#[derive(Default)]
+struct Seen {
+    deliveries: HashMap<String, Option<DeliveryDoc>>,
+    shelters: HashMap<String, Option<ShelterDoc>>,
+}
+
+async fn cached<T: serde::de::DeserializeOwned + Send + Clone>(
+    db: &FirestoreDb,
+    cache: &mut HashMap<String, Option<T>>,
+    collection: &str,
+    id: &str,
+) -> Result<Option<T>, ApiError> {
+    if let Some(doc) = cache.get(id) {
+        return Ok(doc.clone());
+    }
+    let doc = store::get::<T>(db, collection, id).await?;
+    cache.insert(id.to_string(), doc.clone());
+    Ok(doc)
+}
+
 async fn reason_view(
     db: &FirestoreDb,
+    seen: &mut Seen,
     requester: &ShelterDoc,
     shelter_id: &str,
     reason: &Reason,
@@ -243,12 +264,23 @@ async fn reason_view(
     let Some(previous_id) = &reason.previous_delivery_id else {
         return Ok(view);
     };
-    let previous: Option<DeliveryDoc> = store::get(db, deliveries::COLLECTION, previous_id).await?;
+    let previous = cached(
+        db,
+        &mut seen.deliveries,
+        deliveries::COLLECTION,
+        previous_id,
+    )
+    .await?;
     let Some(previous) = previous else {
         return Ok(view);
     };
-    let other: Option<ShelterDoc> =
-        store::get(db, shelters::COLLECTION, &previous.shelter_id).await?;
+    let other = cached(
+        db,
+        &mut seen.shelters,
+        shelters::COLLECTION,
+        &previous.shelter_id,
+    )
+    .await?;
     let (date, name) = deliveries::previous_visibility(
         requester,
         shelter_id,
@@ -285,7 +317,7 @@ pub async fn list_deliveries(
         .await?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "shelter_not_found"))?;
 
-    let rows: Vec<Row> = state
+    let mut rows: Vec<Row> = state
         .db
         .fluent()
         .select()
@@ -300,18 +332,21 @@ pub async fn list_deliveries(
             path!(Row::delivered_at),
             firestore::FirestoreQueryDirection::Descending,
         )])
-        .limit(LIST_LIMIT)
+        .limit(LIST_LIMIT + 1)
         .obj()
         .query()
         .await
         .map_err(fs_error)?;
+    let has_more = rows.len() > LIST_LIMIT as usize;
+    rows.truncate(LIST_LIMIT as usize);
 
-    let (mut volunteers_seen, mut people_seen) = (HashMap::new(), HashMap::new());
+    let (mut volunteers_seen, mut people_seen, mut seen) =
+        (HashMap::new(), HashMap::new(), Seen::default());
     let mut views = Vec::with_capacity(rows.len());
     for row in rows {
         let mut reasons = Vec::with_capacity(row.reasons.len());
         for reason in &row.reasons {
-            reasons.push(reason_view(&state.db, &requester, &id, reason).await?);
+            reasons.push(reason_view(&state.db, &mut seen, &requester, &id, reason).await?);
         }
         let person_name = match &row.person_id {
             Some(person_id) => person_name(&state.db, &mut people_seen, person_id).await?,
@@ -338,21 +373,14 @@ pub async fn list_deliveries(
             review_note: row.review_note,
         });
     }
-    Ok(Json(json!({ "deliveries": views })))
+    Ok(Json(json!({ "deliveries": views, "has_more": has_more })))
 }
 
 // ---- POST /v1/deliveries/{id}/review ----
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Decision {
-    ReviewedOk,
-    Irregular,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct ReviewBody {
-    decision: Decision,
+    decision: ReviewDecision,
     #[serde(default)]
     note: String,
 }
@@ -369,10 +397,7 @@ pub async fn review_delivery(
         return Err(invalid("note"));
     }
     let note = (!note.is_empty()).then(|| note.to_string());
-    let status = match body.decision {
-        Decision::ReviewedOk => DeliveryStatus::ReviewedOk,
-        Decision::Irregular => DeliveryStatus::Irregular,
-    };
+    let decision = body.decision;
 
     let delivery: DeliveryDoc = store::get(&state.db, deliveries::COLLECTION, &id)
         .await?
@@ -388,12 +413,7 @@ pub async fn review_delivery(
             let mut delivery: DeliveryDoc = store::get(&db, deliveries::COLLECTION, &id)
                 .await?
                 .ok_or_else(delivery_not_found)?;
-            if delivery.status != DeliveryStatus::InReview {
-                return Err(not_in_review());
-            }
-            delivery.status = status;
-            delivery.reviewed_by = Some(volunteer.id.clone());
-            delivery.review_note = note;
+            delivery.review(decision, &volunteer.id, note)?;
             tx_replace(&db, tx, deliveries::COLLECTION, &id, &delivery)?;
             audit::add(
                 &db,
@@ -825,6 +845,35 @@ mod tests {
             body["deliveries"].as_array().unwrap().len(),
             LIST_LIMIT as usize
         );
+        assert_eq!(body["has_more"], true, "{body}");
+    }
+
+    #[tokio::test]
+    async fn list_says_when_the_page_is_all_there_is() {
+        let w = world().await;
+        for n in 0..LIST_LIMIT {
+            seed(
+                &w,
+                Seed {
+                    id: &format!("d{n}"),
+                    shelter: &w.shelter,
+                    person: None,
+                    by: &w.volunteer,
+                    status: DeliveryStatus::InReview,
+                    at: "2026-10-21T10:00:00Z",
+                    reasons: vec![],
+                },
+            )
+            .await;
+        }
+        let (_, body) = list_as(&w, &w.admin, &w.shelter, "in_review").await;
+        assert_eq!(
+            body["deliveries"].as_array().unwrap().len(),
+            LIST_LIMIT as usize
+        );
+        assert_eq!(body["has_more"], false, "{body}");
+        let (_, none) = list_as(&w, &w.admin, &w.shelter, "irregular").await;
+        assert_eq!(none["has_more"], false, "{none}");
     }
 
     #[tokio::test]

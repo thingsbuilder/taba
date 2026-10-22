@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AlertView } from './api'
-import { anomaliesOf, canSeeDashboard, formatNumber, formatRatio, saveCsv } from './dashboard'
+import { anomaliesOf, canSeeDashboard, formatGeneratedAt, formatNumber, formatRatio, partialNotice, saveCsv } from './dashboard'
 import { setLanguage, t } from './i18n'
 
 const alert = (kind: string, over: Partial<AlertView> = {}): AlertView => ({
@@ -15,6 +15,20 @@ describe('dashboard helpers', () => {
     expect(canSeeDashboard(['civil_defense'])).toBe(true)
     expect(canSeeDashboard(['mediator', 'protection'])).toBe(false)
     expect(canSeeDashboard([])).toBe(false)
+  })
+
+  it('shows the time the panel was built in the language of the app', () => {
+    const iso = '2026-10-22T10:10:56.226964Z'
+    expect(formatGeneratedAt(iso)).toBe(new Date(iso).toLocaleString('pt-BR'))
+    expect(t('dashboard.updated_at', { time: '10:10' })).toBe('Atualizado em 10:10')
+    for (const k of ['shelters', 'exits', 'pets']) expect(t(`dashboard.partial.${k}`)).not.toContain('dashboard.partial')
+  })
+
+  it('says a detail is partial only when the API says complete is false, and tolerates an older API', () => {
+    expect(partialNotice({})).toBeNull()
+    expect(partialNotice({ complete: true, partial_indicators: [] })).toBeNull()
+    expect(partialNotice({ complete: false })).toContain('Parcial')
+    expect(partialNotice({ complete: false, partial_indicators: ['shelters', 'pets'] })).toContain('abrigos e pessoas, animais')
   })
 
   it('formats numbers in the language of the app', () => {

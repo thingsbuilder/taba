@@ -7,10 +7,14 @@
 //! event's totals are the sum of its shelters. Counts use the Firestore `count()` aggregation; the
 //! two things an aggregation cannot do (the exits, which live inside the `stays` array, and the
 //! animals, which live inside the households) are bounded scans.
+//!
+//! Every bounded read fetches one row past its limit. When that extra row shows up, the read was
+//! cut: the answer says so (`complete: false`, with the cut indicators in `partial_indicators`)
+//! instead of passing a subset off as the total. `generated_at` is when the answer was built.
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::Json;
@@ -43,8 +47,8 @@ use crate::volunteers::{self, VolunteerDoc};
 pub const NOTICE: &str = "Conta desabrigados (pessoas em abrigo). Desalojados (em casa de parentes ou amigos) não estão aqui.";
 
 /// How long a built panel is served again before Firestore is asked (spec 6.3.5: reads are scarce).
-// ponytail: per-process cache on a single instance, no lock against two builds at once; swap for
-// a shared cache if the API ever runs on more than one instance.
+// The cache is per process: with more than one API instance each one builds its own copy
+// (docs/pt_br/dividas-tecnicas.md, DT-01).
 const CACHE_TTL: Duration = Duration::from_secs(30);
 /// The list is the screen the Civil Defense leaves open: a few counts per event, so it is rebuilt
 /// less often than the detail.
@@ -52,16 +56,21 @@ const LIST_TTL: Duration = Duration::from_secs(300);
 /// The exits cost one read per person of the event, so they are rebuilt less often than the counts.
 const MOVES_TTL: Duration = Duration::from_secs(600);
 /// People read to build the exits of one event.
-// ponytail: a bounded scan; past this many people the exits undercount. Keep the counters in the
-// event document (written by the exit and check-in routes) when an event grows past it.
+/// Past it the exits and movements are marked partial (`partial_indicators` has `exits`).
 const MOVES_SCAN_LIMIT: u32 = 10_000;
 /// Households read per shelter to add up the animals.
-// ponytail: a bounded scan; same upgrade as above if a shelter has more households.
+/// Past it the animals of that shelter are marked partial (`pets`).
 const PETS_SCAN_LIMIT: u32 = 2_000;
+/// Shelters of one event; past it the event is marked partial (`shelters`).
 const SHELTER_LIMIT: u32 = 500;
+/// Events in the list; past it the list is marked partial.
 const EVENT_LIMIT: u32 = 100;
-/// Aggregation queries in flight at once.
+/// Aggregation queries in flight at once, for the whole process.
 const COUNT_CONCURRENCY: usize = 16;
+/// Entries one cache keeps; past it the entry touched longest ago is dropped.
+const CACHE_MAX_ENTRIES: usize = 256;
+static COUNT_LIMITER: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(COUNT_CONCURRENCY)));
 /// The captures that spend a Unico process on a person being served.
 const CAPTURE_PURPOSES: [&str; 3] = ["checkin", "revalidation", "biometrics"];
 const CAPTURES: &str = "captures";
@@ -197,6 +206,12 @@ pub struct EventDashboard {
     pub status: String,
     /// The fixed notice of spec 3.10.
     pub notice: &'static str,
+    /// When this answer was built (it is served again for up to `CACHE_TTL`).
+    pub generated_at: String,
+    /// `false` when a bounded read was cut: the indicators in `partial_indicators` are a subset.
+    pub complete: bool,
+    /// `shelters`, `exits` (movement and exits by destination) or `pets`.
+    pub partial_indicators: Vec<&'static str>,
     pub totals: Counts,
     pub shelters: Vec<ShelterRow>,
     pub movement: Movement,
@@ -211,35 +226,66 @@ pub struct EventDashboard {
 
 // ---- cache ----
 
-struct TtlCache<T>(Mutex<BTreeMap<String, (Instant, T)>>);
+type Slot<T> = Arc<tokio::sync::Mutex<Option<(Instant, T)>>>;
+
+/// A cache of built values by key. One build per key at a time: whoever arrives while it runs
+/// waits for it and reads its value. At most `max` keys are kept.
+struct TtlCache<T> {
+    slots: Mutex<BTreeMap<String, (Instant, Slot<T>)>>,
+    max: usize,
+}
 
 impl<T: Clone> TtlCache<T> {
-    const fn new() -> Self {
-        Self(Mutex::new(BTreeMap::new()))
+    const fn new(max: usize) -> Self {
+        Self {
+            slots: Mutex::new(BTreeMap::new()),
+            max,
+        }
     }
 
-    /// The value built less than `ttl` ago, or a new one.
+    /// The value built less than `ttl` ago, or a new one. A failed build is not cached; the next
+    /// caller in line builds again.
     async fn get_or<F, Fut>(&self, key: &str, ttl: Duration, build: F) -> Result<T, ApiError>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<T, ApiError>>,
     {
-        if let Some((at, value)) = self.0.lock().unwrap().get(key) {
+        let slot = {
+            let mut slots = self.slots.lock().unwrap();
+            if !slots.contains_key(key) && slots.len() >= self.max {
+                let oldest = slots
+                    .iter()
+                    .min_by_key(|(_, (touched, _))| *touched)
+                    .map(|(k, _)| k.clone());
+                if let Some(oldest) = oldest {
+                    slots.remove(&oldest);
+                }
+            }
+            let entry = slots
+                .entry(key.to_string())
+                .or_insert_with(|| (Instant::now(), Slot::default()));
+            entry.0 = Instant::now();
+            entry.1.clone()
+        };
+        let mut built = slot.lock().await;
+        if let Some((at, value)) = built.as_ref() {
             if at.elapsed() < ttl {
                 return Ok(value.clone());
             }
         }
         let value = build().await?;
-        self.0
-            .lock()
-            .unwrap()
-            .insert(key.to_string(), (Instant::now(), value.clone()));
+        *built = Some((Instant::now(), value.clone()));
         Ok(value)
     }
 
     #[cfg(test)]
-    fn clear(&self) {
-        self.0.lock().unwrap().clear();
+    fn remove(&self, key: &str) {
+        self.slots.lock().unwrap().remove(key);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.slots.lock().unwrap().len()
     }
 }
 
@@ -247,11 +293,13 @@ impl<T: Clone> TtlCache<T> {
 struct Moves {
     movement: Movement,
     exits: BTreeMap<String, u32>,
+    /// `false` when the scan hit its limit.
+    complete: bool,
 }
 
-static LIST: TtlCache<Value> = TtlCache::new();
-static DETAIL: TtlCache<EventDashboard> = TtlCache::new();
-static MOVES: TtlCache<Moves> = TtlCache::new();
+static LIST: TtlCache<Value> = TtlCache::new(CACHE_MAX_ENTRIES);
+static DETAIL: TtlCache<EventDashboard> = TtlCache::new(CACHE_MAX_ENTRIES);
+static MOVES: TtlCache<Moves> = TtlCache::new(CACHE_MAX_ENTRIES);
 
 // Test only: the scans of people (`pets_of`, `scan_moves`) this thread has started.
 #[cfg(test)]
@@ -275,6 +323,22 @@ enum Cut {
     Indigenous,
     Migrant,
     Declined,
+}
+
+/// The rows to use out of a read that asked for `limit + 1`, and whether it was cut.
+fn cap<T>(mut rows: Vec<T>, limit: u32) -> (Vec<T>, bool) {
+    let cut = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    (rows, cut)
+}
+
+/// The `count()` aggregation returns an `i64`; one that does not fit a `u32` is an error that
+/// shows in the logs, not a zero on the panel.
+pub(crate) fn count_value(n: i64) -> Result<u32, ApiError> {
+    u32::try_from(n).map_err(|_| {
+        tracing::error!(n, "count() result does not fit in a u32");
+        ApiError::internal()
+    })
 }
 
 fn variant<T: Serialize>(value: &T) -> String {
@@ -338,7 +402,7 @@ where
         .query()
         .await
         .map_err(fs_error)?;
-    Ok(rows.first().map_or(0, |c| u32::try_from(c.n).unwrap_or(0)))
+    rows.first().map_or(Ok(0), |c| count_value(c.n))
 }
 
 /// The cuts that run once a shelter is known to have someone in it, by the key the row reads them by.
@@ -402,7 +466,8 @@ async fn run_cuts(
     Ok(counted)
 }
 
-async fn pets_of(db: &FirestoreDb, shelter_id: &str) -> Result<u32, ApiError> {
+/// The animals in the households created in a shelter, and whether the scan was cut at `limit`.
+async fn pets_of(db: &FirestoreDb, shelter_id: &str, limit: u32) -> Result<(u32, bool), ApiError> {
     #[cfg(test)]
     SCANS.with(|n| n.set(n.get() + 1));
     #[derive(Deserialize)]
@@ -416,22 +481,25 @@ async fn pets_of(db: &FirestoreDb, shelter_id: &str) -> Result<u32, ApiError> {
         .fields(["pets"])
         .from(households::COLLECTION)
         .filter(|q| q.for_all([q.field("created_shelter_id").eq(shelter_id)]))
-        .limit(PETS_SCAN_LIMIT)
+        .limit(limit + 1)
         .obj()
         .query()
         .await
         .map_err(fs_error)?;
-    Ok(households
+    let (households, cut) = cap(households, limit);
+    let pets = households
         .iter()
         .flat_map(|h| &h.pets)
         .map(|pet| pet.count)
-        .sum())
+        .sum();
+    Ok((pets, cut))
 }
 
 struct Built {
     row: ShelterRow,
     declined: u32,
     captures: u32,
+    pets_partial: bool,
 }
 
 async fn build_shelter(
@@ -460,10 +528,10 @@ async fn build_shelter(
     } else {
         BTreeMap::new()
     };
-    let pets = if households > 0 {
-        pets_of(&db, &id).await?
+    let (pets, pets_partial) = if households > 0 {
+        pets_of(&db, &id, PETS_SCAN_LIMIT).await?
     } else {
-        0
+        (0, false)
     };
     let get = |key: &str| counted.get(key).copied().unwrap_or(0);
     let mut age_bands: BTreeMap<String, u32> =
@@ -510,10 +578,23 @@ async fn build_shelter(
         },
         declined: get("declined"),
         captures,
+        pets_partial,
     })
 }
 
 // ---- loading ----
+
+/// The bounds of the reads of one build; the tests pass small ones.
+#[derive(Clone, Copy)]
+struct Limits {
+    shelters: u32,
+    moves: u32,
+}
+
+const LIMITS: Limits = Limits {
+    shelters: SHELTER_LIMIT,
+    moves: MOVES_SCAN_LIMIT,
+};
 
 #[derive(Deserialize)]
 struct EventRow {
@@ -529,16 +610,23 @@ fn event_not_found() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "event_not_found")
 }
 
-async fn shelters_of(db: &FirestoreDb, event_id: &str) -> Result<Vec<ShelterDoc>, ApiError> {
-    db.fluent()
+/// The shelters of an event (at most `limit`) and whether there were more.
+async fn shelters_of(
+    db: &FirestoreDb,
+    event_id: &str,
+    limit: u32,
+) -> Result<(Vec<ShelterDoc>, bool), ApiError> {
+    let rows = db
+        .fluent()
         .select()
         .from(shelters::COLLECTION)
         .filter(|q| q.for_all([q.field(path!(ShelterDoc::event_id)).eq(event_id)]))
-        .limit(SHELTER_LIMIT)
+        .limit(limit + 1)
         .obj()
         .query()
         .await
-        .map_err(fs_error)
+        .map_err(fs_error)?;
+    Ok(cap(rows, limit))
 }
 
 /// The shelters of the event still open and without a confirmation, with who registered each.
@@ -576,7 +664,7 @@ fn current_year() -> i64 {
 
 /// The exits of the event: stays closed by a check-in elsewhere in the last 24 h and 7 days, and
 /// the other closed stays by `exit_destination`.
-async fn scan_moves(db: &FirestoreDb, event_id: &str) -> Result<Moves, ApiError> {
+async fn scan_moves(db: &FirestoreDb, event_id: &str, limit: u32) -> Result<Moves, ApiError> {
     #[cfg(test)]
     SCANS.with(|n| n.set(n.get() + 1));
     #[derive(Deserialize)]
@@ -594,14 +682,18 @@ async fn scan_moves(db: &FirestoreDb, event_id: &str) -> Result<Moves, ApiError>
                 .field(path!(PersonDoc::event_ids))
                 .array_contains(event_id)])
         })
-        .limit(MOVES_SCAN_LIMIT)
+        .limit(limit + 1)
         .obj()
         .query()
         .await
         .map_err(fs_error)?;
+    let (people, cut) = cap(people, limit);
     const HOUR_US: i64 = 3_600 * 1_000_000;
     let now = store::now().as_microsecond();
-    let mut moves = Moves::default();
+    let mut moves = Moves {
+        complete: !cut,
+        ..Moves::default()
+    };
     for stay in people
         .iter()
         .flat_map(|p| &p.stays)
@@ -626,11 +718,12 @@ async fn build_event(
     db: &FirestoreDb,
     limiter: &Arc<Semaphore>,
     event_id: &str,
+    limits: Limits,
 ) -> Result<EventDashboard, ApiError> {
     let event: EventRow = store::get(db, events::COLLECTION, event_id)
         .await?
         .ok_or_else(event_not_found)?;
-    let shelters = shelters_of(db, event_id).await?;
+    let (shelters, shelters_cut) = shelters_of(db, event_id, limits.shelters).await?;
     let year = current_year();
     let mut tasks = JoinSet::new();
     for shelter in shelters.iter().cloned() {
@@ -644,6 +737,7 @@ async fn build_event(
 
     let mut totals = Counts::default();
     let (mut declined, mut captures) = (0, 0);
+    let pets_partial = built.iter().any(|b| b.pets_partial);
     for b in &built {
         totals.add(&b.row.counts);
         declined += b.declined;
@@ -651,7 +745,9 @@ async fn build_event(
     }
     let moves_key = format!("{}/{event_id}", db.get_database_path());
     let moves = MOVES
-        .get_or(&moves_key, MOVES_TTL, || scan_moves(db, event_id))
+        .get_or(&moves_key, MOVES_TTL, || {
+            scan_moves(db, event_id, limits.moves)
+        })
         .await?;
     let (rescues, open_alerts, central, protection, not_the_person) = tokio::try_join!(
         count_with(db, limiter, rescues::COLLECTION, |q| q
@@ -678,11 +774,22 @@ async fn build_event(
         .unwrap_or(u32::MAX),
         unico_processes_per_person: (people > 0.0).then(|| f64::from(captures) / people),
     };
+    let partial_indicators: Vec<&'static str> = [
+        (shelters_cut, "shelters"),
+        (!moves.complete, "exits"),
+        (pets_partial, "pets"),
+    ]
+    .into_iter()
+    .filter_map(|(cut, name)| cut.then_some(name))
+    .collect();
     Ok(EventDashboard {
         id: event_id.to_string(),
         name: event.name,
         status: variant(&event.status),
         notice: NOTICE,
+        generated_at: store::now().to_string(),
+        complete: partial_indicators.is_empty(),
+        partial_indicators,
         totals,
         shelters: built.into_iter().map(|b| b.row).collect(),
         movement: moves.movement,
@@ -713,22 +820,28 @@ async fn open_matches(
     .await
 }
 
-async fn build_list(db: &FirestoreDb) -> Result<Value, ApiError> {
-    let limiter = Arc::new(Semaphore::new(COUNT_CONCURRENCY));
+async fn build_list(
+    db: &FirestoreDb,
+    event_limit: u32,
+    shelter_limit: u32,
+) -> Result<Value, ApiError> {
+    let limiter = COUNT_LIMITER.clone();
     let events: Vec<EventRow> = db
         .fluent()
         .select()
         .from(events::COLLECTION)
         .order_by([("created_at", firestore::FirestoreQueryDirection::Descending)])
-        .limit(EVENT_LIMIT)
+        .limit(event_limit + 1)
         .obj()
         .query()
         .await
         .map_err(fs_error)?;
+    let (events, mut partial) = cap(events, event_limit);
     let mut list = Vec::with_capacity(events.len());
     for event in events {
         let id = event.id.clone().unwrap_or_default();
-        let shelters = shelters_of(db, &id).await?;
+        let (shelters, shelters_cut) = shelters_of(db, &id, shelter_limit).await?;
+        partial |= shelters_cut;
         let mut tasks = JoinSet::new();
         for shelter in &shelters {
             let (db, limiter, shelter_id) = (
@@ -758,7 +871,11 @@ async fn build_list(db: &FirestoreDb) -> Result<Value, ApiError> {
             unconfirmed_shelters: to_confirm(db, &shelters).await?,
         });
     }
-    Ok(json!({ "events": list }))
+    Ok(json!({
+        "events": list,
+        "generated_at": store::now().to_string(),
+        "complete": !partial,
+    }))
 }
 
 // ---- CSV ----
@@ -891,8 +1008,7 @@ async fn dashboard_of(state: &AppState, event_id: &str) -> Result<EventDashboard
     let key = format!("{}/{event_id}", state.db.get_database_path());
     DETAIL
         .get_or(&key, CACHE_TTL, || async {
-            let limiter = Arc::new(Semaphore::new(COUNT_CONCURRENCY));
-            build_event(&state.db, &limiter, event_id).await
+            build_event(&state.db, &COUNT_LIMITER, event_id, LIMITS).await
         })
         .await
 }
@@ -905,7 +1021,7 @@ pub async fn list_events(
     require_reader(&volunteer)?;
     let list = LIST
         .get_or(state.db.get_database_path(), LIST_TTL, || {
-            build_list(&state.db)
+            build_list(&state.db, EVENT_LIMIT, SHELTER_LIMIT)
         })
         .await?;
     Ok(Json(list))
@@ -1685,7 +1801,11 @@ households_created_here,pets_in_households_created_here"
         // The cache does not skip the permission check.
         let (status, _) = get_json(&w, &w.ana, &path).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        DETAIL.clear();
+        DETAIL.remove(&format!(
+            "{}/{}",
+            w.app.state.db.get_database_path(),
+            w.event
+        ));
         let (_, third) = get_json(&w, &w.civil_defense, &path).await;
         assert_eq!(third["totals"]["unique_people"], 12);
     }
@@ -1694,7 +1814,7 @@ households_created_here,pets_in_households_created_here"
     async fn the_list_reads_counts_only_and_the_detail_scans_the_people() {
         let w = world().await;
         let scans = || SCANS.with(|n| n.get());
-        LIST.clear();
+        LIST.remove(w.app.state.db.get_database_path());
         let before = scans();
         let (status, _) = get_json(&w, &w.civil_defense, "/v1/dashboard/events").await;
         assert_eq!(status, StatusCode::OK);
@@ -1707,7 +1827,7 @@ households_created_here,pets_in_households_created_here"
     #[tokio::test]
     async fn the_cache_builds_once_inside_the_ttl_and_again_after_it() {
         use std::sync::atomic::{AtomicU32, Ordering};
-        let cache: TtlCache<u32> = TtlCache::new();
+        let cache: TtlCache<u32> = TtlCache::new(8);
         let built = AtomicU32::new(0);
         let build = || async { Ok(built.fetch_add(1, Ordering::SeqCst) + 1) };
         let ttl = Duration::from_secs(60);
@@ -1723,5 +1843,176 @@ households_created_here,pets_in_households_created_here"
             .await;
         assert!(failed.is_err());
         assert_eq!(cache.get_or("bad", ttl, build).await.unwrap(), 4);
+    }
+
+    #[test]
+    fn a_read_is_cut_only_when_it_returns_more_than_the_limit() {
+        for (rows, cut) in [(2, false), (3, false), (4, true)] {
+            let (kept, was_cut) = cap((0..rows).collect::<Vec<_>>(), 3);
+            assert_eq!((kept.len(), was_cut), (rows.min(3), cut), "{rows} rows");
+        }
+    }
+
+    #[test]
+    fn a_count_that_does_not_fit_is_an_error_not_zero() {
+        assert_eq!(count_value(0).unwrap(), 0);
+        assert_eq!(count_value(i64::from(u32::MAX)).unwrap(), u32::MAX);
+        assert!(count_value(-1).is_err());
+        assert!(count_value(i64::from(u32::MAX) + 1).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_cache_runs_one_build_per_key_at_a_time() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let cache: TtlCache<u32> = TtlCache::new(8);
+        let built = AtomicU32::new(0);
+        let build = || async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            Ok(built.fetch_add(1, Ordering::SeqCst) + 1)
+        };
+        let ttl = Duration::from_secs(60);
+        let (a, b, c) = tokio::join!(
+            cache.get_or("k", ttl, build),
+            cache.get_or("k", ttl, build),
+            cache.get_or("k", ttl, build)
+        );
+        assert_eq!((a.unwrap(), b.unwrap(), c.unwrap()), (1, 1, 1));
+        assert_eq!(built.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn the_cache_keeps_at_most_its_limit_of_keys() {
+        let cache: TtlCache<u32> = TtlCache::new(3);
+        let ttl = Duration::from_secs(60);
+        for (i, key) in ["a", "b", "c", "d", "e"].into_iter().enumerate() {
+            cache
+                .get_or(key, ttl, || async { Ok(i as u32) })
+                .await
+                .unwrap();
+            assert!(cache.len() <= 3);
+        }
+        // The oldest were dropped, the newest is still served.
+        assert_eq!(
+            cache.get_or("e", ttl, || async { Ok(99) }).await.unwrap(),
+            4
+        );
+        assert_eq!(
+            cache.get_or("a", ttl, || async { Ok(99) }).await.unwrap(),
+            99
+        );
+    }
+
+    #[tokio::test]
+    async fn the_moves_scan_is_marked_partial_only_past_its_limit() {
+        let w = world().await;
+        let in_event = w.people_ids.len() as u32 - 1; // all but the person of the other event
+        for (limit, complete) in [
+            (in_event - 1, false),
+            (in_event, true),
+            (in_event + 1, true),
+        ] {
+            let moves = scan_moves(&w.app.state.db, &w.event, limit).await.unwrap();
+            assert_eq!(moves.complete, complete, "limit {limit}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_animals_scan_is_marked_partial_only_past_its_limit() {
+        let w = world().await;
+        let now = store::now();
+        for _ in 0..3 {
+            let doc = households::HouseholdDoc {
+                id: None,
+                member_ids: vec![],
+                head_id: None,
+                pets: vec![Pet {
+                    species: "dog".into(),
+                    count: 2,
+                }],
+                card_code: None,
+                created_by: "vol".into(),
+                created_shelter_id: w.a.clone(),
+                client_created_at: now,
+                created_at: now,
+                updated_at: now,
+            };
+            store::replace(&w.app.state.db, households::COLLECTION, &new_id(), &doc)
+                .await
+                .unwrap();
+        }
+        let db = &w.app.state.db;
+        let a = w.a.as_str();
+        let n = count_with(db, &COUNT_LIMITER, households::COLLECTION, |q| {
+            q.for_all([q.field("created_shelter_id").eq(a)])
+        })
+        .await
+        .unwrap();
+        assert!(n >= 3);
+        for (limit, cut) in [(n - 1, true), (n, false), (n + 1, false)] {
+            assert_eq!(pets_of(db, a, limit).await.unwrap().1, cut, "limit {limit}");
+        }
+        // The animals of the households read, not of all of them, when cut.
+        assert_eq!(pets_of(db, a, n).await.unwrap().0, 2 * n);
+    }
+
+    async fn build(w: &World, shelters: u32, moves: u32) -> Result<EventDashboard, ApiError> {
+        build_event(
+            &w.app.state.db,
+            &COUNT_LIMITER,
+            &w.event,
+            Limits { shelters, moves },
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn an_indicator_cut_at_its_limit_is_marked_partial_in_the_answer() {
+        // Each world has its own database, so its own cache keys: no `clear` that would reach
+        // the tests running beside this one.
+        let w = world().await;
+        let full = build(&w, 2, 10_000).await.unwrap();
+        assert!(full.complete && full.partial_indicators.is_empty());
+        assert!(!full.generated_at.is_empty());
+        assert_eq!(full.totals.unique_people, 11);
+
+        let cut = build(&w, 1, 10_000).await.unwrap();
+        assert!(!cut.complete);
+        assert_eq!(cut.partial_indicators, ["shelters"]);
+
+        let w = world().await;
+        let cut = build(&w, 2, 3).await.unwrap();
+        assert!(!cut.complete);
+        assert_eq!(cut.partial_indicators, ["exits"]);
+    }
+
+    #[tokio::test]
+    async fn the_list_is_marked_partial_only_past_the_event_or_shelter_limit() {
+        let w = world().await;
+        let db = &w.app.state.db;
+        // Two events; the first has two shelters.
+        for (events, shelters, complete) in
+            [(1, 2, false), (2, 1, false), (2, 2, true), (3, 3, true)]
+        {
+            let list = build_list(db, events, shelters).await.unwrap();
+            assert_eq!(
+                list["complete"], complete,
+                "{events} events, {shelters} shelters"
+            );
+            assert!(list["generated_at"].is_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_served_panel_says_when_it_was_built_and_that_it_is_complete() {
+        let w = world().await;
+        let (_, body) = get_json(
+            &w,
+            &w.civil_defense,
+            &format!("/v1/dashboard/events/{}", w.event),
+        )
+        .await;
+        assert_eq!(body["complete"], true);
+        assert_eq!(body["partial_indicators"], json!([]));
+        assert!(body["generated_at"].as_str().is_some_and(|s| !s.is_empty()));
     }
 }

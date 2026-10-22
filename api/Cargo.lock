@@ -2159,6 +2159,7 @@ dependencies = [
  "base64 0.23.1",
  "dotenvy",
  "firestore",
+ "futures",
  "geohash",
  "hmac",
  "http-body-util",

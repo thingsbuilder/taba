@@ -70,6 +70,13 @@ describe('offline cache of the list', () => {
     expect((await cachedPeople(db, 's2')).map((p) => p.id)).toEqual(['z'])
   })
 
+  it('keeps the rest of the copy when the server cut the list (has_more)', async () => {
+    const db = await freshDb()
+    await cachePeople(db, 's1', [summary('a'), summary('b')])
+    await cachePeople(db, 's1', [summary('b'), summary('c')], true)
+    expect((await cachedPeople(db, 's1')).map((p) => p.id).sort()).toEqual(['a', 'b', 'c'])
+  })
+
   it('does not erase a record made on this phone and not confirmed yet', async () => {
     const db = await freshDb()
     await db.put('people', { id: 'local', current_shelter_id: 's1', pending: true })

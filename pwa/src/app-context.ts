@@ -105,6 +105,9 @@ const KNOWN_ERRORS = new Set([
   'delivery_not_found',
   'delivery_not_in_review',
   'delivery_id_taken',
+  'idempotency_key_reused',
+  'idempotency_in_progress',
+  'merge_too_large',
 ])
 
 /** i18n key for a stable server error code; unknown codes get the generic message. */
