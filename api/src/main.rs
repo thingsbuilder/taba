@@ -209,15 +209,17 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         tracing::warn!("HUMAN_TOKEN_ACCESS_KEY is not set: every Unico call will fail");
     }
     let state = AppState::new(db, config, unico)?;
-    jobs::spawn(state.clone());
+    let jobs = jobs::spawn(state.clone());
     let addr: SocketAddr = LISTEN_ADDR.parse()?;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind {addr}"))?;
     tracing::info!(%addr, "taba api listening");
-    axum::serve(listener, router(state))
+    let served = axum::serve(listener, router(state))
         .with_graceful_shutdown(shutdown_signal())
-        .await?;
+        .await;
+    jobs.shutdown().await;
+    served?;
     Ok(())
 }
 
