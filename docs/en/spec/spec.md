@@ -395,7 +395,7 @@ Per event and per shelter:
 - pilot indicators: selfie refusal rate [dec. k, C1]; `not_the_person` matches [dec. k, A6]; "other site" justifications [dec. k, M7]; Unico processes per person served;
 - shelters awaiting endorsement.
 
-Daily CSV for the bulletin: `GET /v1/dashboard/events/{id}/daily.csv` (one row per shelter, with the counts above; no name or `person_id`). Counts via Firestore `count()` aggregation.
+Daily CSV for the bulletin: `GET /v1/dashboard/events/{id}/daily.csv` (one row per shelter, with the counts above; no name or `person_id`). Counts via Firestore `count()` aggregation. As the notice says, each cut counts the people who are in a shelter now (`current_shelter_id`); whoever already left shows in the exits by destination. The matches of the central and protection queues belong to the network, not to the event. "Unico processes per person" is an estimate from the captures that still exist. `GET /dashboard/events` carries, per event, the `unconfirmed` shelters (`unconfirmed_shelters`: name, position, who created it), which is where a validator or the Civil Defense finds what to confirm without knowing an id. The dashboard keeps a 30 s cache on the server. The shelter export (`export.csv`) has three sections (people, households, deliveries), writes the `export.shelter` audit with `public_policy` and has no BOM.
 
 The event's reference contacts (`reference_contacts: {civil_defense_phone, child_protection_phone}`) are set by Civil Defense or a validator (`PATCH /v1/events/{id}`) [dec. k].
 

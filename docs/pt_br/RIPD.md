@@ -4,7 +4,7 @@
 
 - Base: LGPD, art. 38 (RIPD), e a [base legal](<base legal LGPD.md>) do projeto.
 - Versão: piloto (fases 0 a 6 da spec).
-- Estado da implementação: neste documento, o painel, a exportação do abrigo, o descarte em `purge_at` e as anomalias (fase 6) são descritos como a spec 3.10, 4.10, 8.8 e 10.1.2 os definem. Na base de código usada para escrever este relatório essas quatro partes ainda eram esqueleto (rotas respondem `501`, o descarte não apaga nada). Releia as seções 7, 9 e 10 contra o código final da fase 6.
+- Estado da implementação: conferido contra o código final da fase 6 (versão 1.0.0 do app): o painel, a exportação do abrigo, o descarte em `purge_at` (com a chave `PURGE_ENABLED`) e as anomalias existem como descrito nas seções 7, 10 e 11. O que o código faz de diferente da spec está em [Pontos a confirmar](#14-pontos-a-confirmar).
 
 ## 1. Identificação
 
@@ -50,7 +50,7 @@ O reconhecimento facial é feito pela Unico (Human Token). O Taba guarda só um 
 | Busca de desaparecido | nome, apelido e observações do desaparecido; nome, telefone, parentesco e idioma de quem busca; `person_ids` derivados das fotos | desaparecido; familiar que busca | Observações podem conter dado sensível | Firestore `searches`. Antes do envio, no celular, o corpo da busca fica na fila (IndexedDB `queue`) |
 | Voluntário | nome, telefone (opcional), "mostrar meu telefone" (sim/não), idioma, papéis globais, banimento, `last_seen_at`, `person_id` derivado do rosto | voluntário | Sim (biometria derivada) | Firestore `volunteers`, `memberships`, `sessions` |
 | Sessão e aparelho | segredo de sessão (só o hash fica no servidor), `device_id` | voluntário | Não | Firestore `sessions/{sha256(segredo)}`; segredo no IndexedDB do celular |
-| Auditoria | momento, voluntário, aparelho, abrigo, ação, alvo, base legal | voluntário | Não (só IDs, sem nome nem foto) | Firestore `audit_log` |
+| Auditoria | momento, voluntário, aparelho, abrigo, ação, alvo, base legal e, no descarte, contagens por coleção | voluntário | Não (só IDs e contagens, sem nome nem foto) | Firestore `audit_log` |
 | Alertas | tipo, alvo, detalhe | variado | Não | Firestore `alerts` |
 | Idempotência | resposta da última escrita de cada item da fila (7 dias) | variado | Pode conter dados da resposta | Firestore `idempotency` |
 
@@ -102,7 +102,7 @@ O servidor grava a base em `audit_log.legal_basis` (spec 10.1.1). Os valores do 
 | Credenciamento de voluntário | `fraud_prevention` | art. 11, II, "g" | Spec 10.1.1, Q35 |
 | Painel e operação da Defesa Civil | `public_policy` | art. 11, II, "b" | Só dados agregados no painel |
 
-O que o código grava hoje: `consent`/`vital_interest`/`child_protection` no check-in (conforme escolha do voluntário) e na pessoa criada; `vital_interest` em resgate, miniatura, busca, matches e decisão; `child_protection` em saída de criança e responsáveis; `fraud_prevention` em sessão, convite e entrega. `family_consent` e `public_policy` existem no enum, mas nenhuma rota de código os grava ainda.
+O que o código grava: `consent`/`vital_interest`/`child_protection` no check-in (conforme escolha do voluntário) e na pessoa criada; `vital_interest` em resgate, miniatura, busca, matches e decisão; `child_protection` em saída de criança e responsáveis; `fraud_prevention` em sessão, convite e entrega; `family_consent` no envio do link da família; `public_policy` na exportação do abrigo, no encerramento de evento, no descarte, na concessão de papéis, na resolução de alertas e na retomada do modo degradado. A leitura do painel não grava auditoria (só mostra contagens).
 
 Limites das bases (da [base legal](<base legal LGPD.md>)): `vital_interest` não autoriza outra finalidade, guarda indefinida, coleta além do necessário, nem uso quando o consentimento é viável (adulto consciente no check-in usa `consent`).
 
@@ -129,7 +129,7 @@ Limites das bases (da [base legal](<base legal LGPD.md>)): `vital_interest` não
 | Match | fila do abrigo (admins e `mediator`), central (`mediator` e DC) ou proteção (`protection` e DC, sempre para criança). O contato da família só aparece quando a pessoa aceita |
 | Painel e CSV diário | `validator` (leitura) e DC; sem nome nem `person_id` |
 | Exportação do abrigo | admin de abrigo `confirmed`: pessoas, núcleos e entregas do próprio abrigo, sem miniatura nem `person_id`, auditada |
-| Auditoria e alertas | admin (alertas não informativos dos seus abrigos), `protection`, DC |
+| Auditoria e alertas | admin (alertas não informativos dos seus abrigos), `protection`, DC; as anomalias (informativas) só `validator` e DC; os avisos pessoais (`search_expiring`, `family_search_received`) só quem registrou a busca |
 | Firestore e chaves | quem opera a instância (conta de serviço da VM; acesso ao console do projeto GCP) |
 
 Não há pesquisa livre por nome na rede (Q22).
@@ -265,12 +265,12 @@ Cada item é uma decisão do dono, uma divergência entre spec e código, ou um 
 
 **Divergências entre spec e código**
 
-6. **Fase 6 ainda não implementada na base deste relatório.** Painel (`dashboard.rs`), exportação do abrigo (`export.rs`), descarte (`purge.rs`) e anomalias (`audit::note_activity`) eram esqueleto. As seções 7 e 10 e as medidas de anomalia descrevem a spec. Reconferir depois do merge.
+6. **Fase 6 conferida.** Painel (`dashboard.rs`), exportação do abrigo (`export.rs`), descarte (`purge.rs`) e anomalias (`audit::note_activity`) foram relidos contra este documento na integração. Os recortes do painel contam pessoas que estão em abrigo agora; quem já saiu aparece nas saídas por destino. A única diferença de comportamento em produção é o modo seco do descarte (item 7).
 7. **`PURGE_ENABLED` padrão `false`.** Nenhum dado vence enquanto estiver desligada. Definir quando e quem liga, após teste com evento de teste.
 8. **`audit_log` sem `ip`, `lat`, `lon`.** A spec 7 prevê esses campos. O código não os grava. Isto reduz a capacidade de investigar abuso, mas também o dado pessoal guardado. Decidir qual vale.
-9. **`family_consent` e `public_policy` não são gravados.** A spec 10.1.1 liga o contato da família a `family_consent` e a operação da DC a `public_policy`. O código grava `vital_interest` na busca e nada para o painel. Alinhar spec e código.
+9. **`family_consent` só no link da família.** A spec 10.1.1 liga o contato da família a `family_consent`. O código grava `family_consent` no envio do link da família, mas a busca digitada pelo operador grava `vital_interest`, e a leitura do painel não grava auditoria. Alinhar spec e código.
 10. **Miniatura "na hora" do encerramento.** A spec 10.1.2 diz "na hora"; o código a apaga na tarefa horária seguinte (até 1 hora depois).
-11. **Texto do consentimento mais amplo que a regra.** O texto diz que "a rede de abrigos confirmados" vê o cadastro. Pelo código, só membros do abrigo atual veem o cadastro; o histórico completo é do admin de abrigo confirmado; a correspondência entre abrigos acontece por foto. Alinhar o texto à regra.
+11. **Texto do consentimento (resolvido na versão 1.0.0).** O texto dizia que "a rede de abrigos confirmados" vê o cadastro, mais amplo que a regra. Foi corrigido em português, inglês e espanhol: só quem trabalha no abrigo vê o cadastro, o admin de um abrigo confirmado vê por quais abrigos a pessoa passou, o contato de quem busca só chega à equipe com o aceite e a Defesa Civil recebe só números. A tradução em espanhol continua provisória (item 5).
 
 **Fatos que o repositório não responde (A confirmar)**
 
@@ -284,6 +284,7 @@ Cada item é uma decisão do dono, uma divergência entre spec e código, ou um 
 19. **Células pequenas no painel e no CSV.** Decidir se haverá supressão abaixo de um limite (R14).
 20. **Limites das rotas públicas.** `POST /captures`, `POST /sessions` e convites não têm limite de taxa (Q15 adiada). Decidir se o piloto aceita.
 21. **Resistência a pedido de autoridade.** A recusa de repasse a polícia e imigração é uma regra de produto, não técnica. O controlador precisa assumi-la por escrito.
+22. **Indicador "processos da Unico por pessoa".** É uma estimativa: divide as capturas que ainda existem (documentos de vida curta) pelas pessoas do abrigo, e não a contagem cobrada pela Unico. Serve de ordem de grandeza; o consumo de créditos está no painel da Unico.
 
 ## 15. Aprovação
 

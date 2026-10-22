@@ -395,7 +395,7 @@ Por evento e por abrigo:
 - indicadores do piloto: taxa de recusa da selfie [dec. k, C1]; matches `not_the_person` [dec. k, A6]; justificativas de "outro local" [dec. k, M7]; processos Unico por pessoa atendida;
 - abrigos aguardando aval.
 
-CSV diário para o boletim: `GET /v1/dashboard/events/{id}/daily.csv` (uma linha por abrigo, com as contagens acima; sem nome nem `person_id`). Contagens por agregação `count()` do Firestore.
+CSV diário para o boletim: `GET /v1/dashboard/events/{id}/daily.csv` (uma linha por abrigo, com as contagens acima; sem nome nem `person_id`). Contagens por agregação `count()` do Firestore. Como o aviso diz, cada recorte conta as pessoas que estão em abrigo agora (`current_shelter_id`); quem já saiu aparece nas saídas por destino. Os matches das filas central e de proteção são da rede, não do evento. "Processos Unico por pessoa" é uma estimativa a partir das capturas que ainda existem. `GET /dashboard/events` traz, por evento, os abrigos `unconfirmed` (`unconfirmed_shelters`: nome, posição, quem criou), que é onde um validador ou a Defesa Civil acha o que confirmar sem saber o ID. O painel guarda um cache de 30 s no servidor. A exportação do abrigo (`export.csv`) tem três seções (pessoas, núcleos, entregas), grava a auditoria `export.shelter` com `public_policy` e não tem BOM.
 
 Contatos de referência do evento (`reference_contacts: {civil_defense_phone, child_protection_phone}`) são definidos por DC ou validador (`PATCH /v1/events/{id}`) [dec. k].
 
