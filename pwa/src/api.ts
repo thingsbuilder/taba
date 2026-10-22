@@ -15,6 +15,7 @@ import type {
   PersonSummary,
   PersonView,
 } from './api-phase3'
+import type { DeliveryRequest, DeliveryResponse, DeliveryView, PutItemsRequest, PutItemsResponse, ReviewRequest } from './api-phase5'
 import type {
   MatchDecisionRequest,
   MatchDecisionResponse,
@@ -296,6 +297,14 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
     cancelSearchLink: (secret: string, code: string) => call<null>('DELETE', `/v1/search-links/${code}`, { secret }),
     getSearchLink: (code: string) => call<SearchLinkStatus>('GET', `/v1/search-links/${code}`),
     submitSearchLink: (code: string, body: SearchLinkSubmitRequest) => call<SearchResponse>('POST', `/v1/search-links/${code}/submit`, { body }),
+
+    // Phase 5 (spec 8.6). Deliveries go through the queue; these are the direct calls.
+    putItems: (secret: string, shelterId: string, body: PutItemsRequest) => call<PutItemsResponse>('PUT', `/v1/shelters/${shelterId}/items`, { secret, body }),
+    postDelivery: (secret: string, shelterId: string, body: DeliveryRequest) =>
+      call<DeliveryResponse>('POST', `/v1/shelters/${shelterId}/deliveries`, { secret, body }),
+    listDeliveries: (secret: string, shelterId: string, status?: string) =>
+      call<{ deliveries: DeliveryView[] }>('GET', `/v1/shelters/${shelterId}/deliveries${status ? `?status=${status}` : ''}`, { secret }),
+    reviewDelivery: (secret: string, id: string, body: ReviewRequest) => call<Record<string, never>>('POST', `/v1/deliveries/${id}/review`, { secret, body }),
 
     // Alerts (spec 8.8)
     listAlerts: (secret: string) => call<{ alerts: AlertView[] }>('GET', '/v1/alerts', { secret }),

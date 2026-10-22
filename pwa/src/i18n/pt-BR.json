@@ -248,6 +248,9 @@
   "error.too_many_requests": "Muitas tentativas. Tente de novo em alguns minutos.",
   "error.rescue_not_found": "Não encontramos este resgate.",
   "error.search_id_taken": "Esta busca já foi registrada por outra pessoa. Faça uma nova.",
+  "error.liveness_required": "Esta entrega pede a selfie de quem retira.",
+  "error.admin_approval_required": "Só um admin do abrigo pode aprovar esta entrega.",
+  "error.person_not_in_household": "Esta pessoa não está no núcleo do cartão.",
   "invite.have_code": "Tenho um convite",
   "invite.code_placeholder": "Cole o link ou o código",
   "invite.code_go": "Abrir convite",
@@ -754,5 +757,11 @@
   "inbox.search_expiring": "Uma busca que você registrou será apagada em {date} sem ter encontrado a pessoa. Oriente a família a procurar a delegacia e a Cruz Vermelha.",
   "inbox.family_search_received": "A família enviou {count} fotos úteis.",
   "inbox.family_search_received_one": "A família enviou 1 foto útil.",
+  "__delivery__": "",
+  "delivery.title": "Entrega",
+  "__items__": "",
+  "items.title": "Itens do abrigo",
+  "__review__": "",
+  "review.title": "Entregas em revisão",
   "__end__": ""
 }

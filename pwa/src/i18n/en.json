@@ -248,6 +248,9 @@
   "error.too_many_requests": "Too many attempts. Try again in a few minutes.",
   "error.rescue_not_found": "We could not find this rescue.",
   "error.search_id_taken": "This search was already registered by someone else. Make a new one.",
+  "error.liveness_required": "This delivery needs a selfie of the person taking it.",
+  "error.admin_approval_required": "Only an admin of the shelter can approve this delivery.",
+  "error.person_not_in_household": "This person is not in the household of the card.",
   "invite.have_code": "I have an invite",
   "invite.code_placeholder": "Paste the link or the code",
   "invite.code_go": "Open invite",
@@ -754,5 +757,11 @@
   "inbox.search_expiring": "A search you registered will be deleted on {date} without finding the person. Tell the family to go to the police station and the Red Cross.",
   "inbox.family_search_received": "The family sent {count} useful photos.",
   "inbox.family_search_received_one": "The family sent 1 useful photo.",
+  "__delivery__": "",
+  "delivery.title": "Delivery",
+  "__items__": "",
+  "items.title": "Shelter items",
+  "__review__": "",
+  "review.title": "Deliveries in review",
   "__end__": ""
 }

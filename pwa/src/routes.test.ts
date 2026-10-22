@@ -49,3 +49,10 @@ it('shows the family page outside the shell and every other screen inside it', (
     expect(usesShell(resolveRoute(path)), path).toBe(true)
   }
 })
+
+it('reads the phase 5 shelter screens', () => {
+  expect(resolveRoute('/shelter/s1/delivery')).toEqual({ name: 'shelter_delivery', id: 's1' })
+  expect(resolveRoute('/shelter/s1/items')).toEqual({ name: 'shelter_items', id: 's1' })
+  expect(resolveRoute('/shelter/s1/review')).toEqual({ name: 'shelter_review', id: 's1' })
+  expect(resolveRoute('/shelter/s1/nope')).toEqual({ name: 'not_found' })
+})

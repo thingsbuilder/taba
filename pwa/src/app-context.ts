@@ -99,6 +99,9 @@ const KNOWN_ERRORS = new Set([
   'too_many_requests',
   'rescue_not_found',
   'search_id_taken',
+  'liveness_required',
+  'admin_approval_required',
+  'person_not_in_household',
 ])
 
 /** i18n key for a stable server error code; unknown codes get the generic message. */
