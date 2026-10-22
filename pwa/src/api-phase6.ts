@@ -69,9 +69,9 @@ export interface ShelterRow {
 /** `GET /v1/dashboard/events`. */
 export interface EventList {
   events: EventSummary[]
-  generated_at: string
-  /** `false` when a bounded read was cut: the list or a shelter count is a subset. */
-  complete: boolean
+  generated_at?: string
+  /** `false` when a bounded read was cut: the list or a shelter count is a subset. Absent from an older API. */
+  complete?: boolean
 }
 
 /** What a cut read leaves out of the event: `shelters`, `exits` (movement and exits) or `pets`. */
@@ -84,11 +84,11 @@ export interface EventDashboard {
   status: EventStatus
   /** The fixed notice of spec 3.10: it counts people in shelters, not those displaced elsewhere. */
   notice: string
-  /** When the answer was built (it is served again for up to 30 s). */
-  generated_at: string
-  /** `false` when a bounded read was cut: the indicators in `partial_indicators` are a subset. */
-  complete: boolean
-  partial_indicators: PartialIndicator[]
+  /** When the answer was built (it is served again for up to 30 s). Absent from an older API. */
+  generated_at?: string
+  /** `false` when a bounded read was cut: the indicators in `partial_indicators` are a subset. Absent from an older API. */
+  complete?: boolean
+  partial_indicators?: PartialIndicator[]
   totals: Counts
   shelters: ShelterRow[]
   movement: { last_24h: number; last_7d: number }

@@ -81,12 +81,15 @@ const toRecord = (p: PersonSummary, shelterId: string): PersonRecord => ({
   updated_at: p.updated_at,
 })
 
-/** The phone's copy of the shelter's list, for reading offline: replaces what was there. */
-export async function cachePeople(db: Db, shelterId: string, people: PersonSummary[]): Promise<void> {
+/**
+ * The phone's copy of the shelter's list, for reading offline: replaces what was there. A page cut by
+ * the server (`hasMore`) is not the whole list, so it only adds to the copy: the rest is not dropped.
+ */
+export async function cachePeople(db: Db, shelterId: string, people: PersonSummary[], hasMore = false): Promise<void> {
   const tx = db.transaction('people', 'readwrite')
   const store = tx.objectStore('people')
   // Records made on this phone and not confirmed yet are not the server's to replace.
-  for (const old of await store.index('by_shelter').getAll(shelterId)) if (!old.pending) await store.delete(old.id)
+  if (!hasMore) for (const old of await store.index('by_shelter').getAll(shelterId)) if (!old.pending) await store.delete(old.id)
   for (const p of people) await store.put(toRecord(p, shelterId))
   await tx.done
 }

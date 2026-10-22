@@ -279,8 +279,8 @@ impl<T: Clone> TtlCache<T> {
     }
 
     #[cfg(test)]
-    fn clear(&self) {
-        self.slots.lock().unwrap().clear();
+    fn remove(&self, key: &str) {
+        self.slots.lock().unwrap().remove(key);
     }
 
     #[cfg(test)]
@@ -1801,7 +1801,11 @@ households_created_here,pets_in_households_created_here"
         // The cache does not skip the permission check.
         let (status, _) = get_json(&w, &w.ana, &path).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        DETAIL.clear();
+        DETAIL.remove(&format!(
+            "{}/{}",
+            w.app.state.db.get_database_path(),
+            w.event
+        ));
         let (_, third) = get_json(&w, &w.civil_defense, &path).await;
         assert_eq!(third["totals"]["unique_people"], 12);
     }
@@ -1810,7 +1814,7 @@ households_created_here,pets_in_households_created_here"
     async fn the_list_reads_counts_only_and_the_detail_scans_the_people() {
         let w = world().await;
         let scans = || SCANS.with(|n| n.get());
-        LIST.clear();
+        LIST.remove(w.app.state.db.get_database_path());
         let before = scans();
         let (status, _) = get_json(&w, &w.civil_defense, "/v1/dashboard/events").await;
         assert_eq!(status, StatusCode::OK);

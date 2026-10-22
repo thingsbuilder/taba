@@ -10,12 +10,16 @@ import { navigate } from '../nav'
 export function MatchQueue({ ctx, online }: { ctx: AppContext; online: boolean }) {
   const { active, api } = ctx
   const [matches, setMatches] = useState<MatchSummary[] | null>(null)
+  const [hasMore, setHasMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!active || !online) return
     void api.listMatches(active.secret).then((res) => {
-      if (res.ok) setMatches(openMatches(res.data.matches))
+      if (res.ok) {
+        setMatches(openMatches(res.data.matches))
+        setHasMore(res.data.has_more === true)
+      }
       // A volunteer with no queue may be refused: nothing to show, nothing wrong.
       else if (res.status !== 403) setError(res.error)
     })
@@ -26,6 +30,7 @@ export function MatchQueue({ ctx, online }: { ctx: AppContext; online: boolean }
   return (
     <section class="card" aria-label={t('inbox.matches', { count: matches.length })}>
       <h2 class="subtitle">{t('inbox.matches', { count: matches.length })}</h2>
+      {hasMore && <p class="notice notice-warning" role="status">{t('inbox.matches_more')}</p>}
       <ul class="list">
         {matches.map((m) => (
           <li class="row" key={m.id}>

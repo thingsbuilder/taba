@@ -12,7 +12,7 @@ import type {
   HouseholdPatchRequest,
   HouseholdView,
   PatchPersonRequest,
-  PersonSummary,
+  PeoplePage,
   PersonView,
 } from './api-phase3'
 import type { EventDashboard, EventList } from './api-phase6'
@@ -260,9 +260,9 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
     // Phase 3 (spec 8.5). The offline writes go through the queue; these are the direct calls.
     postCheckin: (secret: string, shelterId: string, body: CheckinRequest) =>
       call<CheckinResponse>('POST', `/v1/shelters/${shelterId}/checkins`, { secret, body }),
-    listPeople: (secret: string, shelterId: string) => call<{ people: PersonSummary[] }>('GET', `/v1/shelters/${shelterId}/people`, { secret }),
+    listPeople: (secret: string, shelterId: string) => call<PeoplePage>('GET', `/v1/shelters/${shelterId}/people`, { secret }),
     listNeedsSelfie: (secret: string, shelterId: string) =>
-      call<{ people: PersonSummary[] }>('GET', `/v1/shelters/${shelterId}/people/needs-selfie`, { secret }),
+      call<PeoplePage>('GET', `/v1/shelters/${shelterId}/people/needs-selfie`, { secret }),
     getPerson: (secret: string, id: string) => call<{ person: PersonView }>('GET', `/v1/people/${id}`, { secret }),
     patchPerson: (secret: string, id: string, body: PatchPersonRequest) => call<{ person: PersonView }>('PATCH', `/v1/people/${id}`, { secret, body }),
     putBiometrics: (secret: string, id: string, body: BiometricsRequest) =>
@@ -286,7 +286,7 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
     nearbyShelters: (secret: string, lat: number, lon: number) =>
       call<{ shelters: NearbyShelter[] }>('GET', `/v1/shelters/nearby?lat=${lat}&lon=${lon}`, { secret }),
     postSearch: (secret: string, body: SearchRequest) => call<SearchResponse>('POST', '/v1/searches', { secret, body }),
-    listMatches: (secret: string) => call<{ matches: MatchSummary[] }>('GET', '/v1/matches', { secret }),
+    listMatches: (secret: string) => call<{ matches: MatchSummary[]; has_more: boolean }>('GET', '/v1/matches', { secret }),
     /** An `image/jpeg`: the caller reads the blob, so this one returns the raw response. */
     getMatchThumbnail: (secret: string, id: string) => fetchFn(`/v1/matches/${id}/thumbnail`, { headers: { Authorization: `Bearer ${secret}` } }),
     /** A photo the family sent, an image: the caller reads the blob. */
@@ -312,7 +312,7 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
       call<DeliveryResponse>('POST', `/v1/shelters/${shelterId}/deliveries`, { secret, body, key }),
     /** `status` is required: the list is read by `(shelter, status)`. */
     listDeliveries: (secret: string, shelterId: string, status: DeliveryStatus) =>
-      call<{ deliveries: DeliveryView[] }>('GET', `/v1/shelters/${shelterId}/deliveries?status=${status}`, { secret }),
+      call<{ deliveries: DeliveryView[]; has_more: boolean }>('GET', `/v1/shelters/${shelterId}/deliveries?status=${status}`, { secret }),
     reviewDelivery: (secret: string, id: string, body: ReviewRequest) => call<Record<string, never>>('POST', `/v1/deliveries/${id}/review`, { secret, body }),
 
     // Phase 6 (spec 3.10, 8.8). The two CSVs are files: the caller reads the blob, so they return the raw response.
