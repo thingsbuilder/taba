@@ -11,12 +11,13 @@ import { chooseLanguage } from './language'
 import { SESSIONS_CHANGED } from './events'
 import { navigate, useLocation } from './nav'
 import type { Queue } from './queue'
-import { type Route, resolveRoute } from './routes'
+import { type Route, resolveRoute, usesShell } from './routes'
 import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession } from './sessions'
 import { Checkin } from './screens/Checkin'
 import { Diagnostics } from './screens/Diagnostics'
 import { Endorse } from './screens/Endorse'
 import { Exit } from './screens/Exit'
+import { Family } from './screens/Family'
 import { Household } from './screens/Household'
 import { People } from './screens/People'
 import { Person } from './screens/Person'
@@ -29,11 +30,15 @@ import { NewShelter } from './screens/NewShelter'
 import { Shelter } from './screens/Shelter'
 import { InstallPrompt } from './screens/InstallPrompt'
 import { Login } from './screens/Login'
+import { MatchCheck } from './screens/MatchCheck'
 import { NotFound } from './screens/NotFound'
 import { PinSetup } from './screens/PinSetup'
 import { Profile } from './screens/Profile'
 import { QueueAlerts } from './screens/QueueAlerts'
+import { Rescue } from './screens/Rescue'
 import { Return } from './screens/Return'
+import { Roles } from './screens/Roles'
+import { Search } from './screens/Search'
 import { SwitchOperator } from './screens/SwitchOperator'
 
 const LANGUAGES: { id: Language; label: string }[] = [
@@ -75,7 +80,21 @@ function NetworkChip({ queue }: { queue: Queue }) {
   return <div class="chip chip-warning" role="status">{text}</div>
 }
 
-export function App({ db, api, queue, nominatim, updateApply }: { db: Db; api: Api; queue: Queue; nominatim: AppContext['nominatim']; updateApply: (() => void) | null }) {
+interface AppProps {
+  db: Db
+  api: Api
+  queue: Queue
+  nominatim: AppContext['nominatim']
+  updateApply: (() => void) | null
+}
+
+/** `/f/:code` is the family's public page (spec 3.7 item 11): outside the shell, so no session, PIN, top bar, queue or install prompt. */
+export function App(props: AppProps) {
+  const route = resolveRoute(useLocation().pathname)
+  return usesShell(route) ? <Shell {...props} /> : <Family code={route.code!} />
+}
+
+function Shell({ db, api, queue, nominatim, updateApply }: AppProps) {
   useLanguage() // re-render on language change
   const online = useOnline()
   const [status, setStatus] = useState<ApiStatus | null>(null)
@@ -192,6 +211,14 @@ function Screen({ route, ctx, search }: { route: Route; ctx: AppContext; search:
       return <Privacy />
     case 'diagnostics':
       return <Diagnostics />
+    case 'rescue':
+      return <Rescue ctx={ctx} />
+    case 'search':
+      return <Search ctx={ctx} />
+    case 'roles':
+      return <Roles ctx={ctx} />
+    case 'match':
+      return <MatchCheck ctx={ctx} matchId={route.id!} />
     default:
       return <NotFound />
   }

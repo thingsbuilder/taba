@@ -14,10 +14,15 @@ it('lists only items that wait for a person, with a label and a translated error
     item({ id: 'd', method: 'PATCH', path: '/v1/me', state: 'needs_action' }),
   ])
   expect(views).toEqual([
-    { id: 'b', labelKey: 'pending.create_shelter', state: 'held', errorKey: 'error.shelter_nearby', shelterId: 's1' },
-    { id: 'c', labelKey: 'pending.update_shelter', state: 'needs_action', errorKey: 'error.generic', shelterId: 's1' },
-    { id: 'd', labelKey: 'pending.update_profile', state: 'needs_action', errorKey: undefined, shelterId: undefined },
+    { id: 'b', labelKey: 'pending.create_shelter', state: 'held', errorKey: 'error.shelter_nearby', retryable: true, shelterId: 's1' },
+    { id: 'c', labelKey: 'pending.update_shelter', state: 'needs_action', errorKey: 'error.generic', retryable: true, shelterId: 's1' },
+    { id: 'd', labelKey: 'pending.update_profile', state: 'needs_action', errorKey: undefined, retryable: true, shelterId: undefined },
   ])
+})
+
+it('does not offer to send again what the daily search limit refused', () => {
+  const views = pendingViews([item({ id: 'a', method: 'POST', path: '/v1/searches', state: 'needs_action', error: 'search_limit' })])
+  expect(views.map((v) => [v.id, v.retryable])).toEqual([['a', false]])
 })
 
 it('can be limited to one shelter', () => {

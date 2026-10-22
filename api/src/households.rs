@@ -88,6 +88,13 @@ fn in_other_household(person_id: &str, household_id: &str) -> ApiError {
     error
 }
 
+/// Records activity on the event of the household's shelter after a write to it (spec 4.3.3).
+pub async fn touch_event(state: &AppState, household_id: &str) {
+    if let Ok(household) = load_household(&state.db, household_id).await {
+        crate::members::touch_shelter_event(state, &household.created_shelter_id).await;
+    }
+}
+
 pub async fn load_household(db: &FirestoreDb, id: &str) -> Result<HouseholdDoc, ApiError> {
     store::get(db, COLLECTION, id).await?.ok_or_else(not_found)
 }
@@ -246,6 +253,7 @@ pub async fn post_household(
                 }
                 return Ok(view(&existing, &load_members(&db, &existing).await?));
             }
+            crate::events::ensure_shelter_open(&db, &shelter_id).await?;
             let mut members = Vec::new();
             for person_id in &new.member_ids {
                 let person = load_person(&db, person_id).await?;
@@ -284,6 +292,7 @@ pub async fn post_household(
         })
     })
     .await?;
+    crate::members::touch_shelter_event(&state, &shelter_id).await;
     Ok((StatusCode::CREATED, Json(json!({ "household": created }))))
 }
 
@@ -342,6 +351,7 @@ pub async fn patch_household(
             let mut household = load_household(&db, &id).await?;
             let members = load_members(&db, &household).await?;
             let shelter = shelter_of_access(&volunteer, &members).ok_or_else(forbidden)?;
+            crate::events::ensure_shelter_open(&db, &shelter).await?;
 
             // People whose `household_id` changes, and the added ones as read.
             let mut changed: Vec<PersonDoc> = Vec::new();
@@ -415,6 +425,7 @@ pub async fn patch_household(
         })
     })
     .await?;
+    touch_event(&state, &id).await;
     Ok(Json(updated))
 }
 

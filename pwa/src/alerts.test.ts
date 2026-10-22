@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import type { AlertView } from './api'
-import { alertLink, alertPhones, alertTextKey, countdown } from './alerts'
+import { alertLink, alertParams, alertPhones, alertTextKey, countdown } from './alerts'
 import en from './i18n/en.json'
 import ptBR from './i18n/pt-BR.json'
 
@@ -52,4 +52,21 @@ it('counts down as m:ss and stops at zero', () => {
   expect(countdown(end, t0)).toBe('10:00')
   expect(countdown(end, t0 + 9 * 60_000 + 55_500)).toBe('0:05')
   expect(countdown(end, t0 + 11 * 60_000)).toBe('0:00')
+})
+
+it('phase 4 alerts have their own text and no link', () => {
+  const expiring = alert({ kind: 'search_expiring', target_kind: 'search', target_id: 'x', shelter_ids: ['s1'], detail: { purge_at: '2026-12-01T00:00:00Z' } })
+  const family = alert({ kind: 'family_search_received', detail: { usable_photos: 3 } })
+  expect(alertTextKey('search_expiring')).toBe('inbox.search_expiring')
+  expect(alertTextKey('family_search_received', { usable_photos: 3 })).toBe('inbox.family_search_received')
+  expect(alertTextKey('family_search_received', { usable_photos: 1 })).toBe('inbox.family_search_received_one')
+  for (const k of ['inbox.search_expiring', 'inbox.family_search_received', 'inbox.family_search_received_one']) {
+    expect(ptBR, k).toHaveProperty([k])
+    expect(en, k).toHaveProperty([k])
+  }
+  expect(alertLink(expiring)).toBeNull()
+  expect(alertLink(family)).toBeNull()
+  expect(alertParams(family).count).toBe(3)
+  expect(alertParams(expiring, 'en').date).not.toBe('')
+  expect(alertParams(alert({ kind: 'search_expiring' })).date).toBe('')
 })

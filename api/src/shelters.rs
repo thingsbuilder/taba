@@ -603,6 +603,7 @@ pub async fn patch_shelter(
     if !is_admin && (edits_details || !civil_defense) {
         return Err(forbidden());
     }
+    events::ensure_shelter_open(&state.db, &id).await?;
     let name = patch.name.as_deref().map(valid_name).transpose()?;
     let address = match &patch.address {
         Some(input) => Some(Address::from_input(input)?.ok_or_else(|| invalid("address"))?),

@@ -59,7 +59,7 @@ describe('language of the consent apart from the interface (criterion 58)', () =
     setLanguage('en')
     expect(t('checkin.title')).toBe(en['checkin.title'])
     expect(consentT('es', 'consent.title')).toBe('Antes de empezar')
-    expect(Object.keys(es).filter((k) => !k.startsWith('consent.') && !k.startsWith('__'))).toEqual([])
+    expect(Object.keys(es).filter((k) => !k.startsWith('consent.') && !k.startsWith('family.') && !k.startsWith('__'))).toEqual([])
   })
 
   it('a key Spanish lacks falls back to English, never to the volunteer language', () => {

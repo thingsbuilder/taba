@@ -668,6 +668,7 @@ async fn checkin_in(
     );
     person.updated_at = now;
     tx_replace(db, tx, COLLECTION, &c.person_id, &person)?;
+    crate::matching::on_person_registered(db, tx, &person, &c.person_id, Some(&c.shelter)).await?;
     // A child who arrives separated or alone raises the alert for the protection queue (spec 3.4.1).
     if let (true, true, Some(status)) = (
         person.is_child,
@@ -704,6 +705,7 @@ pub async fn post_checkin(
     let request: CheckinRequest = body(request)?;
     require_member(&volunteer, &shelter_id)?;
     let shelter = load_shelter(&state.db, &shelter_id).await?;
+    crate::events::ensure_open(&state.db, shelter.event_id.as_deref()).await?;
     let data = PersonData::parse(request.data)?;
     let entered_at: FirestoreInstant = request
         .client_created_at
@@ -900,6 +902,11 @@ async fn visible_person(
             .unwrap_or_default();
         return Ok((person, shelter));
     }
+    // A rescued person with no shelter yet is seen by the volunteer who registered the rescue
+    // (spec 4.6); there is no shelter, so the empty string stands for none.
+    if crate::rescues::registered_rescue_of(&state.db, volunteer, &person).await? {
+        return Ok((person, String::new()));
+    }
     Err(person_not_found())
 }
 
@@ -940,6 +947,9 @@ pub async fn patch_person(
         .parse()
         .map_err(|_| invalid("client_edited_at"))?;
     let (current, shelter_id) = visible_person(&state, &volunteer, &person_id, true).await?;
+    if !shelter_id.is_empty() {
+        crate::events::ensure_shelter_open(&state.db, &shelter_id).await?;
+    }
     // Someone who sees the child only through the alert changes the status and nothing else.
     if viewer_shelter(&current, &volunteer).is_none() && !data.only_child_status() {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden"));
@@ -990,6 +1000,9 @@ pub async fn patch_person(
         })
     })
     .await?;
+    if !shelter_id.is_empty() {
+        crate::members::touch_shelter_event(&state, &shelter_id).await;
+    }
     let history = history_for(&person, &volunteer, &shelter_id);
     Ok(Json(
         json!({ "person": person_view(&person_id, &person, history) }),
@@ -1153,7 +1166,8 @@ struct Migration {
     capture_id: Option<String>,
     volunteer_id: String,
     device: Option<String>,
-    shelter_id: String,
+    /// None for a rescued person with no shelter.
+    shelter_id: Option<String>,
     taken_over_from: Option<String>,
 }
 
@@ -1191,7 +1205,10 @@ async fn migrate_in(
         }
         None => None,
     };
-    let shelter: Option<ShelterDoc> = store::get(db, shelters::COLLECTION, &m.shelter_id).await?;
+    let shelter: Option<ShelterDoc> = match &m.shelter_id {
+        Some(id) => store::get(db, shelters::COLLECTION, id).await?,
+        None => None,
+    };
     let now = store::now();
 
     // The household of the old record moves to the new id; when the token's record already has
@@ -1275,6 +1292,7 @@ async fn migrate_in(
     }
     tx_delete(db, tx, COLLECTION, &m.old_id)?;
     tx_replace(db, tx, COLLECTION, &m.new_id, &person)?;
+    crate::matching::on_person_registered(db, tx, &person, &m.new_id, shelter.as_ref()).await?;
     if let (Some((old_household_id, new_household_id)), Some(shelter)) = (conflict, &shelter) {
         let mut alert = AlertDoc::new(
             AlertKind::HouseholdConflict,
@@ -1282,7 +1300,7 @@ async fn migrate_in(
             &m.new_id,
             json!({ "old_household_id": old_household_id, "household_id": new_household_id }),
         )
-        .for_shelters(vec![m.shelter_id.clone()]);
+        .for_shelters(m.shelter_id.iter().cloned().collect());
         if let Some(event_id) = &shelter.event_id {
             alert = alert.in_event(event_id);
         }
@@ -1290,9 +1308,11 @@ async fn migrate_in(
     }
     let mut entry = AuditEntry::new("person.biometrics", "person", &m.new_id)
         .by(&m.volunteer_id)
-        .in_shelter(&m.shelter_id)
         .taken_over_from(m.taken_over_from.as_deref())
         .basis(person.legal_basis);
+    if let Some(shelter_id) = &m.shelter_id {
+        entry = entry.in_shelter(shelter_id);
+    }
     if let Some(device) = &m.device {
         entry = entry.on_device(device);
     }
@@ -1327,11 +1347,13 @@ async fn raise_in(
     person.level = person.level.raised_to(m.level);
     person.updated_at = store::now();
     tx_replace(db, tx, COLLECTION, &m.new_id, &person)?;
-    let entry = AuditEntry::new("person.biometrics", "person", &m.new_id)
+    let mut entry = AuditEntry::new("person.biometrics", "person", &m.new_id)
         .by(&m.volunteer_id)
-        .in_shelter(&m.shelter_id)
         .taken_over_from(m.taken_over_from.as_deref())
         .basis(person.legal_basis);
+    if let Some(shelter_id) = &m.shelter_id {
+        entry = entry.in_shelter(shelter_id);
+    }
     audit::add(db, tx, &entry)?;
     Ok(person)
 }
@@ -1345,6 +1367,9 @@ pub async fn put_biometrics(
 ) -> Result<Json<Value>, ApiError> {
     let request: BiometricsRequest = body(request)?;
     let (person, shelter_id) = visible_person(&state, &volunteer, &person_id, false).await?;
+    if !shelter_id.is_empty() {
+        crate::events::ensure_shelter_open(&state.db, &shelter_id).await?;
+    }
     let device = auth::device_id(&headers);
     let (new_id, level, capture_id) = match (&request.capture_id, &request.photo_base64) {
         (Some(capture_id), None) => {
@@ -1375,6 +1400,7 @@ pub async fn put_biometrics(
     if person.level != Level::NoBiometrics && new_id != person_id {
         return Err(ApiError::new(StatusCode::CONFLICT, "person_mismatch"));
     }
+    let migration_shelter = (!shelter_id.is_empty()).then_some(shelter_id);
     let migration = Migration {
         old_id: person_id,
         new_id: new_id.clone(),
@@ -1382,7 +1408,7 @@ pub async fn put_biometrics(
         capture_id,
         volunteer_id: volunteer.id.clone(),
         device: device.ok(),
-        shelter_id,
+        shelter_id: migration_shelter.clone(),
         taken_over_from: taken_over_from(&headers),
     };
     let person = store::transact(&state.db, |db, tx| {
@@ -1396,6 +1422,9 @@ pub async fn put_biometrics(
         })
     })
     .await?;
+    if let Some(shelter_id) = &migration_shelter {
+        crate::members::touch_shelter_event(&state, shelter_id).await;
+    }
     Ok(Json(json!({ "person_id": new_id, "level": person.level })))
 }
 

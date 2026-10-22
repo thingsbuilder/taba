@@ -25,5 +25,10 @@ thumbnail_key: "{{ vault_taba_thumbnail_key }}"
 # session_days: 7
 # shelter_radius_m: 100
 # event_radius_km: 50
+# inactivity_days: 30
+# purge_after_days: 30
+# searches_per_day: 10
+# fuso do dia da cota de buscas (nome IANA)
+# tz_pilot: America/Sao_Paulo
 # Nome e contato do responsável pelo piloto, mostrados nas telas de coleta (spec 10.1.3)
 pilot_responsible: "Nome do responsável, contato"

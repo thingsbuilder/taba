@@ -9,7 +9,10 @@ export function backTarget(route: Route): string {
     case 'shelter_household':
     case 'shelter_exit':
       return route.id ? `/shelter/${route.id}` : '/'
+    case 'match':
+      return '/inbox'
     case 'diagnostics':
+    case 'roles':
       return '/profile'
     default:
       return '/'

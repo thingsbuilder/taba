@@ -49,3 +49,12 @@ it('the screens\' own errors have their own texts', () => {
   expect(exitErrorKey('selfie_timeout')).toBe('checkin.selfie_timeout')
   expect(exitErrorKey('invalid_reason')).toBe('error.invalid_reason')
 })
+
+it('gives every phase 4 code its own text in Portuguese and English', () => {
+  for (const code of ['search_limit', 'match_already_decided', 'event_closed', 'search_link_invalid', 'too_many_requests', 'rescue_not_found', 'search_id_taken']) {
+    const key = errorKey(code)
+    expect(key, code).not.toBe('error.generic')
+    expect(ptBR, key).toHaveProperty([key])
+    expect(en, key).toHaveProperty([key])
+  }
+})

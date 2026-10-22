@@ -66,6 +66,11 @@ async fn signed_in_as(state: &AppState, headers: &HeaderMap) -> Option<String> {
     (store::now() < session.expires_at).then_some(session.volunteer_id)
 }
 
+/// `POST /v1/matches/{id}/decision`, whose answer carries the contact of the family.
+fn is_match_decision(route: &str) -> bool {
+    route.starts_with("POST /v1/matches/") && route.ends_with("/decision")
+}
+
 fn replay(doc: &IdempotencyDoc) -> Response {
     let status = StatusCode::from_u16(doc.http_status).unwrap_or(StatusCode::OK);
     if doc.body.is_empty() {
@@ -150,11 +155,25 @@ async fn serve(
         tracing::warn!(key, "response too large to keep for idempotency");
         return ApiError::internal().into_response();
     };
+    // The decision of a match answers with the family's phone: it is not kept for a week. A retry
+    // finds the match decided, which is also what it is.
+    let (http_status, body) = if is_match_decision(route) {
+        let decided = ApiError::match_already_decided();
+        (
+            decided.status.as_u16(),
+            serde_json::json!({ "error": decided.code, "detail": {} }).to_string(),
+        )
+    } else {
+        (
+            parts.status.as_u16(),
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )
+    };
     let doc = IdempotencyDoc {
         volunteer_id: Some(volunteer_id.into()),
         route: route.into(),
-        http_status: parts.status.as_u16(),
-        body: String::from_utf8_lossy(&bytes).into_owned(),
+        http_status,
+        body,
         expires_at: store::now() + TTL,
     };
     if let Err(error) = store::replace(&state.db, COLLECTION, key, &doc).await {

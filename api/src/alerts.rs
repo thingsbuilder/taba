@@ -1,5 +1,6 @@
 //! Alerts (spec 7, 8.8): `GET /v1/alerts` and `POST /v1/alerts/{id}/resolve`.
-//! Phase 2 raises `shelter_flagged`, `event_overlap`, `volunteer_removed` and `endorser_flagged`.
+//! Phase 2 raises `shelter_flagged`, `event_overlap`, `volunteer_removed` and `endorser_flagged`;
+//! phase 4 adds `search_expiring` and `family_search_received`, which only their volunteer sees.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -32,6 +33,18 @@ pub enum AlertKind {
     ExceptionalExit,
     HouseholdConflict,
     UnicoLimit,
+    /// Phase 4: an active search without an accepted match when its event closes (spec 3.7 item 9).
+    SearchExpiring,
+    /// Phase 4: the family sent a search through the volunteer's link (spec 3.7 item 11); informational.
+    FamilySearchReceived,
+}
+
+impl AlertKind {
+    /// Kinds that only the volunteers in `volunteer_ids` receive and resolve, not even the Civil
+    /// Defense (they concern one volunteer's searches, which nobody else reads).
+    fn is_personal(self) -> bool {
+        matches!(self, Self::SearchExpiring | Self::FamilySearchReceived)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +92,21 @@ impl AlertDoc {
         }
     }
 
+    /// An informational alert for one volunteer alone (`search_expiring`, `family_search_received`).
+    pub fn personal(
+        kind: AlertKind,
+        target_kind: &str,
+        target_id: &str,
+        volunteer_id: &str,
+        detail: Value,
+    ) -> Self {
+        let mut alert = Self::new(kind, target_kind, target_id, detail)
+            .about_volunteers(vec![volunteer_id.into()]);
+        alert.informational = true;
+        alert.for_civil_defense = false;
+        alert
+    }
+
     pub fn for_shelters(mut self, shelter_ids: Vec<String>) -> Self {
         self.shelter_ids = shelter_ids;
         self
@@ -107,8 +135,12 @@ pub fn add(
 /// Who receives an alert (spec 8.8): the Civil Defense gets all of them; admins get the
 /// non-informational ones of their shelters; `protection` gets the protection ones.
 /// `endorser_flagged` goes to the Civil Defense and the validators, never to the shelter admins,
-/// and never to the endorser it is about.
+/// and never to the endorser it is about. `search_expiring` and `family_search_received` go to
+/// the volunteers in `volunteer_ids` only.
 pub fn is_recipient(volunteer: &Volunteer, alert: &AlertDoc) -> bool {
+    if alert.kind.is_personal() {
+        return alert.volunteer_ids.contains(&volunteer.id);
+    }
     if alert.kind == AlertKind::EndorserFlagged {
         return volunteer.is_validator_or_civil_defense()
             && !alert.volunteer_ids.contains(&volunteer.id);
@@ -138,10 +170,34 @@ fn view(alert: &AlertDoc) -> Value {
     })
 }
 
+/// Anyone who can register a search may get an alert about it: shelter members and mediators too.
 fn can_receive_any(volunteer: &Volunteer) -> bool {
     volunteer.is_validator_or_civil_defense()
         || volunteer.has_global(GlobalRole::Protection)
-        || volunteer.has_admin_membership()
+        || volunteer.has_global(GlobalRole::Mediator)
+        || !volunteer.memberships.is_empty()
+}
+
+/// The open alerts that name the volunteer in `volunteer_ids`.
+async fn open_alerts_about(
+    db: &FirestoreDb,
+    volunteer_id: &str,
+) -> Result<Vec<AlertDoc>, ApiError> {
+    db.fluent()
+        .select()
+        .from(COLLECTION)
+        .filter(|q| {
+            q.for_all([
+                q.field(path!(AlertDoc::resolved)).eq(false),
+                q.field(path!(AlertDoc::volunteer_ids))
+                    .array_contains(volunteer_id),
+            ])
+        })
+        .limit(LIST_LIMIT)
+        .obj()
+        .query()
+        .await
+        .map_err(fs_error)
 }
 
 async fn open_alerts(db: &FirestoreDb, informational: bool) -> Result<Vec<AlertDoc>, ApiError> {
@@ -175,8 +231,13 @@ pub async fn get_alerts(
     let mut alerts = open_alerts(&state.db, false).await?;
     if volunteer.has_global(GlobalRole::CivilDefense) {
         alerts.extend(open_alerts(&state.db, true).await?);
-        alerts.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     }
+    for own in open_alerts_about(&state.db, &volunteer.id).await? {
+        if !alerts.iter().any(|a| a.id == own.id) {
+            alerts.push(own);
+        }
+    }
+    alerts.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     let visible: Vec<Value> = alerts
         .iter()
         .filter(|alert| is_recipient(&volunteer, alert))
@@ -345,8 +406,73 @@ mod tests {
             (status, body["alerts"].as_array().unwrap().len()),
             (StatusCode::OK, 0)
         );
-        for who in [&w.volunteer_a, &stranger] {
-            let (status, body) = w.app.send("GET", "/v1/alerts", &who.secret, None).await;
+        // A member of a shelter may own searches, so the box opens for them, empty of shelter alerts.
+        assert!(listed(&w.app, &w.volunteer_a).await.is_empty());
+        let (status, body) = w
+            .app
+            .send("GET", "/v1/alerts", &stranger.secret, None)
+            .await;
+        assert_eq!(
+            (status, error_of(&body)),
+            (StatusCode::FORBIDDEN, Some("forbidden"))
+        );
+        assert_eq!(
+            w.app.request("GET", "/v1/alerts", &[], None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    fn personal(kind: AlertKind, volunteer: &Actor) -> AlertDoc {
+        AlertDoc::personal(
+            kind,
+            "search",
+            "search-1",
+            &volunteer.id,
+            json!({ "purge_at": "2026-12-01T00:00:00Z" }),
+        )
+    }
+
+    #[tokio::test]
+    async fn search_alerts_reach_only_the_volunteer_they_name() {
+        let w = world().await;
+        let mediator = w.app.actor("Med").await;
+        w.app.grant(&mediator, GlobalRole::Mediator).await;
+        let validator = w.app.actor("Val").await;
+        w.app.grant(&validator, GlobalRole::Validator).await;
+        let stranger = w.app.actor("Ze").await;
+
+        let expiring = seed(&w.app, personal(AlertKind::SearchExpiring, &w.volunteer_a)).await;
+        let family = seed(
+            &w.app,
+            personal(AlertKind::FamilySearchReceived, &w.admin_a),
+        )
+        .await;
+        let shelter_alert = seed(&w.app, alert_for(&[&w.shelter_a])).await;
+        let mediator_alert = seed(&w.app, personal(AlertKind::SearchExpiring, &mediator)).await;
+
+        assert_eq!(listed(&w.app, &w.volunteer_a).await, [expiring.clone()]);
+        let mut admin_sees = listed(&w.app, &w.admin_a).await;
+        admin_sees.sort();
+        let mut expected = vec![family.clone(), shelter_alert.clone()];
+        expected.sort();
+        assert_eq!(admin_sees, expected);
+        assert!(listed(&w.app, &w.admin_b).await.is_empty());
+        assert_eq!(listed(&w.app, &mediator).await, [mediator_alert.clone()]);
+        // Not even the Civil Defense, who reads every other alert, sees them; a validator neither.
+        assert_eq!(listed(&w.app, &w.civil_defense).await, [shelter_alert]);
+        assert!(listed(&w.app, &validator).await.is_empty());
+        assert_eq!(
+            w.app
+                .send("GET", "/v1/alerts", &stranger.secret, None)
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+
+        // Only the volunteer resolves it; it leaves their list and nobody else is affected.
+        let path = format!("/v1/alerts/{expiring}/resolve");
+        for who in [&w.admin_a, &w.civil_defense, &mediator, &validator] {
+            let (status, body) = w.app.send("POST", &path, &who.secret, None).await;
             assert_eq!(
                 (status, error_of(&body)),
                 (StatusCode::FORBIDDEN, Some("forbidden")),
@@ -355,9 +481,14 @@ mod tests {
             );
         }
         assert_eq!(
-            w.app.request("GET", "/v1/alerts", &[], None).await.0,
-            StatusCode::UNAUTHORIZED
+            w.app
+                .send("POST", &path, &w.volunteer_a.secret, None)
+                .await
+                .0,
+            StatusCode::OK
         );
+        assert!(listed(&w.app, &w.volunteer_a).await.is_empty());
+        assert_eq!(listed(&w.app, &mediator).await, [mediator_alert]);
     }
 
     #[tokio::test]

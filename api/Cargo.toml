@@ -13,6 +13,7 @@ dotenvy = "0.15.7"
 firestore = { version = "0.51.1", default-features = false, features = ["tls-webpki-roots"] }
 geohash = "0.13"
 hmac = "0.13.0"
+jiff = { version = "0.2.38", features = ["tzdb-bundle-always"] }
 rand = "0.10.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

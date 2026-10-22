@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'preact/hooks'
 import type { AlertView } from '../api'
-import { alertLink, alertPhones, alertTextKey } from '../alerts'
+import { alertLink, alertParams, alertPhones, alertTextKey } from '../alerts'
 import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
 import { useOnline } from '../hooks'
 import { t } from '../i18n'
 import { BackLink } from './BackLink'
+import { MatchQueue } from './MatchQueue'
 import { navigate } from '../nav'
 
 /** `/inbox` (spec 8.8): the alerts this volunteer receives. Needs signal. */
@@ -39,13 +40,14 @@ export function Inbox({ ctx }: { ctx: AppContext }) {
       <h1 class="title">{t('inbox.title')}</h1>
       {!online && <p class="notice" role="status">{t('inbox.offline')}</p>}
       {error && <p class="notice notice-error" role="alert">{t(errorKey(error))}</p>}
+      <MatchQueue ctx={ctx} online={online} />
       {alerts?.length === 0 && <p class="body">{t('inbox.empty')}</p>}
       <ul class="list">
         {alerts?.map((a) => {
           const link = alertLink(a)
           return (
             <li class="card" key={a.id}>
-              <p class="body-strong">{t(alertTextKey(a.kind), { kind: a.kind })}</p>
+              <p class="body-strong">{t(alertTextKey(a.kind, a.detail), alertParams(a, ctx.active?.profile.language))}</p>
               {alertPhones(a).map((p) => (
                 <p class="body" key={p.textKey}>{t(p.textKey, { phone: p.phone })}</p>
               ))}

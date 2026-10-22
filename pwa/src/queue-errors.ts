@@ -27,6 +27,8 @@ const RULES: [RegExp, string, string?][] = [
   [/^\/v1\/households\/[^/]+$/, 'queue.label_household_edit', 'PATCH'],
   [/^\/v1\/households\/[^/]+\/cards$/, 'queue.label_card'],
   [/^\/v1\/cards\/[^/]+\/cancel$/, 'queue.label_card_cancel'],
+  [/^\/v1\/rescues$/, 'rescue.queue_label'],
+  [/^\/v1\/searches$/, 'search.queue_label'],
 ]
 
 /** i18n key of what a phase 3 item does; null for the items of earlier phases. */

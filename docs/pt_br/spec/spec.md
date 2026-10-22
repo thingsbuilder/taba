@@ -345,7 +345,7 @@ O registro é feito **no ponto de desembarque ou triagem**, não no barco.
 ### 3.7 Busca de desaparecidos [dec. k, A5, Q8, Q45]
 1. Quem registra: voluntário de abrigo `confirmed`, DC, `mediator` ou `protection` [dec. d; dec. k, A5].
 2. A tela diz, antes de tudo: **"Esta busca não substitui o registro de desaparecimento na delegacia."** [dec. k, A5].
-3. O operador registra: nome, apelido e observações do desaparecido; nome, telefone, parentesco e idioma da família; de 1 a 5 fotos (galeria permitida, é a exceção). Limite: `SEARCHES_PER_DAY` buscas por voluntário por dia (padrão 10) [dec. k, Q8].
+3. O operador registra: nome, apelido e observações do desaparecido; nome, telefone, parentesco e idioma da família; de 1 a 5 fotos (galeria permitida, é a exceção). Limite: `SEARCHES_PER_DAY` buscas por voluntário por dia (padrão 10), contado no dia do fuso `TZ_PILOT` (padrão `America/Sao_Paulo`): a cota recomeça à meia-noite desse fuso, e não às 21h [dec. k, Q8].
 4. `POST /v1/searches`. Sem sinal, vai pela fila; as fotos ficam **cifradas no aparelho** (6.1.7) e são **apagadas logo após o envio** (`2xx`) [dec. k, Q45].
 5. Servidor gera um token por foto (`api+humantoken`), guarda só os `person_id` derivados (`searches.person_ids`, nível "busca": não vira pessoa) e compara com `people`. Um match em qualquer foto conta. Em modo degradado, a busca espera na fila.
 6. **A resposta é sempre a mesma**, com ou sem match: `202 {message: "search_registered", usable_photos}`. O app mostra "Busca registrada. Se a pessoa for encontrada e concordar, a equipe entrará em contato com a família." Nem o operador fica sabendo se houve match.
@@ -353,6 +353,7 @@ O registro é feito **no ponto de desembarque ou triagem**, não no barco.
 8. A busca fica ativa até o descarte do evento do abrigo de origem; cada check-in ou resgate posterior é comparado com as buscas ativas [dec. k, Q25].
 9. **Antes de apagar** [dec. k, A5, Q25]: quando o evento é encerrado, cada busca ativa sem match aceito gera o alerta `search_expiring` para quem a registrou, com a data do descarte e a orientação de encaminhar à delegacia e à Cruz Vermelha.
 10. Match → mediação (4.8).
+11. **Link da família** [decisão do dono, fase 4; opcional]: em vez de digitar a busca, o operador gera um link de uso único com validade de 12 horas (`POST /v1/search-links`). A família abre `/f/<code>` (público, sem login, PT | EN | ES) e envia os dados e de 1 a 5 fotos da própria galeria (`POST /v1/search-links/{code}/submit`), que passa pelo mesmo pipeline do item 5 e tem a mesma resposta do item 6. A busca fica em nome do operador que gerou o link (`via = family_link`), com o limite diário, a auditoria e a mediação dele; o operador não lê o conteúdo enviado. Sem fila offline; em modo degradado o envio responde `503 unico_degraded` e o link continua valendo. O link só é consumido quando pelo menos uma foto gerou token: se nenhuma serviu, o envio responde o mesmo `202` com `usable_photos: 0`, nada é registrado (nem busca nem aviso), a tentativa conta no teto de 5 por link e o link continua valendo; a página diz "Nenhuma foto serviu; mande outras fotos". O abrigo de origem da busca é o `shelter_id` do link: quem tem abrigo `confirmed` usa o seu por padrão; DC, `mediator` e `protection` escolhem qualquer abrigo `confirmed` de evento ativo (`422 invalid_shelter` se não existir ou não for confirmado; `409 event_closed` se o evento acabou).
 
 ### 3.8 Revalidação
 Revalidação = nova captura com liveness cujo `person_id` resultante é comparado com o esperado (5.1).
@@ -660,6 +661,7 @@ Na VM, lidas de `/etc/taba/env`; em desenvolvimento, de `.env` criado a partir d
 | `DELIVERY_RETENTION_DAYS` | 90 | Entregas pseudonimizadas [dec. k, A10; dec. l, Q50] |
 | `SESSION_DAYS` | 7 | [dec. k, Q26] |
 | `SEARCHES_PER_DAY` | 10 | Por voluntário [dec. k, Q8] |
+| `TZ_PILOT` | `America/Sao_Paulo` | Fuso (nome IANA) cujo dia a cota diária de buscas segue |
 | `DELIVERY_SAMPLE_RATE` | 0.05 | [dec. k, Q41] |
 | `ANOMALY_CHECKINS_PER_10MIN` | 30 | [dec. k, Q39] |
 | `ANOMALY_RESCUES_PER_10MIN` | 100 | [dec. k, Q39] |
@@ -717,13 +719,14 @@ O banco é o `(default)`, em modo nativo, na região da instalação — o únic
 | `searches` | `person_ids` ARRAY_CONTAINS, `status` ASC |
 | `searches` | `event_id` ASC, `status` ASC |
 | `matches` | `mediator_kind` ASC, `mediator_shelter_id` ASC, `status` ASC, `created_at` DESC |
+| `matches` | `mediator_kind` ASC, `status` ASC, `created_at` DESC (filas `central` e `protection`, sem `mediator_shelter_id`) |
 | `memberships` | `volunteer_id` ASC, `status` ASC |
 | `memberships` | `shelter_id` ASC, `status` ASC |
 | `alerts` | `resolved` ASC, `informational` ASC, `created_at` DESC |
 | `audit_log` | `shelter_id` ASC, `at` DESC |
 | `audit_log` | `volunteer_id` ASC, `at` DESC |
 
-Políticas de TTL: `sessions.expires_at`, `captures.expires_at`, `idempotency.expires_at`, `audit_log.expires_at`.
+Políticas de TTL: `sessions.expires_at`, `captures.expires_at`, `idempotency.expires_at`, `audit_log.expires_at`, `search_links.expires_at`.
 
 #### 6.3.5 Cotas da camada gratuita (referência)
 1 GiB armazenado; 50 000 leituras, 20 000 escritas e 20 000 exclusões por dia. Cada operação = 1 escrita de negócio + 1 de auditoria.
@@ -794,13 +797,16 @@ Datas: `Timestamp`. `client_*` = hora do celular; sem prefixo = hora do servidor
 `person_id`, `volunteer_id`, `device_id`, `lat`, `lon`, `accuracy_m`, `landing_point?`, `captured_at` (cliente), `received_at`, `event_id?`, `destination_shelter_id?`, `note?`.
 
 ### `searches/{search_id}` (UUID do cliente)
-`created_by`, `origin_shelter_id?`, `event_id?`, `person_ids: []` (HMAC dos tokens das fotos), `photos_sent`, `usable_photos`, `missing_person: {name, nickname?, notes}`, `family: {name, phone, relationship, language}`, `status: active|closed`, `expiry_notified_at?`, `created_at`.
+`created_by` (o voluntário em nome de quem a busca está: quem a digitou ou quem gerou o link da família), `via: volunteer|family_link`, `origin_shelter_id?`, `event_id?`, `person_ids: []` (HMAC dos tokens das fotos), `photos_sent`, `usable_photos`, `missing_person: {name, nickname?, notes}`, `family: {name, phone, relationship, language}`, `status: active|closed`, `expiry_notified_at?`, `created_at`.
+
+### `search_links/{code}` (128 bits aleatórios, base64url)
+`created_by`, `shelter_id`, `event_id?`, `status: active|used|canceled`, `created_at`, `expires_at` (12 h; TTL), `used_at?`, `search_id?`, `attempts`.
 
 ### `matches/{sha256(search_id|person_id)}`
 `search_id`, `person_id`, `is_child: bool`, `mediator_kind: shelter|central|protection`, `mediator_shelter_id?`, `status: open|accepted|declined|not_the_person`, `decided_by?: person|operator`, `decided_by_volunteer?`, `decided_at?`, `note?`, `created_at`.
 
 ### `alerts/{alert_id}`
-`kind: anomaly_volume|anomaly_distance|out_of_area|volunteer_removed|shelter_flagged|event_overlap|unico_limit|endorser_flagged|exceptional_exit|child_separated|search_expiring|household_conflict|revalidation_failed`, `informational: bool`, `target_kind`, `target_id`, `event_id?`, `shelter_ids: []`, `volunteer_ids: []`, `for_civil_defense: bool`, `for_protection: bool`, `detail`, `created_at`, `resolved: bool`, `resolved_by?`.
+`kind: anomaly_volume|anomaly_distance|out_of_area|volunteer_removed|shelter_flagged|event_overlap|unico_limit|endorser_flagged|exceptional_exit|child_separated|search_expiring|family_search_received|household_conflict|revalidation_failed`, `informational: bool`, `target_kind`, `target_id`, `event_id?`, `shelter_ids: []`, `volunteer_ids: []`, `for_civil_defense: bool`, `for_protection: bool`, `detail`, `created_at`, `resolved: bool`, `resolved_by?`.
 
 ### `audit_log/{auto}`
 `at`, `volunteer_id?`, `device_id?`, `ip?`, `shelter_id?`, `action`, `target_kind`, `target_id`, `legal_basis?`, `lat?`, `lon?`, `taken_over_from?`, `expires_at` (TTL de 1 ano [dec. k, Q21]). Sem nome nem foto.
@@ -831,7 +837,7 @@ Base `https://<domain>/v1`. JSON. Autenticação `Authorization: Bearer <session
 |---|---|---|
 | `POST /shelters` | `{id, name, lat, lon, accuracy, address?, capacity?, other_site_reason?, client_created_at}` | `201 {shelter, event?}`; `409 shelter_nearby {shelter_id, name, distance_m, contact}`; `422 insufficient_accuracy` |
 | `GET /shelters/{id}` | — | abrigo (membros ativos; outros voluntários veem só nome, confirmação e vagas) |
-| `GET /shelters/nearby?lat&lon` | — (qualquer voluntário) | `[{shelter_id, name, distance_m, capacity, occupancy}]` (abertos, a ≤ `EVENT_RADIUS_KM`) |
+| `GET /shelters/nearby?lat&lon` | — (qualquer voluntário) | `{shelters: [{id, name, distance_m, capacity, occupancy, vacancies, confirmation}]}`, do mais perto ao mais longe (abertos, de evento ativo, a ≤ `EVENT_RADIUS_KM`) |
 | `PATCH /shelters/{id}` | `{name?, address?, capacity?}` (admin; DC para `capacity`) | `200` |
 | `POST /shelters/{id}/close` | — (admin ou DC) | `200` |
 | `PUT /shelters/{id}/items` | `{items: {<name>: {scope, period_days?, once_per_event, high_value}}}` (admin) | `200` |
@@ -1005,7 +1011,7 @@ Itens que referenciam um abrigo, pessoa ou núcleo criado offline vêm depois de
 - Risco residual: agressor que é admin do mesmo abrigo da vítima. Mitigação: `mediator` pode atender a fila do abrigo (4.8) e auditoria; registrado no RIPD.
 
 ### 10.4 Endpoints públicos e custo
-- Públicos no piloto: `GET /status`, `POST /captures` (só `login` e `invite`), `POST /sessions`, `GET /invites/{code}`, `POST /invites/{code}/accept`.
+- Públicos no piloto: `GET /status`, `POST /captures` (só `login` e `invite`), `POST /sessions`, `GET /invites/{code}`, `POST /invites/{code}/accept`, `GET /search-links/{code}` e `POST /search-links/{code}/submit` (link da família, 3.7 item 11: link de uso único de 12 h, limite por link e por aparelho).
 - Limites para capturas públicas ficam com a seção 16 (Q15, adiada). No piloto, abuso só consome créditos, e o fim dos créditos leva ao modo degradado [dec. k, Q7].
 - Corpo máximo de 6 MB (5 fotos de até 800 KB em base64); imagem individual ≤ 800 KB.
 - Liveness na entrega só por amostragem e alto valor reduz o consumo de processos da Unico [dec. h, A1].
@@ -1022,7 +1028,7 @@ Itens que referenciam um abrigo, pessoa ou núcleo criado offline vêm depois de
 - Detecção: primeiro valor de `navigator.languages` que começa com `pt` → `pt-BR`; senão `en`.
 - Seletor "PT | EN" fixo no topo. Escolha salva em `config.language` e, logado, em `volunteers.language` (`PATCH /me`). Ao logar, o idioma do perfil prevalece.
 - Links enviados (convite, aviso à família) não carregam idioma: quem abre vê no idioma do próprio celular.
-- Mensagem de WhatsApp à família: no `family.language` informado na busca (`pt-BR` ou `en`).
+- Mensagem de WhatsApp à família: no `family.language` informado na busca (`pt-BR`, `en` ou `es`).
 - Datas e números: `Intl.DateTimeFormat` e `Intl.NumberFormat`.
 - Dados digitados não são traduzidos. Erros do servidor chegam como códigos estáveis e são traduzidos pelo app.
 

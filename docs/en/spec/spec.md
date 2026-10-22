@@ -345,7 +345,7 @@ Registration is done **at the landing or triage point**, not in the boat.
 ### 3.7 Missing person search [dec. k, A5, Q8, Q45]
 1. Who registers: volunteer of a `confirmed` shelter, Civil Defense, `mediator` or `protection` [dec. d; dec. k, A5].
 2. The screen states, before anything else: **"Esta busca não substitui o registro de desaparecimento na delegacia."** ("This search does not replace the missing person report at the police station.") [dec. k, A5].
-3. The operator records: name, nickname and notes of the missing person; name, phone, relationship and language of the family; 1 to 5 photos (gallery allowed, this is the exception). Limit: `SEARCHES_PER_DAY` searches per volunteer per day (default 10) [dec. k, Q8].
+3. The operator records: name, nickname and notes of the missing person; name, phone, relationship and language of the family; 1 to 5 photos (gallery allowed, this is the exception). Limit: `SEARCHES_PER_DAY` searches per volunteer per day (default 10), counted on the day of the `TZ_PILOT` time zone (default `America/Sao_Paulo`): the quota starts again at midnight there, not at 21:00 [dec. k, Q8].
 4. `POST /v1/searches`. With no signal, it goes through the queue; the photos stay **encrypted on the device** (6.1.7) and are **deleted right after sending** (`2xx`) [dec. k, Q45].
 5. Server generates one token per photo (`api+humantoken`), stores only the derived `person_id`s (`searches.person_ids`, "search" level: does not become a person) and compares with `people`. A match on any photo counts. In degraded mode, the search waits in the queue.
 6. **The response is always the same**, with or without a match: `202 {message: "search_registered", usable_photos}`. The app shows "Busca registrada. Se a pessoa for encontrada e concordar, a equipe entrará em contato com a família." ("Search registered. If the person is found and agrees, the team will contact the family.") Not even the operator learns whether there was a match.
@@ -353,6 +353,7 @@ Registration is done **at the landing or triage point**, not in the boat.
 8. The search stays active until the purge of the event of the originating shelter; each later check-in or rescue is compared with the active searches [dec. k, Q25].
 9. **Before deleting** [dec. k, A5, Q25]: when the event is closed, each active search without an accepted match generates the `search_expiring` alert for whoever registered it, with the purge date and the instruction to forward it to the police station and to the Red Cross.
 10. Match → mediation (4.8).
+11. **Family link** [owner's decision, phase 4; optional]: instead of typing the search, the operator makes a one-use link valid for 12 hours (`POST /v1/search-links`). The family opens `/f/<code>` (public, no login, PT | EN | ES) and sends the data and 1 to 5 photos from their own gallery (`POST /v1/search-links/{code}/submit`), which goes through the same pipeline as item 5 and has the same response as item 6. The search is in the name of the operator who made the link (`via = family_link`), with their daily limit, audit and mediation; the operator does not read what was sent. No offline queue; in degraded mode the submit answers `503 unico_degraded` and the link stays valid. The link is only consumed when at least one photo produced a token: if none served, the submit answers the same `202` with `usable_photos: 0`, nothing is registered (no search, no notice), the try counts toward the cap of 5 per link and the link stays valid; the page says "No photo worked; send other photos". The origin shelter of the search is the `shelter_id` of the link: whoever has a `confirmed` shelter uses it by default; the Civil Defense, `mediator` and `protection` choose any `confirmed` shelter of an active event (`422 invalid_shelter` if it does not exist or is not confirmed; `409 event_closed` if the event is over).
 
 ### 3.8 Revalidation
 Revalidation = a new capture with liveness whose resulting `person_id` is compared with the expected one (5.1).
@@ -660,6 +661,7 @@ On the VM, read from `/etc/taba/env`; in development, from `.env` created from `
 | `DELIVERY_RETENTION_DAYS` | 90 | Pseudonymized deliveries [dec. k, A10; dec. l, Q50] |
 | `SESSION_DAYS` | 7 | [dec. k, Q26] |
 | `SEARCHES_PER_DAY` | 10 | Per volunteer [dec. k, Q8] |
+| `TZ_PILOT` | `America/Sao_Paulo` | Time zone (IANA name) whose day the daily search quota follows |
 | `DELIVERY_SAMPLE_RATE` | 0.05 | [dec. k, Q41] |
 | `ANOMALY_CHECKINS_PER_10MIN` | 30 | [dec. k, Q39] |
 | `ANOMALY_RESCUES_PER_10MIN` | 100 | [dec. k, Q39] |
@@ -717,13 +719,14 @@ The database is `(default)`, in native mode, in the installation's region — th
 | `searches` | `person_ids` ARRAY_CONTAINS, `status` ASC |
 | `searches` | `event_id` ASC, `status` ASC |
 | `matches` | `mediator_kind` ASC, `mediator_shelter_id` ASC, `status` ASC, `created_at` DESC |
+| `matches` | `mediator_kind` ASC, `status` ASC, `created_at` DESC (`central` and `protection` queues, which have no `mediator_shelter_id`) |
 | `memberships` | `volunteer_id` ASC, `status` ASC |
 | `memberships` | `shelter_id` ASC, `status` ASC |
 | `alerts` | `resolved` ASC, `informational` ASC, `created_at` DESC |
 | `audit_log` | `shelter_id` ASC, `at` DESC |
 | `audit_log` | `volunteer_id` ASC, `at` DESC |
 
-TTL policies: `sessions.expires_at`, `captures.expires_at`, `idempotency.expires_at`, `audit_log.expires_at`.
+TTL policies: `sessions.expires_at`, `captures.expires_at`, `idempotency.expires_at`, `audit_log.expires_at`, `search_links.expires_at`.
 
 #### 6.3.5 Free tier quotas (reference)
 1 GiB stored; 50,000 reads, 20,000 writes and 20,000 deletes per day. Each operation = 1 business write + 1 audit write.
@@ -794,13 +797,16 @@ Dates: `Timestamp`. `client_*` = phone time; no prefix = server time.
 `person_id`, `volunteer_id`, `device_id`, `lat`, `lon`, `accuracy_m`, `landing_point?`, `captured_at` (client), `received_at`, `event_id?`, `destination_shelter_id?`, `note?`.
 
 ### `searches/{search_id}` (client UUID)
-`created_by`, `origin_shelter_id?`, `event_id?`, `person_ids: []` (HMAC of the photos' tokens), `photos_sent`, `usable_photos`, `missing_person: {name, nickname?, notes}`, `family: {name, phone, relationship, language}`, `status: active|closed`, `expiry_notified_at?`, `created_at`.
+`created_by` (the volunteer the search is in the name of: who typed it or who made the family link), `via: volunteer|family_link`, `origin_shelter_id?`, `event_id?`, `person_ids: []` (HMAC of the photos' tokens), `photos_sent`, `usable_photos`, `missing_person: {name, nickname?, notes}`, `family: {name, phone, relationship, language}`, `status: active|closed`, `expiry_notified_at?`, `created_at`.
+
+### `search_links/{code}` (128 random bits, base64url)
+`created_by`, `shelter_id`, `event_id?`, `status: active|used|canceled`, `created_at`, `expires_at` (12 h; TTL), `used_at?`, `search_id?`, `attempts`.
 
 ### `matches/{sha256(search_id|person_id)}`
 `search_id`, `person_id`, `is_child: bool`, `mediator_kind: shelter|central|protection`, `mediator_shelter_id?`, `status: open|accepted|declined|not_the_person`, `decided_by?: person|operator`, `decided_by_volunteer?`, `decided_at?`, `note?`, `created_at`.
 
 ### `alerts/{alert_id}`
-`kind: anomaly_volume|anomaly_distance|out_of_area|volunteer_removed|shelter_flagged|event_overlap|unico_limit|endorser_flagged|exceptional_exit|child_separated|search_expiring|household_conflict|revalidation_failed`, `informational: bool`, `target_kind`, `target_id`, `event_id?`, `shelter_ids: []`, `volunteer_ids: []`, `for_civil_defense: bool`, `for_protection: bool`, `detail`, `created_at`, `resolved: bool`, `resolved_by?`.
+`kind: anomaly_volume|anomaly_distance|out_of_area|volunteer_removed|shelter_flagged|event_overlap|unico_limit|endorser_flagged|exceptional_exit|child_separated|search_expiring|family_search_received|household_conflict|revalidation_failed`, `informational: bool`, `target_kind`, `target_id`, `event_id?`, `shelter_ids: []`, `volunteer_ids: []`, `for_civil_defense: bool`, `for_protection: bool`, `detail`, `created_at`, `resolved: bool`, `resolved_by?`.
 
 ### `audit_log/{auto}`
 `at`, `volunteer_id?`, `device_id?`, `ip?`, `shelter_id?`, `action`, `target_kind`, `target_id`, `legal_basis?`, `lat?`, `lon?`, `taken_over_from?`, `expires_at` (1-year TTL [dec. k, Q21]). No name and no photo.
@@ -831,7 +837,7 @@ Base `https://<domain>/v1`. JSON. Authentication `Authorization: Bearer <session
 |---|---|---|
 | `POST /shelters` | `{id, name, lat, lon, accuracy, address?, capacity?, other_site_reason?, client_created_at}` | `201 {shelter, event?}`; `409 shelter_nearby {shelter_id, name, distance_m, contact}`; `422 insufficient_accuracy` |
 | `GET /shelters/{id}` | — | shelter (active members; other volunteers see only name, confirmation and vacancies) |
-| `GET /shelters/nearby?lat&lon` | — (any volunteer) | `[{shelter_id, name, distance_m, capacity, occupancy}]` (open, within ≤ `EVENT_RADIUS_KM`) |
+| `GET /shelters/nearby?lat&lon` | — (any volunteer) | `{shelters: [{id, name, distance_m, capacity, occupancy, vacancies, confirmation}]}`, nearest first (open, of an active event, within ≤ `EVENT_RADIUS_KM`) |
 | `PATCH /shelters/{id}` | `{name?, address?, capacity?}` (admin; DC for `capacity`) | `200` |
 | `POST /shelters/{id}/close` | — (admin or DC) | `200` |
 | `PUT /shelters/{id}/items` | `{items: {<name>: {scope, period_days?, once_per_event, high_value}}}` (admin) | `200` |
@@ -1022,7 +1028,7 @@ Items that reference a shelter, person or household created offline come after i
 - Detection: first value of `navigator.languages` that starts with `pt` → `pt-BR`; otherwise `en`.
 - "PT | EN" selector fixed at the top. Choice saved in `config.language` and, when logged in, in `volunteers.language` (`PATCH /me`). On login, the profile language prevails.
 - Links sent (invite, notice to the family) do not carry a language: whoever opens them sees them in their own phone's language.
-- WhatsApp message to the family: in the `family.language` given in the search (`pt-BR` or `en`).
+- WhatsApp message to the family: in the `family.language` given in the search (`pt-BR`, `en` or `es`).
 - Dates and numbers: `Intl.DateTimeFormat` and `Intl.NumberFormat`.
 - Typed data is not translated. Server errors arrive as stable codes and are translated by the app.
 

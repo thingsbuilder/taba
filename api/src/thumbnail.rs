@@ -110,7 +110,7 @@ pub mod optional_bytes {
 }
 
 /// `GET /v1/people/{id}/thumbnail` (spec 4.6): active members of the person's current shelter;
-/// every access is audited. The people who see it in a match or a rescue come with phases 4 and 5.
+/// every access is audited. A rescued person with no shelter: see `rescues::can_see_thumbnail`.
 pub async fn get_thumbnail(
     State(state): State<AppState>,
     volunteer: Volunteer,
@@ -119,8 +119,11 @@ pub async fn get_thumbnail(
     let person: PersonDoc = store::get(&state.db, people::COLLECTION, &person_id)
         .await?
         .ok_or_else(people::person_not_found)?;
+    // The shelter's members; a rescued person with no shelter yet, the volunteer of the landing
+    // point who registered it and the Civil Defense (spec 4.6, Q33).
     let shelter_id = match &person.current_shelter_id {
-        Some(shelter) if volunteer.role_in(shelter).is_some() => shelter.clone(),
+        Some(shelter) if volunteer.role_in(shelter).is_some() => Some(shelter.clone()),
+        _ if crate::rescues::can_see_thumbnail(&state.db, &volunteer, &person).await? => None,
         _ => return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden")),
     };
     let encrypted = person
@@ -128,10 +131,12 @@ pub async fn get_thumbnail(
         .as_deref()
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "thumbnail_not_found"))?;
     let jpeg = decrypt(state.thumbnail_key(), encrypted)?;
-    let entry = AuditEntry::new("thumbnail.view", "person", &person_id)
+    let mut entry = AuditEntry::new("thumbnail.view", "person", &person_id)
         .by(&volunteer.id)
-        .in_shelter(&shelter_id)
         .basis(LegalBasis::VitalInterest);
+    if let Some(shelter_id) = &shelter_id {
+        entry = entry.in_shelter(shelter_id);
+    }
     store::transact(&state.db, |db, tx| {
         let entry = entry.clone();
         Box::pin(async move { audit::add(&db, tx, &entry) })

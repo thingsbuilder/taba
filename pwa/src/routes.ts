@@ -2,6 +2,7 @@ export type RouteName =
   | 'home' | 'login' | 'return' | 'switch_operator' | 'profile'
   | 'shelter_new' | 'shelter' | 'shelter_members' | 'invite' | 'endorse' | 'inbox'
   | 'shelter_checkin' | 'shelter_people' | 'shelter_household' | 'shelter_exit' | 'person' | 'privacy' | 'diagnostics'
+  | 'rescue' | 'search' | 'roles' | 'match' | 'family'
   | 'not_found'
 
 export interface Route {
@@ -10,7 +11,7 @@ export interface Route {
   id?: string
   /** `:household_id` of `/shelter/:id/households/:household_id`. */
   household_id?: string
-  /** `:code` of `/invite/:code` and `/endorse/:code`. */
+  /** `:code` of `/invite/:code`, `/endorse/:code` and the public `/f/:code` (family link). */
   code?: string
 }
 
@@ -23,8 +24,14 @@ const SIMPLE: Record<string, RouteName> = {
   '/shelters/new': 'shelter_new',
   '/inbox': 'inbox',
   '/privacy': 'privacy',
+  '/rescue': 'rescue',
+  '/search': 'search',
+  '/roles': 'roles',
   '/diagnostics': 'diagnostics',
 }
+
+/** The family's page is public and stands alone: no session, PIN, top bar, queue or install prompt. */
+export const usesShell = (route: Route): boolean => route.name !== 'family'
 
 // Each phase adds its routes here (spec 6.1).
 export function resolveRoute(pathname: string): Route {
@@ -38,6 +45,10 @@ export function resolveRoute(pathname: string): Route {
   if (household) return { name: 'shelter_household', id: decodeURIComponent(household[1]!), household_id: decodeURIComponent(household[2]!) }
   const person = /^\/person\/([^/]+)$/.exec(pathname)
   if (person) return { name: 'person', id: decodeURIComponent(person[1]!) }
+  const match = /^\/matches\/([^/]+)$/.exec(pathname)
+  if (match) return { name: 'match', id: decodeURIComponent(match[1]!) }
+  const family = /^\/f\/([^/]+)$/.exec(pathname)
+  if (family) return { name: 'family', code: decodeURIComponent(family[1]!) }
   const code = /^\/(invite|endorse)\/([^/]+)$/.exec(pathname)
   if (code) return { name: code[1] as 'invite' | 'endorse', code: decodeURIComponent(code[2]!) }
   return { name: 'not_found' }

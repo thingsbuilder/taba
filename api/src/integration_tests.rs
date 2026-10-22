@@ -728,3 +728,799 @@ async fn protection_and_the_civil_defense_reach_a_child_only_while_an_alert_abou
         );
     }
 }
+
+// ---- phase 4: rescue, search, family link and matches together ----
+
+use base64::{Engine, engine::general_purpose::STANDARD};
+
+const JPEG: [u8; 6] = [0xFF, 0xD8, 0xFF, 0xE0, 1, 2];
+const FAMILY_PHONE: &str = "+55 51 99999-1234";
+
+fn photo() -> Value {
+    json!(STANDARD.encode(b"a face"))
+}
+
+/// The next photos sent to Unico come back as these tokens, in order.
+fn tokens(app: &TestApp, tokens: &[&str]) {
+    app.unico.with(|s| {
+        for token in tokens {
+            s.post_replies.push_back((
+                200,
+                json!({ "id": "img", "state": "PROCESS_STATE_FINISHED", "data": { "humanToken": { "value": token } } }),
+            ));
+        }
+    });
+}
+
+fn search_body(photos: usize) -> Value {
+    json!({
+        "photos_base64": (0..photos).map(|_| photo()).collect::<Vec<_>>(),
+        "missing_person": { "name": "Joao", "nickname": "Jo", "notes": "camisa azul" },
+        "family": { "name": "Maria", "phone": FAMILY_PHONE, "relationship": "mae", "language": "pt-BR" },
+    })
+}
+
+/// A search typed by `who`, whose photo is `token`.
+async fn register_search(app: &TestApp, who: &Actor, token: &str) -> (StatusCode, Value) {
+    tokens(app, &[token]);
+    let mut body = search_body(1);
+    body["id"] = json!(new_id());
+    call(app, who, "POST", "/v1/searches", Some(body)).await
+}
+
+/// A link made by `who` for `shelter`, and the family's submission of a photo that is `token`.
+async fn family_search(
+    app: &TestApp,
+    who: &Actor,
+    shelter: &str,
+    token: &str,
+) -> (StatusCode, Value) {
+    let (status, link) = call(
+        app,
+        who,
+        "POST",
+        "/v1/search-links",
+        Some(json!({ "shelter_id": shelter })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{link}");
+    tokens(app, &[token]);
+    let (status, _, answer) = app
+        .request(
+            "POST",
+            &format!("/v1/search-links/{}/submit", link["code"].as_str().unwrap()),
+            &[("x-device-id", "dev-family")],
+            Some(search_body(1)),
+        )
+        .await;
+    (status, answer)
+}
+
+/// A check-in by photo of whoever `token` is.
+async fn checkin_photo(
+    app: &TestApp,
+    who: &Actor,
+    shelter: &str,
+    token: &str,
+    extra: Value,
+) -> (StatusCode, Value) {
+    tokens(app, &[token]);
+    let mut body = checkin_body(extra);
+    body["photo_base64"] = photo();
+    call(
+        app,
+        who,
+        "POST",
+        &format!("/v1/shelters/{shelter}/checkins"),
+        Some(body),
+    )
+    .await
+}
+
+async fn matches_of(app: &TestApp, who: &Actor) -> Vec<Value> {
+    let (status, body) = call(app, who, "GET", "/v1/matches", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["matches"].as_array().unwrap().clone()
+}
+
+async fn match_docs(app: &TestApp) -> usize {
+    all_docs(&app.state.db, "matches").await.len()
+}
+
+async fn actor_with(app: &TestApp, name: &str, role: GlobalRole) -> Actor {
+    let actor = app.actor(name).await;
+    app.grant(&actor, role).await;
+    actor
+}
+
+#[tokio::test]
+async fn a_family_link_search_meets_a_later_check_in_and_the_mediator_gets_the_contact() {
+    let s = scene().await;
+    let mediator = actor_with(&s.app, "Mediator", GlobalRole::Mediator).await;
+    let protection = actor_with(&s.app, "Protection", GlobalRole::Protection).await;
+
+    // The family sends the search; the volunteer who made the link is told, and only that.
+    let (status, answer) = family_search(&s.app, &s.admin, &s.shelter, "tok-adult").await;
+    assert_eq!(
+        (status, &answer),
+        (
+            StatusCode::ACCEPTED,
+            &json!({ "message": "search_registered", "usable_photos": 1 })
+        )
+    );
+    assert_eq!(match_docs(&s.app).await, 0);
+    let alerts = all_docs(&s.app.state.db, "alerts").await;
+    let received: Vec<_> = alerts
+        .iter()
+        .filter(|a| a["kind"] == "family_search_received")
+        .collect();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0]["detail"], json!({ "usable_photos": 1 }));
+    assert_eq!(received[0]["volunteer_ids"], json!([s.admin.id]));
+
+    // The person checks in with the same face: a match in the queue of the confirmed shelter.
+    let (status, body) =
+        checkin_photo(&s.app, &s.volunteer, &s.shelter, "tok-adult", json!({})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let queue = matches_of(&s.app, &s.admin).await;
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0]["mediator_kind"], "shelter");
+    assert_eq!(matches_of(&s.app, &mediator).await.len(), 1);
+    assert!(matches_of(&s.app, &protection).await.is_empty());
+    // Criterion 51: checking in again does not make another one.
+    let (status, _) = checkin_photo(&s.app, &s.volunteer, &s.shelter, "tok-adult", json!({})).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(match_docs(&s.app).await, 1);
+
+    // A child goes to protection, whatever the shelter, and the admins never see it.
+    let (status, _) = family_search(&s.app, &s.admin, &s.shelter, "tok-child").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let child = json!({ "legal_basis": "child_protection", "data": { "is_child": true, "child_status": "unaccompanied" } });
+    let (status, body) = checkin_photo(&s.app, &s.volunteer, &s.shelter, "tok-child", child).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(matches_of(&s.app, &s.admin).await.len(), 1);
+    let kids = matches_of(&s.app, &protection).await;
+    assert_eq!(
+        (
+            kids.len(),
+            kids[0]["mediator_kind"].as_str(),
+            kids[0]["is_child"].as_bool()
+        ),
+        (1, Some("protection"), Some(true))
+    );
+
+    // The mediator checks the data, which has no contact, and accepts: only now the contact comes.
+    let id = queue[0]["id"].as_str().unwrap();
+    let (status, detail) = call(&s.app, &mediator, "GET", &format!("/v1/matches/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert!(!detail.to_string().contains("99999"), "{detail}");
+    let decision = json!({ "decision": "accept", "decided_by": "person" });
+    let (status, accepted) = call(
+        &s.app,
+        &mediator,
+        "POST",
+        &format!("/v1/matches/{id}/decision"),
+        Some(decision.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{accepted}");
+    assert_eq!(accepted["family"]["phone"], FAMILY_PHONE);
+    assert!(
+        accepted["whatsapp_link"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://wa.me/5551999991234?text=")
+    );
+    let (status, again) = call(
+        &s.app,
+        &s.admin,
+        "POST",
+        &format!("/v1/matches/{id}/decision"),
+        Some(decision),
+    )
+    .await;
+    assert_eq!(
+        (status, error_of(&again)),
+        (StatusCode::CONFLICT, Some("match_already_decided"))
+    );
+}
+
+#[tokio::test]
+async fn a_search_meets_a_later_rescue_of_the_same_person_in_the_central_queue() {
+    let s = scene().await;
+    let mediator = actor_with(&s.app, "Mediator", GlobalRole::Mediator).await;
+    let (status, _) = register_search(&s.app, &s.admin, "tok-rescued").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    tokens(&s.app, &["tok-rescued"]);
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        "/v1/rescues",
+        Some(json!({
+            "id": new_id(), "photo_base64": photo(), "lat": ORIGIN.0, "lon": ORIGIN.1,
+            "accuracy": 12.0, "captured_at": store::now().to_string(),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    // A person with no shelter is for the central queue: the mediator and the Civil Defense.
+    let queue = matches_of(&s.app, &mediator).await;
+    assert_eq!(
+        (queue.len(), queue[0]["mediator_kind"].as_str()),
+        (1, Some("central"))
+    );
+    assert!(matches_of(&s.app, &s.admin).await.is_empty());
+}
+
+#[tokio::test]
+async fn late_biometrics_triggers_the_match() {
+    let s = scene().await;
+    let (status, _) = register_search(&s.app, &s.admin, "tok-late").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    // Registered without biometrics: nothing to compare yet.
+    let person = new_id();
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/shelters/{}/checkins", s.shelter),
+        Some(checkin_body(json!({ "id": person, "no_biometrics": true }))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(match_docs(&s.app).await, 0);
+    // The photo comes later and carries the person to the token of the search.
+    tokens(&s.app, &["tok-late"]);
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "PUT",
+        &format!("/v1/people/{person}/biometrics"),
+        Some(json!({ "photo_base64": photo() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let queue = matches_of(&s.app, &s.admin).await;
+    assert_eq!(
+        (queue.len(), queue[0]["mediator_kind"].as_str()),
+        (1, Some("shelter"))
+    );
+}
+
+#[tokio::test]
+async fn the_answer_to_a_search_is_the_same_with_and_without_a_match() {
+    let s = scene().await;
+    let (status, _) = checkin_photo(&s.app, &s.volunteer, &s.shelter, "tok-here", json!({})).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (with_status, with_match) = register_search(&s.app, &s.admin, "tok-here").await;
+    assert_eq!(match_docs(&s.app).await, 1);
+    let (without_status, without_match) = register_search(&s.app, &s.admin, "tok-nobody").await;
+    assert_eq!(match_docs(&s.app).await, 1);
+    assert_eq!((with_status, &with_match), (without_status, &without_match));
+    assert_eq!(
+        with_match,
+        json!({ "message": "search_registered", "usable_photos": 1 })
+    );
+}
+
+#[tokio::test]
+async fn a_rescued_person_with_no_shelter_is_seen_by_who_registered_the_rescue_and_by_the_civil_defense()
+ {
+    let s = scene().await;
+    let dc = actor_with(&s.app, "DC", GlobalRole::CivilDefense).await;
+    let mediator = actor_with(&s.app, "Mediator", GlobalRole::Mediator).await;
+    // No name, no wristband: a thumbnail is kept.
+    let id = new_id();
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        "/v1/rescues",
+        Some(json!({
+            "id": id, "lat": ORIGIN.0, "lon": ORIGIN.1, "accuracy": 12.0,
+            "captured_at": store::now().to_string(), "thumbnail_base64": STANDARD.encode(JPEG),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let path = format!("/v1/people/{id}/thumbnail");
+    for (who, expected) in [
+        (&s.volunteer, StatusCode::OK),
+        (&dc, StatusCode::OK),
+        (&s.admin, StatusCode::FORBIDDEN),
+        (&mediator, StatusCode::FORBIDDEN),
+    ] {
+        let (status, _) = call(&s.app, who, "GET", &path, None).await;
+        assert_eq!(status, expected, "{}", who.id);
+    }
+    // The volunteer of the landing point opens the record; someone else does not find it.
+    let record = format!("/v1/people/{id}");
+    assert_eq!(
+        call(&s.app, &s.volunteer, "GET", &record, None).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(&s.app, &s.admin, "GET", &record, None).await.0,
+        StatusCode::NOT_FOUND
+    );
+    // And the late photo works without a shelter.
+    tokens(&s.app, &["tok-rescued-late"]);
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "PUT",
+        &format!("{record}/biometrics"),
+        Some(json!({ "photo_base64": photo() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["level"], "assisted");
+}
+
+#[tokio::test]
+async fn a_shelter_of_a_closed_event_takes_no_write_of_phase_4_or_of_its_members() {
+    let s = scene().await;
+    let shelter: crate::shelters::ShelterDoc =
+        store::get(&s.app.state.db, crate::shelters::COLLECTION, &s.shelter)
+            .await
+            .unwrap()
+            .unwrap();
+    let event_id = shelter.event_id.unwrap();
+    let mut event: crate::events::EventDoc =
+        store::get(&s.app.state.db, crate::events::COLLECTION, &event_id)
+            .await
+            .unwrap()
+            .unwrap();
+    event.status = crate::events::EventStatus::Closed;
+    store::replace(
+        &s.app.state.db,
+        crate::events::COLLECTION,
+        &event_id,
+        &event,
+    )
+    .await
+    .unwrap();
+
+    let invite = format!("/v1/shelters/{}/invites", s.shelter);
+    let writes = [
+        (
+            "POST",
+            invite.clone(),
+            Some(json!({ "kind": "qr", "role": "volunteer" })),
+        ),
+        (
+            "PATCH",
+            format!("/v1/shelters/{}", s.shelter),
+            Some(json!({ "name": "Outro" })),
+        ),
+        (
+            "POST",
+            "/v1/search-links".to_string(),
+            Some(json!({ "shelter_id": s.shelter })),
+        ),
+        (
+            "POST",
+            "/v1/searches".to_string(),
+            Some({
+                let mut b = search_body(1);
+                b["id"] = json!(new_id());
+                b
+            }),
+        ),
+        (
+            "PATCH",
+            format!("/v1/shelters/{}/members/{}", s.shelter, s.volunteer.id),
+            Some(json!({ "role": "admin" })),
+        ),
+        (
+            "DELETE",
+            format!("/v1/shelters/{}/members/{}", s.shelter, s.volunteer.id),
+            None,
+        ),
+        (
+            "POST",
+            format!("/v1/shelters/{}/endorsements/in-person/code", s.shelter),
+            Some(json!({ "lat": ORIGIN.0, "lon": ORIGIN.1, "accuracy": 10.0 })),
+        ),
+    ];
+    for (method, path, body) in writes {
+        let (status, answer) = call(&s.app, &s.admin, method, &path, body).await;
+        assert_eq!(
+            (status, error_of(&answer)),
+            (StatusCode::CONFLICT, Some("event_closed")),
+            "{method} {path}"
+        );
+    }
+    // Reading and leaving are still allowed.
+    assert_eq!(
+        call(&s.app, &s.admin, "GET", &invite, None).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &s.app,
+            &s.volunteer,
+            "POST",
+            &format!("/v1/shelters/{}/leave", s.shelter),
+            None
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+}
+
+// ---- event activity (spec 4.3.3: any write of a shelter) and the idempotency of a decision ----
+
+/// How many seconds ago the event of the shelter last had a write, after making it look 31 days idle.
+async fn make_idle(app: &TestApp, shelter: &str) -> String {
+    let shelter: crate::shelters::ShelterDoc =
+        store::get(&app.state.db, crate::shelters::COLLECTION, shelter)
+            .await
+            .unwrap()
+            .unwrap();
+    let event_id = shelter.event_id.unwrap();
+    let mut event: crate::events::EventDoc =
+        store::get(&app.state.db, crate::events::COLLECTION, &event_id)
+            .await
+            .unwrap()
+            .unwrap();
+    event.last_activity_at = crate::store::now() - std::time::Duration::from_secs(31 * 86_400);
+    store::replace(&app.state.db, crate::events::COLLECTION, &event_id, &event)
+        .await
+        .unwrap();
+    // The write of the hour was just made; forget it so the next one is written.
+    app.state.event_activity.lock().unwrap().clear();
+    event_id
+}
+
+async fn last_activity_age_secs(app: &TestApp, event_id: &str) -> i64 {
+    let event: crate::events::EventDoc =
+        store::get(&app.state.db, crate::events::COLLECTION, event_id)
+            .await
+            .unwrap()
+            .unwrap();
+    (crate::store::now().as_microsecond() - event.last_activity_at.as_microsecond()) / 1_000_000
+}
+
+#[tokio::test]
+async fn any_write_of_a_shelter_postpones_the_closing_of_its_event() {
+    let s = scene().await;
+    let person = new_id();
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/shelters/{}/checkins", s.shelter),
+        Some(checkin_body(json!({ "id": person, "no_biometrics": true }))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let household = new_id();
+    let (status, body) = call(&s.app, &s.volunteer, "POST", &format!("/v1/shelters/{}/households", s.shelter), Some(json!({ "id": household, "member_ids": [person], "head_id": person, "client_created_at": store::now().to_string() }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let writes: Vec<(&str, String, Value)> = vec![
+        (
+            "issue a card",
+            format!("/v1/households/{household}/cards"),
+            json!({ "code": "ABCD2345", "client_issued_at": store::now().to_string() }),
+        ),
+        (
+            "change the household",
+            format!("/v1/households/{household}"),
+            json!({ "pets": [{ "species": "dog", "count": 1 }] }),
+        ),
+        (
+            "change the person",
+            format!("/v1/people/{person}"),
+            json!({ "data": { "name": "Ana" }, "client_edited_at": store::now().to_string() }),
+        ),
+        ("register a search", "/v1/searches".to_string(), {
+            let mut b = search_body(1);
+            b["id"] = json!(new_id());
+            b
+        }),
+    ];
+    for (what, path, body) in writes {
+        let event_id = make_idle(&s.app, &s.shelter).await;
+        if what == "register a search" {
+            tokens(&s.app, &["tok-activity"]);
+        }
+        let method = if what.starts_with("change") {
+            "PATCH"
+        } else {
+            "POST"
+        };
+        let (status, answer) = call(&s.app, &s.admin, method, &path, Some(body)).await;
+        assert!(status.is_success(), "{what}: {status} {answer}");
+        assert!(
+            last_activity_age_secs(&s.app, &event_id).await < 60,
+            "{what} did not record activity"
+        );
+        crate::jobs::run_once(&s.app.state).await.unwrap();
+        let event: crate::events::EventDoc =
+            store::get(&s.app.state.db, crate::events::COLLECTION, &event_id)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(event.status, crate::events::EventStatus::Active, "{what}");
+    }
+    // Without a write the same idle event does close.
+    let event_id = make_idle(&s.app, &s.shelter).await;
+    crate::jobs::run_once(&s.app.state).await.unwrap();
+    let event: crate::events::EventDoc =
+        store::get(&s.app.state.db, crate::events::COLLECTION, &event_id)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(event.status, crate::events::EventStatus::Closed);
+}
+
+#[tokio::test]
+async fn the_family_contact_of_an_accept_is_not_kept_for_the_idempotency_replay() {
+    let s = scene().await;
+    let mediator = actor_with(&s.app, "Mediator", GlobalRole::Mediator).await;
+    let (status, _) = register_search(&s.app, &s.admin, "tok-keyed").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (status, _) = checkin_photo(&s.app, &s.volunteer, &s.shelter, "tok-keyed", json!({})).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = matches_of(&s.app, &mediator).await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let key = new_id();
+    let path = format!("/v1/matches/{id}/decision");
+    let body = json!({ "decision": "accept", "decided_by": "person" });
+    let (status, accepted) = s
+        .app
+        .send_keyed("POST", &path, &mediator.secret, &key, Some(body.clone()))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{accepted}");
+    assert_eq!(accepted["family"]["phone"], FAMILY_PHONE);
+
+    // The retry with the same key does not get the contact again, and nothing keeps it.
+    let (status, replay) = s
+        .app
+        .send_keyed("POST", &path, &mediator.secret, &key, Some(body))
+        .await;
+    assert_eq!(
+        (status, error_of(&replay)),
+        (StatusCode::CONFLICT, Some("match_already_decided"))
+    );
+    let kept = all_docs(&s.app.state.db, "idempotency").await;
+    assert!(
+        !kept
+            .iter()
+            .any(|d| d.to_string().contains("99999") || d.to_string().contains("wa.me")),
+        "{kept:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_volunteer_of_a_rescue_loses_sight_of_the_person_once_a_shelter_has_them() {
+    let s = scene().await;
+    let rescuer = s.app.actor("Rescuer").await;
+    s.app
+        .create_shelter(&rescuer, "Outro abrigo", north_of_origin(300_000.0))
+        .await;
+    tokens(&s.app, &["tok-moved"]);
+    let (status, body) = call(
+        &s.app,
+        &rescuer,
+        "POST",
+        "/v1/rescues",
+        Some(json!({
+            "id": new_id(), "photo_base64": photo(), "lat": ORIGIN.0, "lon": ORIGIN.1, "accuracy": 12.0,
+            "captured_at": store::now().to_string(), "thumbnail_base64": STANDARD.encode(JPEG),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let person = body["person_id"].as_str().unwrap().to_string();
+    let record = format!("/v1/people/{person}");
+    // Before any shelter: the record and the thumbnail are the rescuer's.
+    assert_eq!(
+        call(&s.app, &rescuer, "GET", &record, None).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &s.app,
+            &rescuer,
+            "GET",
+            &format!("{record}/thumbnail"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    // A shelter checks the person in: from then on the shelter rules apply, for both.
+    let (status, body) =
+        checkin_photo(&s.app, &s.volunteer, &s.shelter, "tok-moved", json!({})).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(
+        call(&s.app, &rescuer, "GET", &record, None).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &s.app,
+            &rescuer,
+            "GET",
+            &format!("{record}/thumbnail"),
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call(&s.app, &s.volunteer, "GET", &record, None).await.0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn the_family_link_of_a_closed_event_answers_like_any_dead_link() {
+    let s = scene().await;
+    let (status, link) = call(
+        &s.app,
+        &s.admin,
+        "POST",
+        "/v1/search-links",
+        Some(json!({ "shelter_id": s.shelter })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{link}");
+    let event_id = make_idle(&s.app, &s.shelter).await;
+    let mut event: crate::events::EventDoc =
+        store::get(&s.app.state.db, crate::events::COLLECTION, &event_id)
+            .await
+            .unwrap()
+            .unwrap();
+    event.status = crate::events::EventStatus::Closed;
+    store::replace(
+        &s.app.state.db,
+        crate::events::COLLECTION,
+        &event_id,
+        &event,
+    )
+    .await
+    .unwrap();
+
+    let (status, _, answer) = s
+        .app
+        .request(
+            "POST",
+            &format!("/v1/search-links/{}/submit", link["code"].as_str().unwrap()),
+            &[("x-device-id", "dev-family")],
+            Some(search_body(1)),
+        )
+        .await;
+    assert_eq!(
+        (status, error_of(&answer)),
+        (StatusCode::GONE, Some("search_link_invalid"))
+    );
+}
+
+/// The family opens the link and sends the search; `reply` is what Unico answers to the photo.
+async fn submit_to(app: &TestApp, code: &str, unico: (u16, Value)) -> (StatusCode, Value) {
+    app.unico.with(|s| s.post_replies.push_back(unico));
+    let (status, _, answer) = app
+        .request(
+            "POST",
+            &format!("/v1/search-links/{code}/submit"),
+            &[("x-device-id", "dev-family")],
+            Some(search_body(1)),
+        )
+        .await;
+    (status, answer)
+}
+
+#[tokio::test]
+async fn a_link_whose_photos_all_fail_is_not_used_and_makes_no_search_until_a_photo_serves() {
+    let s = scene().await;
+    let (status, link) = call(
+        &s.app,
+        &s.admin,
+        "POST",
+        "/v1/search-links",
+        Some(json!({ "shelter_id": s.shelter })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{link}");
+    let code = link["code"].as_str().unwrap();
+
+    // No face: the same answer as always, with zero usable photos, and the link stays valid.
+    let no_face = (400, json!({ "code": 20532, "message": "No face detected" }));
+    for attempt in 1..=2u64 {
+        let (status, answer) = submit_to(&s.app, code, no_face.clone()).await;
+        assert_eq!(
+            (status, answer),
+            (
+                StatusCode::ACCEPTED,
+                json!({ "message": "search_registered", "usable_photos": 0 })
+            )
+        );
+        let doc = all_docs(&s.app.state.db, "search_links")
+            .await
+            .pop()
+            .unwrap();
+        assert_eq!(
+            (doc["status"].as_str(), doc["attempts"].as_u64()),
+            (Some("active"), Some(attempt))
+        );
+        assert!(all_docs(&s.app.state.db, "searches").await.is_empty());
+        assert!(
+            all_docs(&s.app.state.db, "alerts")
+                .await
+                .iter()
+                .all(|a| a["kind"] != "family_search_received")
+        );
+        let (status, _, valid) = s
+            .app
+            .request("GET", &format!("/v1/search-links/{code}"), &[], None)
+            .await;
+        assert_eq!(
+            (status, valid["valid"].as_bool()),
+            (StatusCode::OK, Some(true))
+        );
+    }
+
+    // Another photo serves: now the search exists, the link is used and the volunteer is told.
+    let (status, answer) = submit_to(&s.app, code, (200, json!({ "id": "img", "state": "PROCESS_STATE_FINISHED", "data": { "humanToken": { "value": "tok-second-try" } } }))).await;
+    assert_eq!(
+        (status, answer),
+        (
+            StatusCode::ACCEPTED,
+            json!({ "message": "search_registered", "usable_photos": 1 })
+        )
+    );
+    let doc = all_docs(&s.app.state.db, "search_links")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(doc["status"], "used");
+    assert_eq!(all_docs(&s.app.state.db, "searches").await.len(), 1);
+    assert_eq!(
+        all_docs(&s.app.state.db, "alerts")
+            .await
+            .iter()
+            .filter(|a| a["kind"] == "family_search_received")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_link_made_by_the_civil_defense_for_a_chosen_shelter_gives_the_search_that_shelter_and_its_event()
+ {
+    let s = scene().await;
+    let dc = actor_with(&s.app, "DC", GlobalRole::CivilDefense).await;
+    let (status, link) = call(
+        &s.app,
+        &dc,
+        "POST",
+        "/v1/search-links",
+        Some(json!({ "shelter_id": s.shelter })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{link}");
+    let (status, _) = submit_to(&s.app, link["code"].as_str().unwrap(), (200, json!({ "id": "img", "state": "PROCESS_STATE_FINISHED", "data": { "humanToken": { "value": "tok-chosen" } } }))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let shelter: crate::shelters::ShelterDoc =
+        store::get(&s.app.state.db, crate::shelters::COLLECTION, &s.shelter)
+            .await
+            .unwrap()
+            .unwrap();
+    let searches = all_docs(&s.app.state.db, "searches").await;
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0]["created_by"], json!(dc.id));
+    assert_eq!(searches[0]["via"], "family_link");
+    assert_eq!(searches[0]["origin_shelter_id"], json!(s.shelter));
+    assert_eq!(searches[0]["event_id"], json!(shelter.event_id));
+}
