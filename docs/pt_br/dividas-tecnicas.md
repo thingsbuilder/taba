@@ -58,6 +58,13 @@ Duas classes:
 - **Ao ultrapassar:** o descarte do evento demora mais; o resultado é o mesmo.
 - **Teste:** `event_stats_count_the_event_without_personal_data`.
 
+### DT-08. Alertas pessoais dividem a cota de 200 com anomalias sobre o voluntário
+- **Onde:** `api/src/alerts.rs`, `open_from`, fonte `Personal`.
+- **Limite:** 200 alertas abertos por fonte; a fonte pessoal traz tudo que cita o voluntário em `volunteer_ids`, inclusive anomalias e `endorser_flagged` sobre ele, que `is_recipient` descarta depois.
+- **Ao ultrapassar:** com mais de 200 desses, mais novos que os `search_expiring` e `family_search_received`, os alertas pessoais deixam de aparecer. Perda de correção, mas rara (exige centenas de anomalias abertas sobre uma só pessoa).
+- **Correção prevista:** filtrar a fonte por `kind IN (search_expiring, family_search_received)` e criar o índice `(resolved, volunteer_ids CONTAINS, kind, created_at DESC)`.
+- **Teste:** a criar junto da correção.
+
 ## Comentários `ponytail` de outros arquivos
 
 Ainda sem tarefa aqui; cada dono converte os seus em limite mensurável, comportamento ao ultrapassar e teste: `purge.rs`, `idempotency.rs`, `events.rs`, `shelters.rs`, `audit.rs`, `unico.rs`, `alerts.rs`, `matches.rs`, `search_links.rs`, `jobs.rs`, `people.rs`.
