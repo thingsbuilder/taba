@@ -262,10 +262,10 @@ pub async fn post_shelters(
     let radius_m = f64::from(state.config.shelter_radius_m);
     let event_radius_km = state.config.event_radius_km;
     let created = {
-        // ponytail: global lock; fine with the single e2-micro instance. With more than one
-        // instance, switch to a transaction on a per-geohash-cell lock document. The
-        // transaction below already reads the neighbours itself, which is what a second
-        // instance would still need.
+        // One creation at a time per process, so creations queue behind each other; each is one
+        // short transaction. The transaction below reads the neighbours itself, so it also
+        // refuses a second shelter next to the first without this lock; a lock document per
+        // geohash cell would replace it if the queue ever shows in the latency of creating.
         let _one_at_a_time = state.shelter_lock.lock().await;
         store::transact(&state.db, |db, tx| {
             let (creator_id, new) = (volunteer.id.clone(), new.clone());
