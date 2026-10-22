@@ -1524,3 +1524,460 @@ async fn a_link_made_by_the_civil_defense_for_a_chosen_shelter_gives_the_search_
     assert_eq!(searches[0]["origin_shelter_id"], json!(s.shelter));
     assert_eq!(searches[0]["event_id"], json!(shelter.event_id));
 }
+
+// ---- phase 5: donations together (criteria 25 to 33) ----
+
+const CARD: &str = "ABCD2345";
+
+async fn deliver(
+    app: &TestApp,
+    who: &Actor,
+    shelter: &str,
+    person: &str,
+    item: &str,
+    extra: Value,
+) -> (StatusCode, Value) {
+    let mut body = json!({
+        "id": new_id(), "card_code": CARD, "person_id": person, "item": item, "quantity": 1,
+        "delivered_at": store::now().to_string(),
+    });
+    for (key, value) in extra.as_object().unwrap() {
+        body[key] = value.clone();
+    }
+    call(
+        app,
+        who,
+        "POST",
+        &format!("/v1/shelters/{shelter}/deliveries"),
+        Some(body),
+    )
+    .await
+}
+
+async fn delivery_doc(app: &TestApp, id: &str) -> crate::deliveries::DeliveryDoc {
+    store::get(&app.state.db, "deliveries", id)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+fn spec(scope: &str, once: bool, high: bool) -> Value {
+    json!({ "scope": scope, "period_days": 7, "once_per_event": once, "high_value": high })
+}
+
+/// A confirmed shelter with its items, two people (one with biometrics, one without) in a
+/// household with a card, no draw (the rate is zero), and a second, unconfirmed shelter.
+struct Donations {
+    s: Scene,
+    p1: String,
+    p2: String,
+    household: String,
+    other: Actor,
+    other_shelter: String,
+}
+
+async fn donations() -> Donations {
+    let mut s = scene().await;
+    std::sync::Arc::make_mut(&mut s.app.state.config).delivery_sample_rate = 0.0;
+    let items = json!({ "items": {
+        "cesta": spec("per_household", false, false),
+        "kit": spec("per_person", false, false),
+        "colchao": spec("per_person", true, true),
+        "vale": spec("per_person", false, true),
+        "agua": spec("per_household", false, false),
+    } });
+    let (status, body) = call(
+        &s.app,
+        &s.admin,
+        "PUT",
+        &format!("/v1/shelters/{}/items", s.shelter),
+        Some(items.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The saved items come back in the view of the shelter, which is where the delivery screen reads them.
+    let (status, view) = call(
+        &s.app,
+        &s.admin,
+        "GET",
+        &format!("/v1/shelters/{}", s.shelter),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["shelter"]["items"]["cesta"]["scope"], "per_household");
+    assert_eq!(view["shelter"]["items"]["colchao"]["high_value"], true);
+
+    let (status, body) = checkin_photo(
+        &s.app,
+        &s.volunteer,
+        &s.shelter,
+        "tok-p1",
+        json!({ "data": { "name": "Ana" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let p1 = s.app.state.person_id_for_token("tok-p1");
+    let p2 = new_id();
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/shelters/{}/checkins", s.shelter),
+        Some(checkin_body(
+            json!({ "id": p2, "no_biometrics": true, "data": { "name": "Bruno" } }),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let household = new_id();
+    let (status, body) = call(&s.app, &s.volunteer, "POST", &format!("/v1/shelters/{}/households", s.shelter), Some(json!({ "id": household, "member_ids": [p1, p2], "head_id": p1, "client_created_at": store::now().to_string() }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/households/{household}/cards"),
+        Some(json!({ "code": CARD, "client_issued_at": store::now().to_string() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let other = s.app.actor("Other").await;
+    let other_shelter = s
+        .app
+        .create_shelter(&other, "Galpão", north_of_origin(5_000.0))
+        .await;
+    let (status, body) = call(
+        &s.app,
+        &other,
+        "PUT",
+        &format!("/v1/shelters/{other_shelter}/items"),
+        Some(items),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    Donations {
+        s,
+        p1,
+        p2,
+        household,
+        other,
+        other_shelter,
+    }
+}
+
+#[tokio::test]
+async fn a_delivery_by_card_is_registered_without_asking_unico_and_the_second_one_to_the_household_goes_to_review()
+ {
+    let d = donations().await;
+    let (app, shelter, volunteer) = (&d.s.app, &d.s.shelter, &d.s.volunteer);
+    let asked = app.unico.post_count();
+
+    // Criteria 25, 27, 28: assisted and without biometrics both receive an ordinary item by the card.
+    let (status, first) = deliver(app, volunteer, shelter, &d.p1, "cesta", json!({})).await;
+    assert_eq!(
+        (status, first["status"].as_str()),
+        (StatusCode::CREATED, Some("ok")),
+        "{first}"
+    );
+    let doc = delivery_doc(app, first["delivery_id"].as_str().unwrap()).await;
+    assert_eq!(
+        (doc.verification, doc.household_id.as_deref()),
+        (
+            crate::deliveries::Verification::Card,
+            Some(d.household.as_str())
+        )
+    );
+    let (status, kit) = deliver(app, volunteer, shelter, &d.p2, "kit", json!({})).await;
+    assert_eq!(
+        (status, kit["status"].as_str()),
+        (StatusCode::CREATED, Some("ok")),
+        "{kit}"
+    );
+    assert_eq!(
+        app.unico.post_count(),
+        asked,
+        "an ordinary delivery never asks Unico"
+    );
+
+    // Criterion 31: per_household, a second member in the period goes to review; per_person does not.
+    let (status, second) = deliver(app, volunteer, shelter, &d.p2, "cesta", json!({})).await;
+    assert_eq!(
+        (status, second["status"].as_str()),
+        (StatusCode::CREATED, Some("in_review")),
+        "{second}"
+    );
+    assert_eq!(second["reasons"][0]["kind"], "duplicate_in_period");
+    assert_eq!(
+        second["reasons"][0]["previous_delivery_id"],
+        first["delivery_id"]
+    );
+    let (_, kit_p1) = deliver(app, volunteer, shelter, &d.p1, "kit", json!({})).await;
+    assert_eq!(kit_p1["status"], "ok");
+    let (_, kit_again) = deliver(app, volunteer, shelter, &d.p1, "kit", json!({})).await;
+    assert_eq!(kit_again["status"], "in_review");
+
+    // The admin lists what waits, never sees a person id, and decides.
+    let list = format!("/v1/shelters/{shelter}/deliveries?status=in_review");
+    assert_eq!(
+        call(app, volunteer, "GET", &list, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, listed) = call(app, &d.s.admin, "GET", &list, None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["deliveries"].as_array().unwrap().len(), 2);
+    assert!(
+        !listed.to_string().contains(&d.p1) && !listed.to_string().contains(&d.p2),
+        "{listed}"
+    );
+    let id = second["delivery_id"].as_str().unwrap();
+    let (status, body) = call(
+        app,
+        &d.s.admin,
+        "POST",
+        &format!("/v1/deliveries/{id}/review"),
+        Some(json!({ "decision": "reviewed_ok", "note": "familia grande" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let reviewed = delivery_doc(app, id).await;
+    assert_eq!(
+        (reviewed.status, reviewed.reviewed_by.as_deref()),
+        (
+            crate::deliveries::DeliveryStatus::ReviewedOk,
+            Some(d.s.admin.id.as_str())
+        )
+    );
+    let (_, listed) = call(app, &d.s.admin, "GET", &list, None).await;
+    assert_eq!(listed["deliveries"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_high_value_item_asks_for_a_selfie_and_a_wrong_face_records_nothing() {
+    let d = donations().await;
+    let (app, shelter, volunteer) = (&d.s.app, &d.s.shelter, &d.s.volunteer);
+    // Criterion 29: no capture, 428; for a person without biometrics only an admin can settle it.
+    let (status, asked) = deliver(app, volunteer, shelter, &d.p1, "colchao", json!({})).await;
+    assert_eq!(
+        (status, error_of(&asked)),
+        (StatusCode::PRECONDITION_REQUIRED, Some("liveness_required")),
+        "{asked}"
+    );
+    assert_eq!(
+        asked["detail"],
+        json!({ "reason": "high_value", "admin_approval_only": false })
+    );
+    let (_, asked) = deliver(app, volunteer, shelter, &d.p2, "colchao", json!({})).await;
+    assert_eq!(
+        asked["detail"],
+        json!({ "reason": "high_value", "admin_approval_only": true })
+    );
+
+    // The right face: ok with verification liveness.
+    let revalidation = |person: &str| json!({ "purpose": "revalidation", "shelter_id": shelter, "expected_person_id": person });
+    let (status, made) = capture(app, volunteer, revalidation(&d.p1)).await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    finish(app, made["capture_id"].as_str().unwrap(), "tok-p1").await;
+    let (status, done) = deliver(
+        app,
+        volunteer,
+        shelter,
+        &d.p1,
+        "colchao",
+        json!({ "capture_id": made["capture_id"] }),
+    )
+    .await;
+    assert_eq!(
+        (status, done["status"].as_str()),
+        (StatusCode::CREATED, Some("ok")),
+        "{done}"
+    );
+    assert_eq!(
+        delivery_doc(app, done["delivery_id"].as_str().unwrap())
+            .await
+            .verification,
+        crate::deliveries::Verification::Liveness
+    );
+
+    // Another face: 409 and no delivery written.
+    let before = all_docs(&app.state.db, "deliveries").await.len();
+    let (_, made) = capture(app, volunteer, revalidation(&d.p1)).await;
+    finish(
+        app,
+        made["capture_id"].as_str().unwrap(),
+        "tok-someone-else",
+    )
+    .await;
+    let (status, wrong) = deliver(
+        app,
+        volunteer,
+        shelter,
+        &d.p1,
+        "vale",
+        json!({ "capture_id": made["capture_id"] }),
+    )
+    .await;
+    assert_eq!(
+        (status, error_of(&wrong)),
+        (StatusCode::CONFLICT, Some("revalidation_failed")),
+        "{wrong}"
+    );
+    assert_eq!(all_docs(&app.state.db, "deliveries").await.len(), before);
+}
+
+#[tokio::test]
+async fn the_admin_vouches_for_a_person_without_a_selfie_and_a_volunteer_cannot() {
+    let d = donations().await;
+    let (app, shelter) = (&d.s.app, &d.s.shelter);
+    let (status, refused) = deliver(
+        app,
+        &d.s.volunteer,
+        shelter,
+        &d.p2,
+        "colchao",
+        json!({ "admin_approval": true }),
+    )
+    .await;
+    assert_eq!(
+        (status, error_of(&refused)),
+        (StatusCode::FORBIDDEN, Some("admin_approval_required")),
+        "{refused}"
+    );
+    let (status, ok) = deliver(
+        app,
+        &d.s.admin,
+        shelter,
+        &d.p2,
+        "colchao",
+        json!({ "admin_approval": true }),
+    )
+    .await;
+    assert_eq!(
+        (status, ok["status"].as_str()),
+        (StatusCode::CREATED, Some("ok")),
+        "{ok}"
+    );
+    let doc = delivery_doc(app, ok["delivery_id"].as_str().unwrap()).await;
+    assert_eq!(
+        (doc.verification, doc.approved_by.as_deref()),
+        (
+            crate::deliveries::Verification::AdminApproval,
+            Some(d.s.admin.id.as_str())
+        )
+    );
+    assert!(
+        crate::test_support::audit_actions(&app.state.db)
+            .await
+            .contains(&"delivery.admin_approval".to_string())
+    );
+}
+
+#[tokio::test]
+async fn offline_a_high_value_item_goes_to_review_unless_an_admin_approves() {
+    let d = donations().await;
+    let (app, shelter) = (&d.s.app, &d.s.shelter);
+    let asked = app.unico.post_count();
+    // Criteria 4 and 33.
+    let (status, review) = deliver(
+        app,
+        &d.s.volunteer,
+        shelter,
+        &d.p1,
+        "vale",
+        json!({ "offline": true }),
+    )
+    .await;
+    assert_eq!(
+        (status, review["status"].as_str()),
+        (StatusCode::CREATED, Some("in_review")),
+        "{review}"
+    );
+    assert_eq!(review["reasons"][0]["kind"], "liveness_unavailable");
+    let (status, approved) = deliver(
+        app,
+        &d.s.admin,
+        shelter,
+        &d.p2,
+        "vale",
+        json!({ "offline": true, "admin_approval": true }),
+    )
+    .await;
+    assert_eq!(
+        (status, approved["status"].as_str()),
+        (StatusCode::CREATED, Some("ok")),
+        "{approved}"
+    );
+    assert_eq!(app.unico.post_count(), asked);
+}
+
+#[tokio::test]
+async fn the_late_biometrics_repoints_the_deliveries_and_an_old_id_still_finds_the_person() {
+    let d = donations().await;
+    let (app, shelter, volunteer) = (&d.s.app, &d.s.shelter, &d.s.volunteer);
+    let (_, before) = deliver(app, volunteer, shelter, &d.p2, "kit", json!({})).await;
+    let first = before["delivery_id"].as_str().unwrap().to_string();
+
+    tokens(app, &["tok-p2-late"]);
+    let (status, body) = call(
+        app,
+        volunteer,
+        "PUT",
+        &format!("/v1/people/{}/biometrics", d.p2),
+        Some(json!({ "photo_base64": photo() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let new = app.state.person_id_for_token("tok-p2-late");
+    assert_eq!(
+        delivery_doc(app, &first).await.person_id.as_deref(),
+        Some(new.as_str())
+    );
+
+    // An offline delivery still carrying the old id reaches the server now: it is the same person.
+    let (status, late) = deliver(
+        app,
+        volunteer,
+        shelter,
+        &d.p2,
+        "kit",
+        json!({ "offline": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{late}");
+    assert_eq!(late["status"], "in_review"); // the kit of this person was already given
+    assert_eq!(
+        delivery_doc(app, late["delivery_id"].as_str().unwrap())
+            .await
+            .person_id
+            .as_deref(),
+        Some(new.as_str())
+    );
+}
+
+#[tokio::test]
+async fn the_shelter_of_the_other_delivery_is_named_only_while_it_is_confirmed() {
+    let d = donations().await;
+    let (app, confirmed) = (&d.s.app, &d.s.shelter);
+    // First at the unconfirmed shelter, then at the confirmed one: the name stays hidden.
+    let (_, first) = deliver(app, &d.other, &d.other_shelter, &d.p1, "agua", json!({})).await;
+    assert_eq!(first["status"], "ok", "{first}");
+    let (_, second) = deliver(app, &d.s.volunteer, confirmed, &d.p2, "agua", json!({})).await;
+    assert_eq!(second["status"], "in_review", "{second}");
+    assert!(
+        second["reasons"][0].get("previous_shelter_name").is_none(),
+        "{second}"
+    );
+    // The other way round: the previous delivery is at a confirmed shelter, so its name is told.
+    let (_, third) = deliver(app, &d.other, &d.other_shelter, &d.p2, "cesta", json!({})).await;
+    assert_eq!(third["status"], "ok", "{third}");
+    let (_, fourth) = deliver(app, &d.s.volunteer, confirmed, &d.p1, "cesta", json!({})).await;
+    assert_eq!(fourth["status"], "in_review");
+    assert!(
+        fourth["reasons"][0].get("previous_shelter_name").is_none(),
+        "{fourth}"
+    );
+    let (_, fifth) = deliver(app, &d.other, &d.other_shelter, &d.p1, "cesta", json!({})).await;
+    assert_eq!(fifth["status"], "in_review");
+    assert_eq!(fifth["reasons"][0]["previous_shelter_name"], "Abrigo");
+}

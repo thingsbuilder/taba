@@ -233,23 +233,40 @@ fn normalize_card(input: &str) -> String {
 // ---- reads ----
 
 /// The household of an active card and the person who takes the item, who must be a member of it.
+/// A delivery made offline can reach the server after the late biometrics gave the person a new
+/// id (spec 4.12): an id that is not a member but is a `former_id` of one stands for that member.
+/// Returns the id the delivery is written under.
 async fn load_target(
     db: &FirestoreDb,
     card_code: &str,
     person_id: &str,
-) -> Result<(String, PersonDoc), ApiError> {
+) -> Result<(String, PersonDoc, String), ApiError> {
     let card: CardDoc = store::get(db, cards::COLLECTION, card_code)
         .await?
         .filter(|c: &CardDoc| c.status == CardStatus::Active)
         .ok_or_else(ApiError::card_not_found)?;
     let household = load_household(db, &card.household_id).await?;
-    if !household.member_ids.iter().any(|m| m == person_id) {
-        return Err(ApiError::person_not_in_household());
+    let mut member = household
+        .member_ids
+        .iter()
+        .find(|m| *m == person_id)
+        .cloned();
+    if member.is_none() {
+        for id in &household.member_ids {
+            let former = store::get::<PersonDoc>(db, people::COLLECTION, id)
+                .await?
+                .is_some_and(|p| p.former_ids.iter().any(|f| f == person_id));
+            if former {
+                member = Some(id.clone());
+                break;
+            }
+        }
     }
-    let person = store::get(db, people::COLLECTION, person_id)
+    let member = member.ok_or_else(ApiError::person_not_in_household)?;
+    let person = store::get(db, people::COLLECTION, &member)
         .await?
         .ok_or_else(ApiError::person_not_in_household)?;
-    Ok((card.household_id, person))
+    Ok((card.household_id, person, member))
 }
 
 #[derive(Deserialize)]
@@ -346,7 +363,7 @@ async fn record(
     if let Some(existing) = store::get::<DeliveryDoc>(db, COLLECTION, &w.id).await? {
         return same_delivery(existing, &w.shelter_id, &w.volunteer.id);
     }
-    let (household_id, _) = load_target(db, &w.card_code, &w.person_id).await?;
+    let (household_id, _, _) = load_target(db, &w.card_code, &w.person_id).await?;
     if household_id != w.household_id {
         return Err(ApiError::card_not_found());
     }
@@ -552,7 +569,8 @@ pub async fn post_delivery(
         .ok_or_else(|| invalid("item"))?;
     events::ensure_shelter_open(&state.db, &shelter_id).await?;
     let card_code = normalize_card(&request.card_code);
-    let (household_id, person) = load_target(&state.db, &card_code, &request.person_id).await?;
+    let (household_id, person, person_id) =
+        load_target(&state.db, &card_code, &request.person_id).await?;
 
     let unavailable = request.offline || degraded::blocking_reason(&state.db).await?.is_some();
     let sampled = !unavailable && is_sampled(&request.id, state.config.delivery_sample_rate);
@@ -578,18 +596,19 @@ pub async fn post_delivery(
             let mut capture = usable_capture(&state, &device, id, Purpose::Revalidation).await?;
             if capture.volunteer_id.as_deref() != Some(volunteer.id.as_str())
                 || capture.shelter_id.as_deref() != Some(shelter_id.as_str())
-                || capture.expected_person_id.as_deref() != Some(request.person_id.as_str())
+                || ![Some(request.person_id.as_str()), Some(person_id.as_str())]
+                    .contains(&capture.expected_person_id.as_deref())
             {
                 return Err(invalid("capture_id"));
             }
             let resolved = resolve_person(&state, id, &mut capture).await?;
-            if resolved != request.person_id {
+            if resolved != person_id {
                 record_failed_revalidation(
                     &state,
                     &volunteer,
                     &shelter_id,
                     id,
-                    &request.person_id,
+                    &person_id,
                     &resolved,
                 )
                 .await?;
@@ -606,7 +625,7 @@ pub async fn post_delivery(
         shelter: shelter.clone(),
         volunteer,
         card_code,
-        person_id: request.person_id,
+        person_id,
         household_id,
         item: request.item,
         spec,
@@ -1706,12 +1725,29 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "{again}");
         assert_eq!(again["status"], "in_review");
         assert_eq!(again["reasons"][0]["previous_delivery_id"], first);
-        // the old id leads nowhere now
-        let (status, _) = deliver(
+        // an offline delivery that still carries the old id is the same person (`former_ids`)
+        let (status, late) = deliver(
             &s.w.app,
             &s.w.vol_a,
             &s.w.a,
             req(&unsampled(), &s.p1, "kit"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{late}");
+        assert_eq!(late["status"], "in_review");
+        assert_eq!(
+            stored(&s.w.app, late["delivery_id"].as_str().unwrap())
+                .await
+                .person_id
+                .as_deref(),
+            Some(new.as_str())
+        );
+        // an id that was never theirs still leads nowhere
+        let (status, _) = deliver(
+            &s.w.app,
+            &s.w.vol_a,
+            &s.w.a,
+            req(&unsampled(), &new_id(), "kit"),
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
