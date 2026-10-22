@@ -1,11 +1,14 @@
 //! Shelters (spec 3.2, 3.9, 4.2, 7, 8.2, 8.3): creation under the 100 m rule, edits, closing,
-//! and confirmation by a validator.
+//! and confirmation by a validator. `domain.rs` holds the types, the validation and the
+//! transitions; this file has the routes, the views and the transactions around them.
+
+mod domain;
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use firestore::{FirestoreDb, FirestoreInstant};
-use serde::{Deserialize, Serialize};
+use firestore::FirestoreDb;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::alerts::{self, AlertDoc, AlertKind};
@@ -19,169 +22,10 @@ use crate::members::{self, MembershipDoc, ShelterRole};
 use crate::store::{self, tx_create, tx_replace};
 use crate::volunteers::{self, GlobalRole, VolunteerDoc};
 
-pub const COLLECTION: &str = "shelters";
-/// Largest `accuracy` accepted when creating a shelter or endorsing one (spec 4.2).
-pub const MAX_ACCURACY_M: f64 = 100.0;
-const MAX_NAME_CHARS: usize = 100;
-const MAX_CAPACITY: u32 = 100_000;
-const MAX_REASON_CHARS: usize = 500;
-const MAX_ADDRESS_TEXT_CHARS: usize = 500;
-const MAX_ADDRESS_PART_CHARS: usize = 100;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ShelterStatus {
-    Open,
-    Closed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Confirmation {
-    Unconfirmed,
-    Confirmed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConfirmationType {
-    Validator,
-    InPerson,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EndorsementKind {
-    InPerson,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Address {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub city: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
-    /// True until Nominatim answers (spec 6.1.6).
-    #[serde(default)]
-    pub pending: bool,
-}
-
-/// The address as the app sends it; blank parts count as absent.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct AddressInput {
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    city: Option<String>,
-    #[serde(default)]
-    state: Option<String>,
-}
-
-fn invalid(field: &str) -> ApiError {
-    let mut error = ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid_shelter");
-    error.detail = json!({ "field": field });
-    error
-}
-
-fn part(value: &Option<String>, max: usize) -> Result<Option<String>, ApiError> {
-    let Some(value) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) else {
-        return Ok(None);
-    };
-    if value.chars().count() > max {
-        return Err(invalid("address"));
-    }
-    Ok(Some(value.into()))
-}
-
-impl Address {
-    /// What a shelter has before its address is known.
-    fn pending() -> Self {
-        Self {
-            pending: true,
-            ..Self::default()
-        }
-    }
-
-    /// `None` when the input holds no address at all.
-    fn from_input(input: &AddressInput) -> Result<Option<Self>, ApiError> {
-        let address = Self {
-            text: part(&input.text, MAX_ADDRESS_TEXT_CHARS)?,
-            city: part(&input.city, MAX_ADDRESS_PART_CHARS)?,
-            state: part(&input.state, MAX_ADDRESS_PART_CHARS)?,
-            pending: false,
-        };
-        let empty = address.text.is_none() && address.city.is_none() && address.state.is_none();
-        Ok((!empty).then_some(address))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Endorsement {
-    pub kind: EndorsementKind,
-    pub volunteer_id: String,
-    pub endorser_shelter_id: String,
-    #[serde(with = "firestore::serialize_as_timestamp")]
-    pub at: FirestoreInstant,
-    pub distance_m: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Revocation {
-    pub by: String,
-    #[serde(with = "firestore::serialize_as_timestamp")]
-    pub at: FirestoreInstant,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShelterDoc {
-    #[serde(alias = "_firestore_id", default, skip_serializing)]
-    pub id: Option<String>,
-    pub name: String,
-    pub lat: f64,
-    pub lon: f64,
-    pub accuracy_m: f64,
-    pub geohash: String,
-    pub address: Address,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub event_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capacity: Option<u32>,
-    pub created_by: String,
-    #[serde(with = "firestore::serialize_as_timestamp")]
-    pub client_created_at: FirestoreInstant,
-    #[serde(with = "firestore::serialize_as_timestamp")]
-    pub created_at: FirestoreInstant,
-    pub status: ShelterStatus,
-    pub confirmation: Confirmation,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confirmation_type: Option<ConfirmationType>,
-    pub can_endorse: bool,
-    #[serde(default)]
-    pub endorsements: Vec<Endorsement>,
-    #[serde(default)]
-    pub revocations: Vec<Revocation>,
-    #[serde(default)]
-    pub flagged: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub other_site_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conflicts_with: Option<String>,
-    /// What the shelter gives and the rule of each item (spec 3.5.2); set by `PUT /v1/shelters/{id}/items`.
-    #[serde(default, skip_serializing_if = "crate::deliveries::Items::is_empty")]
-    pub items: crate::deliveries::Items,
-}
-
-impl ShelterDoc {
-    /// Confirms the shelter and lets it endorse others (spec 2.2).
-    pub fn confirm(&mut self, kind: ConfirmationType) {
-        self.confirmation = Confirmation::Confirmed;
-        self.confirmation_type = Some(kind);
-        self.can_endorse = true;
-    }
-}
+pub use domain::*;
+use domain::{
+    MAX_REASON_CHARS, Neighbour, NewShelter, invalid, valid_capacity, valid_name, validate,
+};
 
 // ---- views ----
 
@@ -263,105 +107,6 @@ pub async fn view_for(
         occupancy,
     ))
 }
-
-// ---- validation ----
-
-#[derive(Debug, Deserialize)]
-pub struct CreateShelter {
-    id: String,
-    name: String,
-    lat: f64,
-    lon: f64,
-    accuracy: f64,
-    #[serde(default)]
-    address: Option<AddressInput>,
-    #[serde(default)]
-    capacity: Option<u32>,
-    #[serde(default)]
-    other_site_reason: Option<String>,
-    client_created_at: String,
-}
-
-#[derive(Debug, Clone)]
-struct NewShelter {
-    id: String,
-    name: String,
-    lat: f64,
-    lon: f64,
-    accuracy_m: f64,
-    address: Address,
-    capacity: Option<u32>,
-    other_site_reason: Option<String>,
-    client_created_at: FirestoreInstant,
-}
-
-fn valid_name(name: &str) -> Result<String, ApiError> {
-    let name = name.trim();
-    if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
-        return Err(invalid("name"));
-    }
-    Ok(name.into())
-}
-
-fn valid_capacity(capacity: u32) -> Result<u32, ApiError> {
-    if capacity == 0 || capacity > MAX_CAPACITY {
-        return Err(invalid("capacity"));
-    }
-    Ok(capacity)
-}
-
-pub fn valid_position(lat: f64, lon: f64, accuracy: f64) -> Result<(), ApiError> {
-    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
-        return Err(invalid("position"));
-    }
-    if !accuracy.is_finite() || accuracy < 0.0 {
-        return Err(invalid("accuracy"));
-    }
-    if accuracy > MAX_ACCURACY_M {
-        return Err(insufficient_accuracy(accuracy));
-    }
-    Ok(())
-}
-
-pub fn insufficient_accuracy(accuracy: f64) -> ApiError {
-    let mut error = ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "insufficient_accuracy");
-    error.detail = json!({ "accuracy": accuracy, "max": MAX_ACCURACY_M });
-    error
-}
-
-fn validate(request: CreateShelter) -> Result<NewShelter, ApiError> {
-    uuid::Uuid::parse_str(&request.id).map_err(|_| invalid("id"))?;
-    let name = valid_name(&request.name)?;
-    let capacity = request.capacity.map(valid_capacity).transpose()?;
-    let client_created_at = request
-        .client_created_at
-        .parse()
-        .map_err(|_| invalid("client_created_at"))?;
-    let other_site_reason = match request.other_site_reason.as_deref().map(str::trim) {
-        None => None,
-        Some(reason) if reason.is_empty() || reason.chars().count() > MAX_REASON_CHARS => {
-            return Err(invalid("other_site_reason"));
-        }
-        Some(reason) => Some(reason.to_string()),
-    };
-    let address = match &request.address {
-        Some(input) => Address::from_input(input)?.unwrap_or_else(Address::pending),
-        None => Address::pending(),
-    };
-    valid_position(request.lat, request.lon, request.accuracy)?;
-    Ok(NewShelter {
-        id: request.id,
-        name,
-        lat: request.lat,
-        lon: request.lon,
-        accuracy_m: request.accuracy,
-        address,
-        capacity,
-        other_site_reason,
-        client_created_at,
-    })
-}
-
 // ---- POST /v1/shelters ----
 
 struct Created {
@@ -422,43 +167,25 @@ async fn create_in(
     }
 
     let near = geo::open_shelters_within(db, new.lat, new.lon, radius_m).await?;
-    let (mut flagged, mut conflicts_with, mut other_site_reason) = (false, None, None);
-    if let Some(nearest) = near.first() {
-        let nearest_id = nearest.shelter.id.clone().unwrap_or_default();
-        let Some(reason) = &new.other_site_reason else {
-            return Err(conflict(db, &nearest_id, &nearest.shelter, nearest.distance_m).await?);
-        };
-        (flagged, conflicts_with, other_site_reason) =
-            (true, Some(nearest_id), Some(reason.clone()));
-    }
+    let neighbour = match near.first() {
+        None => None,
+        Some(nearest) => {
+            let shelter_id = nearest.shelter.id.clone().unwrap_or_default();
+            let Some(reason) = &new.other_site_reason else {
+                return Err(conflict(db, &shelter_id, &nearest.shelter, nearest.distance_m).await?);
+            };
+            Some(Neighbour {
+                shelter_id,
+                reason: reason.clone(),
+            })
+        }
+    };
+    let flagged = neighbour.is_some();
 
     let now = store::now();
     let assignment =
         events::assign(db, new.lat, new.lon, &new.address, event_radius_km, now).await?;
-    let shelter = ShelterDoc {
-        id: None,
-        name: new.name.clone(),
-        lat: new.lat,
-        lon: new.lon,
-        accuracy_m: new.accuracy_m,
-        geohash: geo::encode(new.lat, new.lon, geo::STORED_PRECISION),
-        address: new.address.clone(),
-        event_id: Some(assignment.event_id.clone()),
-        capacity: new.capacity,
-        created_by: creator_id.into(),
-        client_created_at: new.client_created_at,
-        created_at: now,
-        status: ShelterStatus::Open,
-        confirmation: Confirmation::Unconfirmed,
-        confirmation_type: None,
-        can_endorse: false,
-        endorsements: vec![],
-        revocations: vec![],
-        flagged,
-        other_site_reason,
-        conflicts_with: conflicts_with.clone(),
-        items: Default::default(),
-    };
+    let shelter = ShelterDoc::open(new, creator_id, &assignment.event_id, neighbour, now);
 
     tx_create(db, tx, COLLECTION, &new.id, &shelter)?;
     tx_create(
@@ -493,7 +220,7 @@ async fn create_in(
                 AlertKind::ShelterFlagged,
                 "shelter",
                 &new.id,
-                json!({ "conflicts_with": conflicts_with, "other_site_reason": shelter.other_site_reason }),
+                json!({ "conflicts_with": shelter.conflicts_with, "other_site_reason": shelter.other_site_reason }),
             )
             .in_event(&assignment.event_id),
         )?;
@@ -704,34 +431,15 @@ impl Change {
         shelter: &mut ShelterDoc,
     ) -> Result<bool, ApiError> {
         match self {
-            Self::Close => {
-                let changed = shelter.status != ShelterStatus::Closed;
-                shelter.status = ShelterStatus::Closed;
-                Ok(changed)
-            }
-            Self::Confirm => {
-                if shelter.confirmation == Confirmation::Confirmed {
-                    return Ok(false);
-                }
-                shelter.confirm(ConfirmationType::Validator);
-                Ok(true)
-            }
+            Self::Close => Ok(shelter.close()),
+            Self::Confirm => Ok(shelter.confirm(ConfirmationType::Validator)),
             Self::Revoke { by, reason } => {
-                if shelter.confirmation == Confirmation::Unconfirmed {
+                let Some(endorsements) = shelter.revoke(by, reason, store::now()) else {
                     return Ok(false);
-                }
-                let since = shelter.revocations.last().map(|r| r.at);
-                for endorsement in flag_endorsers(shelter, since) {
+                };
+                for endorsement in &endorsements {
                     flag_endorser(db, tx, id, reason, endorsement).await?;
                 }
-                shelter.confirmation = Confirmation::Unconfirmed;
-                shelter.confirmation_type = None;
-                shelter.can_endorse = false;
-                shelter.revocations.push(Revocation {
-                    by: by.clone(),
-                    at: store::now(),
-                    reason: reason.clone(),
-                });
                 Ok(true)
             }
         }
@@ -798,22 +506,6 @@ pub async fn confirm_shelter(
 #[derive(Debug, Deserialize)]
 pub struct Revoke {
     reason: String,
-}
-
-/// The endorsements the revoked confirmation rested on, one per volunteer. Older ones were
-/// flagged by an earlier revocation.
-fn flag_endorsers(shelter: &ShelterDoc, since: Option<FirestoreInstant>) -> Vec<&Endorsement> {
-    let mut seen = Vec::new();
-    shelter
-        .endorsements
-        .iter()
-        .filter(|e| since.is_none_or(|since| e.at > since))
-        .filter(|e| {
-            let first = !seen.contains(&&e.volunteer_id);
-            seen.push(&e.volunteer_id);
-            first
-        })
-        .collect()
 }
 
 /// Flags the volunteer who endorsed the revoked shelter, and alerts their admins and the
