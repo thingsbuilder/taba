@@ -107,6 +107,28 @@ pub async fn replace<T: Serialize + DeserializeOwned + Sync + Send>(
         .map_err(fs_error)
 }
 
+/// Inserts a document that must not exist yet, in one write. `false`: it already exists.
+pub async fn create<T: Serialize + DeserializeOwned + Sync + Send>(
+    db: &FirestoreDb,
+    collection: &str,
+    id: &str,
+    doc: &T,
+) -> Result<bool, ApiError> {
+    match db
+        .fluent()
+        .insert()
+        .into(collection)
+        .document_id(id)
+        .object(doc)
+        .execute::<()>()
+        .await
+    {
+        Ok(()) => Ok(true),
+        Err(FirestoreError::DataConflictError(_)) => Ok(false),
+        Err(err) => Err(fs_error(err)),
+    }
+}
+
 /// Inside a transaction: inserts a document that must not exist yet.
 pub fn tx_create<T: Serialize + DeserializeOwned + Sync + Send>(
     db: &FirestoreDb,
