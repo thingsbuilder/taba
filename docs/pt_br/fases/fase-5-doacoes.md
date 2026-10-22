@@ -54,6 +54,11 @@ Pseudonimização e descarte das entregas (fase 6); exportação CSV (fase 6).
 | PWA | `/shelter/:id/delivery`, configuração de itens, revisão |
 | Índices | `deliveries (person_id, item, delivered_at)`, `deliveries (household_id, item, delivered_at)`, `deliveries (shelter_id, status, delivered_at)` |
 
+## Ajustes desde que o doc foi escrito (fase 5, execução noturna)
+- **PIN desligado (decisão do dono, fase 2):** a "troca de operador por PIN" só alcança quem já tinha PIN. A aprovação do admin no mesmo aparelho usa a sessão de um admin que esteja no aparelho; sem ela, o app oferece "Entrar como admin com selfie" (login normal) e, se não for possível, a entrega de alto valor segue as regras offline (`in_review`, `liveness_unavailable`).
+- **Navegação inferior:** o app ainda não tem barra inferior; "Doações" entra como botão na tela do abrigo (e no cartão lido), e a barra inferior fica como follow-up.
+- **Criação do abrigo e núcleos:** a entrega reusa o cartão e o núcleo da fase 3 (inclusive "Só esta pessoa"); a tela de leitura de cartão já existe em `Household.tsx`.
+
 ## Dependências
 Fase 3 (núcleos, cartões, níveis, revalidação, PIN de admin no aparelho, modo degradado, fila) e fase 4 (resgate e busca, usados no critério 54).
 
