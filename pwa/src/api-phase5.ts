@@ -39,6 +39,14 @@ export interface DeliveryRequest {
   capture_id?: string
   /** An admin of the shelter, with their own session, vouches for the person. */
   admin_approval?: true
+  /** The delivery was made without signal or with Unico out (spec 3.5.3 item 7): no draw, no selfie asked. */
+  offline?: true
+}
+
+/** `detail` of `428 liveness_required`: why, and whether a selfie can settle it (not for a person without biometrics). */
+export interface LivenessRequiredDetail {
+  reason: 'high_value' | 'sample'
+  admin_approval_only: boolean
 }
 
 export interface DeliveryReason {

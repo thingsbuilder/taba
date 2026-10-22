@@ -102,6 +102,9 @@ const KNOWN_ERRORS = new Set([
   'liveness_required',
   'admin_approval_required',
   'person_not_in_household',
+  'delivery_not_found',
+  'delivery_not_in_review',
+  'delivery_id_taken',
 ])
 
 /** i18n key for a stable server error code; unknown codes get the generic message. */

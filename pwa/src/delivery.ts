@@ -1,5 +1,5 @@
 import type { Api } from './api'
-import type { DeliveryReason, DeliveryRequest, DeliveryResponse, ItemSpec, Items } from './api-phase5'
+import type { DeliveryReason, DeliveryRequest, DeliveryResponse, ItemSpec, Items, LivenessRequiredDetail } from './api-phase5'
 import { errorKey } from './app-context'
 import { finishCapture, pollCapture } from './captures'
 import type { Db, HouseholdRecord, PersonRecord, QueueItem } from './db'
@@ -16,8 +16,7 @@ const PATH = /^\/v1\/shelters\/([^/]+)\/deliveries$/
 export const deliveryPath = (shelterId: string) => `/v1/shelters/${shelterId}/deliveries`
 export const isDelivery = (item: Pick<QueueItem, 'method' | 'path'>): boolean => item.method === 'POST' && PATH.test(item.path)
 
-/** `offline` marks a delivery made without signal or with Unico out, so the server applies spec 3.5.3 item 7. */
-export type DeliveryBody = DeliveryRequest & { offline?: true }
+export type DeliveryBody = DeliveryRequest
 
 export function buildDelivery(i: {
   id: string
@@ -61,6 +60,10 @@ export const deliveryErrorKey = (code: string): string => (LOCAL_ERRORS.has(code
 
 /** The server asked for a selfie or an admin, or the selfie did not match: a selfie or an admin's approval can still settle the item. */
 export const WAITING_ERRORS = new Set(['liveness_required', 'admin_approval_required', 'revalidation_failed'])
+
+/** Whether a selfie can settle a waiting item: the server says `admin_approval_only` for a person without biometrics. */
+export const selfieAllowed = (item: Pick<QueueItem, 'error' | 'detail'>): boolean =>
+  item.error !== 'admin_approval_required' && (item.detail as Partial<LivenessRequiredDetail> | undefined)?.admin_approval_only !== true
 
 /** Deliveries of the shelter that the queue stopped sending (any answer a repeat cannot fix); a person decides. */
 export const waitingDeliveries = (items: QueueItem[], shelterId: string): QueueItem[] =>

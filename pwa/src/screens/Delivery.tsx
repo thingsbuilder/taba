@@ -18,6 +18,7 @@ import {
   resolveCard,
   WAITING_ERRORS,
   resultText,
+  selfieAllowed,
   sendWithCapture,
   takeDeliveryReply,
   validateDelivery,
@@ -182,7 +183,7 @@ export function Delivery({ ctx, shelterId }: { ctx: AppContext; shelterId: strin
       {waiting.map((w) => {
         const body = w.body as DeliveryBody
         const settles = WAITING_ERRORS.has(w.error ?? '')
-        const liveness = w.error !== 'admin_approval_required'
+        const liveness = selfieAllowed(w)
         return (
           <div key={w.id}>
             <p class="body-strong">{t('delivery.waiting_line', { item: body.item, person: waitingNames[w.id] ?? '' })}</p>

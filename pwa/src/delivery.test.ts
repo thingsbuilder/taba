@@ -11,6 +11,7 @@ import {
   needsOfflineApproval,
   recordDeliveryReply,
   resolveCard,
+  selfieAllowed,
   resultText,
   sendWithCapture,
   takeDeliveryReply,
@@ -50,6 +51,13 @@ describe('request', () => {
     expect(adminOnDevice([session('v', 'volunteer'), session('a', 'admin')], SHELTER)?.volunteer_id).toBe('a')
     expect(adminOnDevice([session('a', 'admin')], 'other')).toBeNull()
   })
+  it('offers no selfie for a person without biometrics (the 428 says admin_approval_only) nor after admin_approval_required', () => {
+    expect(selfieAllowed({ error: 'liveness_required', detail: { reason: 'high_value', admin_approval_only: false } })).toBe(true)
+    expect(selfieAllowed({ error: 'liveness_required', detail: { reason: 'sample', admin_approval_only: true } })).toBe(false)
+    expect(selfieAllowed({ error: 'admin_approval_required', detail: undefined })).toBe(false)
+    expect(selfieAllowed({ error: 'revalidation_failed' })).toBe(true)
+  })
+
   it('has a text for every error of the flow', () => {
     expect(deliveryErrorKey('revalidation_failed')).toBe('delivery.error_revalidation_failed')
     expect(deliveryErrorKey('liveness_required')).toBe('error.liveness_required')

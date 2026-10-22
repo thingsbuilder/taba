@@ -5,6 +5,7 @@ import { t } from '../i18n'
 import { useConflictNames } from '../pending-hook'
 import { pendingViews } from '../pending'
 import { photoForToken } from '../image'
+import { navigate } from '../nav'
 import { photoRefusalActions, phase3Label } from '../queue-errors'
 import { CameraCapture } from './CameraCapture'
 import { type TakeOverOffer, nameOf, rememberNames, takeOverOffers } from '../takeover'
@@ -87,7 +88,11 @@ export function QueueAlerts({ ctx }: { ctx: AppContext }) {
               <button type="button" class="button button-secondary" onClick={() => void queue.registerWithoutPhoto(p.id)}>{t('queue.photo_without')}</button>
             </>
           ) : (
-            p.state === 'needs_action' && p.retryable && <button type="button" class="button button-secondary" onClick={() => void queue.retry(p.id)}>{t('queue.retry')}</button>
+            p.openPath ? (
+              <button type="button" class="button" onClick={() => navigate(p.openPath!)}>{t('delivery.open_waiting')}</button>
+            ) : (
+              p.state === 'needs_action' && p.retryable && <button type="button" class="button button-secondary" onClick={() => void queue.retry(p.id)}>{t('queue.retry')}</button>
+            )
           )}
           <button
             type="button"
