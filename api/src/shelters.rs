@@ -169,6 +169,9 @@ pub struct ShelterDoc {
     pub other_site_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflicts_with: Option<String>,
+    /// What the shelter gives and the rule of each item (spec 3.5.2); set by `PUT /v1/shelters/{id}/items`.
+    #[serde(default, skip_serializing_if = "crate::deliveries::Items::is_empty")]
+    pub items: crate::deliveries::Items,
 }
 
 impl ShelterDoc {
@@ -209,6 +212,7 @@ pub fn full_view(
         "flagged": shelter.flagged,
         "created_at": shelter.created_at.to_string(),
         "role": role,
+        "items": shelter.items,
     })
 }
 
@@ -453,6 +457,7 @@ async fn create_in(
         flagged,
         other_site_reason,
         conflicts_with: conflicts_with.clone(),
+        items: Default::default(),
     };
 
     tx_create(db, tx, COLLECTION, &new.id, &shelter)?;
@@ -1689,6 +1694,43 @@ mod tests {
                 .0,
             StatusCode::UNAUTHORIZED
         );
+    }
+
+    #[tokio::test]
+    async fn members_see_the_items_and_strangers_do_not() {
+        let app = TestApp::new().await;
+        let ana = app.actor("Ana").await;
+        let stranger = app.actor("Ze").await;
+        let id = app.create_shelter(&ana, "Ginásio", ORIGIN).await;
+        let path = format!("/v1/shelters/{id}");
+
+        let (_, empty) = app.send("GET", &path, &ana.secret, None).await;
+        assert_eq!(empty["shelter"]["items"], json!({}));
+
+        let mut shelter: ShelterDoc = store::get(&app.state.db, COLLECTION, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        shelter.items.insert(
+            "cesta".into(),
+            crate::deliveries::ItemSpec {
+                scope: crate::deliveries::ItemScope::PerHousehold,
+                period_days: Some(7),
+                once_per_event: false,
+                high_value: false,
+            },
+        );
+        store::replace(&app.state.db, COLLECTION, &id, &shelter)
+            .await
+            .unwrap();
+
+        let (_, own) = app.send("GET", &path, &ana.secret, None).await;
+        assert_eq!(
+            own["shelter"]["items"],
+            json!({ "cesta": { "scope": "per_household", "period_days": 7, "once_per_event": false, "high_value": false } })
+        );
+        let (_, basics) = app.send("GET", &path, &stranger.secret, None).await;
+        assert!(basics["shelter"].get("items").is_none());
     }
 
     #[tokio::test]

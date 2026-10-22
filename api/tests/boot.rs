@@ -87,6 +87,11 @@ fn serve_starts_without_a_rustls_panic() {
                 ("POST", "/v1/matches/m1/decision"),
                 ("POST", "/v1/volunteers/v1/roles"),
                 ("DELETE", "/v1/volunteers/v1/roles/mediator"),
+                // Phase 5 routes.
+                ("PUT", "/v1/shelters/s1/items"),
+                ("POST", "/v1/shelters/s1/deliveries"),
+                ("GET", "/v1/shelters/s1/deliveries"),
+                ("POST", "/v1/deliveries/d1/review"),
                 ("POST", "/v1/search-links"),
                 ("DELETE", "/v1/search-links/c1"),
                 // The two public routes of the family link need no session.

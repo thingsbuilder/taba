@@ -14,6 +14,7 @@ import type { Queue } from './queue'
 import { type Route, resolveRoute, usesShell } from './routes'
 import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession } from './sessions'
 import { Checkin } from './screens/Checkin'
+import { Delivery } from './screens/Delivery'
 import { Diagnostics } from './screens/Diagnostics'
 import { Endorse } from './screens/Endorse'
 import { Exit } from './screens/Exit'
@@ -25,6 +26,7 @@ import { Privacy } from './screens/Privacy'
 import { Home } from './screens/Home'
 import { Inbox } from './screens/Inbox'
 import { Invite } from './screens/Invite'
+import { Items } from './screens/Items'
 import { Members } from './screens/Members'
 import { NewShelter } from './screens/NewShelter'
 import { Shelter } from './screens/Shelter'
@@ -37,6 +39,7 @@ import { Profile } from './screens/Profile'
 import { QueueAlerts } from './screens/QueueAlerts'
 import { Rescue } from './screens/Rescue'
 import { Return } from './screens/Return'
+import { Review } from './screens/Review'
 import { Roles } from './screens/Roles'
 import { Search } from './screens/Search'
 import { SwitchOperator } from './screens/SwitchOperator'
@@ -205,6 +208,12 @@ function Screen({ route, ctx, search }: { route: Route; ctx: AppContext; search:
       return <Household ctx={ctx} shelterId={route.id!} householdId={route.household_id!} />
     case 'shelter_exit':
       return <Exit ctx={ctx} shelterId={route.id!} />
+    case 'shelter_delivery':
+      return <Delivery ctx={ctx} shelterId={route.id!} />
+    case 'shelter_items':
+      return <Items ctx={ctx} shelterId={route.id!} />
+    case 'shelter_review':
+      return <Review ctx={ctx} shelterId={route.id!} />
     case 'person':
       return <Person ctx={ctx} personId={route.id!} />
     case 'privacy':

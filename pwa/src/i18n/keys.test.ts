@@ -26,10 +26,10 @@ it('es only has the consent screen keys (spec 11.3) and the family page keys (ph
 
 it('has one marker per section of phase 3, so owners add keys in separate places', () => {
   const markers = Object.keys(ptBR).filter((k) => /^__\w+__$/.test(k))
-  expect(markers).toEqual(['__consent__', '__checkin__', '__person__', '__household__', '__card__', '__child__', '__exit__', '__degraded__', '__queue__', '__rescue__', '__search__', '__family__', '__match__', '__role__', '__inbox__', '__end__'])
+  expect(markers).toEqual(['__consent__', '__checkin__', '__person__', '__household__', '__card__', '__child__', '__exit__', '__degraded__', '__queue__', '__rescue__', '__search__', '__family__', '__match__', '__role__', '__inbox__', '__delivery__', '__items__', '__review__', '__end__'])
   // Each section's keys sit right after its marker.
   const all = Object.keys(ptBR)
-  for (const prefix of ['consent', 'checkin', 'person', 'household', 'card', 'child', 'exit', 'queue', 'rescue', 'search', 'family', 'match', 'role', 'inbox']) {
+  for (const prefix of ['consent', 'checkin', 'person', 'household', 'card', 'child', 'exit', 'queue', 'rescue', 'search', 'family', 'match', 'role', 'inbox', 'delivery', 'items', 'review']) {
     const start = all.indexOf(`__${prefix}__`)
     const next = all.findIndex((k, i) => i > start && k.startsWith('__'))
     for (const k of all.slice(start + 1, next)) expect(k.startsWith(`${prefix}.`), `${k} in ${prefix}`).toBe(true)

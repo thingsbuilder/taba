@@ -1,3 +1,4 @@
+import { errorKey } from './app-context'
 import { checkinErrorKey } from './checkin'
 import type { QueueItem } from './db'
 
@@ -29,7 +30,14 @@ const RULES: [RegExp, string, string?][] = [
   [/^\/v1\/cards\/[^/]+\/cancel$/, 'queue.label_card_cancel'],
   [/^\/v1\/rescues$/, 'rescue.queue_label'],
   [/^\/v1\/searches$/, 'search.queue_label'],
+  [/^\/v1\/shelters\/[^/]+\/deliveries$/, 'delivery.queue_label', 'POST'],
 ]
+
+/** A delivery (spec 3.5.3). Its errors are the delivery's, not the guardian's of a child. */
+export const isDeliveryItem = (item: Pick<QueueItem, 'method' | 'path'>): boolean => phase3Label(item) === 'delivery.queue_label'
+
+const DELIVERY_OWN_ERRORS = new Set(['revalidation_failed', 'selfie_timeout'])
+export const deliveryQueueErrorKey = (code: string): string => (DELIVERY_OWN_ERRORS.has(code) ? `delivery.error_${code}` : errorKey(code))
 
 /** i18n key of what a phase 3 item does; null for the items of earlier phases. */
 export function phase3Label(item: Pick<QueueItem, 'method' | 'path'>): string | null {

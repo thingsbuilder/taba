@@ -5,6 +5,8 @@ mod cards;
 mod children;
 mod config;
 mod degraded;
+mod deliveries;
+mod deliveries_admin;
 mod endorsements;
 mod error;
 mod events;
@@ -147,6 +149,16 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/volunteers/{id}/roles/{role}",
             delete(roles::delete_role),
+        )
+        // Phase 5
+        .route("/v1/shelters/{id}/items", put(deliveries_admin::put_items))
+        .route(
+            "/v1/shelters/{id}/deliveries",
+            post(deliveries::post_delivery).get(deliveries_admin::list_deliveries),
+        )
+        .route(
+            "/v1/deliveries/{id}/review",
+            post(deliveries_admin::review_delivery),
         )
         .route("/v1/search-links", post(search_links::post_search_link))
         .route(

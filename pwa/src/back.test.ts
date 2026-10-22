@@ -19,6 +19,10 @@ it('goes from the match check back to the inbox, and from the other phase 4 scre
   for (const path of ['/rescue', '/search']) expect(backTarget(resolveRoute(path)), path).toBe('/')
 })
 
+it('goes from the phase 5 screens back to the shelter', () => {
+  for (const sub of ['delivery', 'items', 'review']) expect(backTarget(resolveRoute(`/shelter/s1/${sub}`)), sub).toBe('/shelter/s1')
+})
+
 it('falls back to the home screen for anything else', () => {
   for (const path of ['/', '/nope', '/shelter']) expect(backTarget(resolveRoute(path)), path).toBe('/')
 })

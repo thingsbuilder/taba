@@ -1524,3 +1524,709 @@ async fn a_link_made_by_the_civil_defense_for_a_chosen_shelter_gives_the_search_
     assert_eq!(searches[0]["origin_shelter_id"], json!(s.shelter));
     assert_eq!(searches[0]["event_id"], json!(shelter.event_id));
 }
+
+// ---- phase 5: donations together (criteria 25 to 33) ----
+
+const CARD: &str = "ABCD2345";
+
+async fn deliver(
+    app: &TestApp,
+    who: &Actor,
+    shelter: &str,
+    person: &str,
+    item: &str,
+    extra: Value,
+) -> (StatusCode, Value) {
+    let mut body = json!({
+        "id": new_id(), "card_code": CARD, "person_id": person, "item": item, "quantity": 1,
+        "delivered_at": store::now().to_string(),
+    });
+    for (key, value) in extra.as_object().unwrap() {
+        body[key] = value.clone();
+    }
+    call(
+        app,
+        who,
+        "POST",
+        &format!("/v1/shelters/{shelter}/deliveries"),
+        Some(body),
+    )
+    .await
+}
+
+/// The marks of a delivery the app queued offline: it says so and carries a time from minutes ago.
+fn queued() -> Value {
+    json!({ "offline": true, "delivered_at": (store::now() - std::time::Duration::from_secs(600)).to_string() })
+}
+
+async fn delivery_doc(app: &TestApp, id: &str) -> crate::deliveries::DeliveryDoc {
+    store::get(&app.state.db, "deliveries", id)
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+fn spec(scope: &str, once: bool, high: bool) -> Value {
+    json!({ "scope": scope, "period_days": 7, "once_per_event": once, "high_value": high })
+}
+
+/// A confirmed shelter with its items, two people (one with biometrics, one without) in a
+/// household with a card, no draw (the rate is zero), and a second, unconfirmed shelter.
+struct Donations {
+    s: Scene,
+    p1: String,
+    p2: String,
+    household: String,
+    other: Actor,
+    other_shelter: String,
+}
+
+async fn donations() -> Donations {
+    let mut s = scene().await;
+    std::sync::Arc::make_mut(&mut s.app.state.config).delivery_sample_rate = 0.0;
+    let items = json!({ "items": {
+        "cesta": spec("per_household", false, false),
+        "kit": spec("per_person", false, false),
+        "colchao": spec("per_person", true, true),
+        "vale": spec("per_person", false, true),
+        "agua": spec("per_household", false, false),
+    } });
+    let (status, body) = call(
+        &s.app,
+        &s.admin,
+        "PUT",
+        &format!("/v1/shelters/{}/items", s.shelter),
+        Some(items.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The saved items come back in the view of the shelter, which is where the delivery screen reads them.
+    let (status, view) = call(
+        &s.app,
+        &s.admin,
+        "GET",
+        &format!("/v1/shelters/{}", s.shelter),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["shelter"]["items"]["cesta"]["scope"], "per_household");
+    assert_eq!(view["shelter"]["items"]["colchao"]["high_value"], true);
+
+    let (status, body) = checkin_photo(
+        &s.app,
+        &s.volunteer,
+        &s.shelter,
+        "tok-p1",
+        json!({ "data": { "name": "Ana" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let p1 = s.app.state.person_id_for_token("tok-p1");
+    let p2 = new_id();
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/shelters/{}/checkins", s.shelter),
+        Some(checkin_body(
+            json!({ "id": p2, "no_biometrics": true, "data": { "name": "Bruno" } }),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let household = new_id();
+    let (status, body) = call(&s.app, &s.volunteer, "POST", &format!("/v1/shelters/{}/households", s.shelter), Some(json!({ "id": household, "member_ids": [p1, p2], "head_id": p1, "client_created_at": store::now().to_string() }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = call(
+        &s.app,
+        &s.volunteer,
+        "POST",
+        &format!("/v1/households/{household}/cards"),
+        Some(json!({ "code": CARD, "client_issued_at": store::now().to_string() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let other = s.app.actor("Other").await;
+    let other_shelter = s
+        .app
+        .create_shelter(&other, "Galpão", north_of_origin(5_000.0))
+        .await;
+    let (status, body) = call(
+        &s.app,
+        &other,
+        "PUT",
+        &format!("/v1/shelters/{other_shelter}/items"),
+        Some(items),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    Donations {
+        s,
+        p1,
+        p2,
+        household,
+        other,
+        other_shelter,
+    }
+}
+
+#[tokio::test]
+async fn a_delivery_by_card_is_registered_without_asking_unico_and_the_second_one_to_the_household_goes_to_review()
+ {
+    let d = donations().await;
+    let (app, shelter, volunteer) = (&d.s.app, &d.s.shelter, &d.s.volunteer);
+    let asked = app.unico.post_count();
+
+    // Criteria 25, 27, 28: assisted and without biometrics both receive an ordinary item by the card.
+    let (status, first) = deliver(app, volunteer, shelter, &d.p1, "cesta", json!({})).await;
+    assert_eq!(
+        (status, first["status"].as_str()),
+        (StatusCode::CREATED, Some("ok")),
+        "{first}"
+    );
+    let doc = delivery_doc(app, first["delivery_id"].as_str().unwrap()).await;
+    assert_eq!(
+        (doc.verification, doc.household_id.as_deref()),
+        (
+            crate::deliveries::Verification::Card,
+            Some(d.household.as_str())
+        )
+    );
+    let (status, kit) = deliver(app, volunteer, shelter, &d.p2, "kit", json!({})).await;
+    assert_eq!(
+        (status, kit["status"].as_str()),
+        (StatusCode::CREATED, Some("ok")),
+        "{kit}"
+    );
+    assert_eq!(
+        app.unico.post_count(),
+        asked,
+        "an ordinary delivery never asks Unico"
+    );
+
+    // Criterion 31: per_household, a second member in the period goes to review; per_person does not.
+    let (status, second) = deliver(app, volunteer, shelter, &d.p2, "cesta", json!({})).await;
+    assert_eq!(
+        (status, second["status"].as_str()),
+        (StatusCode::CREATED, Some("in_review")),
+        "{second}"
+    );
+    assert_eq!(second["reasons"][0]["kind"], "duplicate_in_period");
+    assert_eq!(
+        second["reasons"][0]["previous_delivery_id"],
+        first["delivery_id"]
+    );
+    let (_, kit_p1) = deliver(app, volunteer, shelter, &d.p1, "kit", json!({})).await;
+    assert_eq!(kit_p1["status"], "ok");
+    let (_, kit_again) = deliver(app, volunteer, shelter, &d.p1, "kit", json!({})).await;
+    assert_eq!(kit_again["status"], "in_review");
+
+    // The admin lists what waits, never sees a person id, and decides.
+    let list = format!("/v1/shelters/{shelter}/deliveries?status=in_review");
+    assert_eq!(
+        call(app, volunteer, "GET", &list, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, listed) = call(app, &d.s.admin, "GET", &list, None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed["deliveries"].as_array().unwrap().len(), 2);
+    assert!(
+        !listed.to_string().contains(&d.p1) && !listed.to_string().contains(&d.p2),
+        "{listed}"
+    );
+    let id = second["delivery_id"].as_str().unwrap();
+    let (status, body) = call(
+        app,
+        &d.s.admin,
+        "POST",
+        &format!("/v1/deliveries/{id}/review"),
+        Some(json!({ "decision": "reviewed_ok", "note": "familia grande" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let reviewed = delivery_doc(app, id).await;
+    assert_eq!(
+        (reviewed.status, reviewed.reviewed_by.as_deref()),
+        (
+            crate::deliveries::DeliveryStatus::ReviewedOk,
+            Some(d.s.admin.id.as_str())
+        )
+    );
+    let (_, listed) = call(app, &d.s.admin, "GET", &list, None).await;
+    assert_eq!(listed["deliveries"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_high_value_item_asks_for_a_selfie_and_a_wrong_face_records_nothing() {
+    let d = donations().await;
+    let (app, shelter, volunteer) = (&d.s.app, &d.s.shelter, &d.s.volunteer);
+    // Criterion 29: no capture, 428; for a person without biometrics only an admin can settle it.
+    let (status, asked) = deliver(app, volunteer, shelter, &d.p1, "colchao", json!({})).await;
+    assert_eq!(
+        (status, error_of(&asked)),
+        (StatusCode::PRECONDITION_REQUIRED, Some("liveness_required")),
+        "{asked}"
+    );
+    assert_eq!(
+        asked["detail"],
+        json!({ "reason": "high_value", "admin_approval_only": false })
+    );
+    let (_, asked) = deliver(app, volunteer, shelter, &d.p2, "colchao", json!({})).await;
+    assert_eq!(
+        asked["detail"],
+        json!({ "reason": "high_value", "admin_approval_only": true })
+    );
+
+    // The right face: ok with verification liveness.
+    let revalidation = |person: &str| json!({ "purpose": "revalidation", "shelter_id": shelter, "expected_person_id": person });
+    let (status, made) = capture(app, volunteer, revalidation(&d.p1)).await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    finish(app, made["capture_id"].as_str().unwrap(), "tok-p1").await;
+    let (status, done) = deliver(
+        app,
+        volunteer,
+        shelter,
+        &d.p1,
+        "colchao",
+        json!({ "capture_id": made["capture_id"] }),
+    )
+    .await;
+    assert_eq!(
+        (status, done["status"].as_str()),
+        (StatusCode::CREATED, Some("ok")),
+        "{done}"
+    );
+    assert_eq!(
+        delivery_doc(app, done["delivery_id"].as_str().unwrap())
+            .await
+            .verification,
+        crate::deliveries::Verification::Liveness
+    );
+
+    // Another face: 409 and no delivery written.
+    let before = all_docs(&app.state.db, "deliveries").await.len();
+    let (_, made) = capture(app, volunteer, revalidation(&d.p1)).await;
+    finish(
+        app,
+        made["capture_id"].as_str().unwrap(),
+        "tok-someone-else",
+    )
+    .await;
+    let (status, wrong) = deliver(
+        app,
+        volunteer,
+        shelter,
+        &d.p1,
+        "vale",
+        json!({ "capture_id": made["capture_id"] }),
+    )
+    .await;
+    assert_eq!(
+        (status, error_of(&wrong)),
+        (StatusCode::CONFLICT, Some("revalidation_failed")),
+        "{wrong}"
+    );
+    assert_eq!(all_docs(&app.state.db, "deliveries").await.len(), before);
+}
+
+#[tokio::test]
+async fn the_admin_vouches_for_a_person_without_a_selfie_and_a_volunteer_cannot() {
+    let d = donations().await;
+    let (app, shelter) = (&d.s.app, &d.s.shelter);
+    let (status, refused) = deliver(
+        app,
+        &d.s.volunteer,
+        shelter,
+        &d.p2,
+        "colchao",
+        json!({ "admin_approval": true }),
+    )
+    .await;
+    assert_eq!(
+        (status, error_of(&refused)),
+        (StatusCode::FORBIDDEN, Some("admin_approval_required")),
+        "{refused}"
+    );
+    let (status, ok) = deliver(
+        app,
+        &d.s.admin,
+        shelter,
+        &d.p2,
+        "colchao",
+        json!({ "admin_approval": true }),
+    )
+    .await;
+    assert_eq!(
+        (status, ok["status"].as_str()),
+        (StatusCode::CREATED, Some("ok")),
+        "{ok}"
+    );
+    let doc = delivery_doc(app, ok["delivery_id"].as_str().unwrap()).await;
+    assert_eq!(
+        (doc.verification, doc.approved_by.as_deref()),
+        (
+            crate::deliveries::Verification::AdminApproval,
+            Some(d.s.admin.id.as_str())
+        )
+    );
+    assert!(
+        crate::test_support::audit_actions(&app.state.db)
+            .await
+            .contains(&"delivery.admin_approval".to_string())
+    );
+}
+
+#[tokio::test]
+async fn offline_a_high_value_item_goes_to_review_unless_an_admin_approves() {
+    let d = donations().await;
+    let (app, shelter) = (&d.s.app, &d.s.shelter);
+    let asked = app.unico.post_count();
+    // Criteria 4 and 33.
+    let (status, review) = deliver(app, &d.s.volunteer, shelter, &d.p1, "vale", queued()).await;
+    assert_eq!(
+        (status, review["status"].as_str()),
+        (StatusCode::CREATED, Some("in_review")),
+        "{review}"
+    );
+    assert_eq!(review["reasons"][0]["kind"], "liveness_unavailable");
+    let (status, approved) = deliver(app, &d.s.admin, shelter, &d.p2, "vale", {
+        let mut approval = queued();
+        approval["admin_approval"] = json!(true);
+        approval
+    })
+    .await;
+    assert_eq!(
+        (status, approved["status"].as_str()),
+        (StatusCode::CREATED, Some("ok")),
+        "{approved}"
+    );
+    assert_eq!(app.unico.post_count(), asked);
+}
+
+#[tokio::test]
+async fn the_late_biometrics_repoints_the_deliveries_and_an_old_id_still_finds_the_person() {
+    let d = donations().await;
+    let (app, shelter, volunteer) = (&d.s.app, &d.s.shelter, &d.s.volunteer);
+    let (_, before) = deliver(app, volunteer, shelter, &d.p2, "kit", json!({})).await;
+    let first = before["delivery_id"].as_str().unwrap().to_string();
+
+    tokens(app, &["tok-p2-late"]);
+    let (status, body) = call(
+        app,
+        volunteer,
+        "PUT",
+        &format!("/v1/people/{}/biometrics", d.p2),
+        Some(json!({ "photo_base64": photo() })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let new = app.state.person_id_for_token("tok-p2-late");
+    assert_eq!(
+        delivery_doc(app, &first).await.person_id.as_deref(),
+        Some(new.as_str())
+    );
+
+    // An offline delivery still carrying the old id reaches the server now: it is the same person.
+    let (status, late) = deliver(app, volunteer, shelter, &d.p2, "kit", queued()).await;
+    assert_eq!(status, StatusCode::CREATED, "{late}");
+    assert_eq!(late["status"], "in_review"); // the kit of this person was already given
+    assert_eq!(
+        delivery_doc(app, late["delivery_id"].as_str().unwrap())
+            .await
+            .person_id
+            .as_deref(),
+        Some(new.as_str())
+    );
+}
+
+#[tokio::test]
+async fn what_a_delivery_tells_of_the_other_one_depends_on_who_asks() {
+    let d = donations().await;
+    let (app, confirmed, volunteer) = (&d.s.app, &d.s.shelter, &d.s.volunteer);
+    let told = |answer: &Value| {
+        (
+            answer["reasons"][0].get("previous_delivered_at").is_some(),
+            answer["reasons"][0].get("previous_shelter_name").cloned(),
+        )
+    };
+
+    // An unconfirmed requester, the other delivery at a confirmed shelter: nothing, not even the date.
+    let (_, first) = deliver(app, volunteer, confirmed, &d.p1, "agua", json!({})).await;
+    assert_eq!(first["status"], "ok", "{first}");
+    let (_, a) = deliver(app, &d.other, &d.other_shelter, &d.p2, "agua", json!({})).await;
+    assert_eq!(a["status"], "in_review", "{a}");
+    assert_eq!(told(&a), (false, None), "{a}");
+    // ... also when the same delivery is sent again, and in the review list of that shelter.
+    let again = call(app, &d.other, "POST", &format!("/v1/shelters/{}/deliveries", d.other_shelter), Some(json!({
+        "id": a["delivery_id"], "card_code": CARD, "person_id": d.p2, "item": "agua", "quantity": 1, "delivered_at": store::now().to_string(),
+    }))).await;
+    assert_eq!(told(&again.1), (false, None), "{}", again.1);
+    let (status, list) = call(
+        app,
+        &d.other,
+        "GET",
+        &format!(
+            "/v1/shelters/{}/deliveries?status=in_review",
+            d.other_shelter
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert!(
+        !list.to_string().contains("previous_delivered_at")
+            && !list.to_string().contains("\"Abrigo\""),
+        "{list}"
+    );
+
+    // An unconfirmed requester, the other delivery its own: date and name.
+    let (_, b) = deliver(app, &d.other, &d.other_shelter, &d.p1, "agua", json!({})).await;
+    assert_eq!(b["status"], "in_review");
+    assert_eq!(told(&b), (true, Some(json!("Galpão"))), "{b}");
+
+    // A confirmed requester, the other delivery at an unconfirmed shelter: the date, not the name.
+    let (_, c) = deliver(app, volunteer, confirmed, &d.p2, "agua", json!({})).await;
+    assert_eq!(c["status"], "in_review");
+    assert_eq!(told(&c), (true, None), "{c}");
+
+    // A confirmed requester, the other delivery at another confirmed shelter: both.
+    let admin2 = app.actor("Admin2").await;
+    let second = app
+        .confirmed_shelter(&admin2, "Segundo", north_of_origin(10_000.0))
+        .await;
+    let (status, body) = call(
+        app,
+        &admin2,
+        "PUT",
+        &format!("/v1/shelters/{second}/items"),
+        Some(json!({ "items": { "cesta": spec("per_household", false, false) } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, e) = deliver(app, &admin2, &second, &d.p1, "cesta", json!({})).await;
+    assert_eq!(e["status"], "ok", "{e}");
+    let (_, f) = deliver(app, volunteer, confirmed, &d.p2, "cesta", json!({})).await;
+    assert_eq!(f["status"], "in_review", "{f}");
+    assert_eq!(told(&f), (true, Some(json!("Segundo"))), "{f}");
+}
+
+#[tokio::test]
+async fn the_server_believes_offline_only_for_a_delivery_that_waited_and_the_clock_of_the_phone_has_limits()
+ {
+    let d = donations().await;
+    let (app, shelter, volunteer) = (&d.s.app, &d.s.shelter, &d.s.volunteer);
+    let ago = |secs: u64| (store::now() - std::time::Duration::from_secs(secs)).to_string();
+
+    // "offline" with a delivered_at of now is not believed: a high value item still asks for the selfie.
+    let (status, asked) = deliver(
+        app,
+        volunteer,
+        shelter,
+        &d.p1,
+        "vale",
+        json!({ "offline": true, "delivered_at": ago(5) }),
+    )
+    .await;
+    assert_eq!(
+        (status, error_of(&asked)),
+        (StatusCode::PRECONDITION_REQUIRED, Some("liveness_required")),
+        "{asked}"
+    );
+    // After a real wait it is: review for lack of a selfie, marked in the delivery and in the audit.
+    let (status, queued) = deliver(
+        app,
+        volunteer,
+        shelter,
+        &d.p1,
+        "vale",
+        json!({ "offline": true, "delivered_at": ago(120) }),
+    )
+    .await;
+    assert_eq!(
+        (status, queued["status"].as_str()),
+        (StatusCode::CREATED, Some("in_review")),
+        "{queued}"
+    );
+    assert!(
+        delivery_doc(app, queued["delivery_id"].as_str().unwrap())
+            .await
+            .offline_claimed
+    );
+    assert!(
+        crate::test_support::audit_actions(&app.state.db)
+            .await
+            .contains(&"delivery.create_offline".to_string())
+    );
+    // An online delivery is not marked.
+    let (_, online) = deliver(app, volunteer, shelter, &d.p1, "kit", json!({})).await;
+    assert!(
+        !delivery_doc(app, online["delivery_id"].as_str().unwrap())
+            .await
+            .offline_claimed
+    );
+
+    // delivered_at: from 30 days back; a time ahead is cut (see the next test).
+    let days = |n: u64| (store::now() - std::time::Duration::from_secs(n * 86_400)).to_string();
+    for (at, ok) in [(days(29), true), (days(31), false)] {
+        let (status, body) = deliver(
+            app,
+            volunteer,
+            shelter,
+            &d.p2,
+            "kit",
+            json!({ "delivered_at": at }),
+        )
+        .await;
+        if ok {
+            assert_eq!(status, StatusCode::CREATED, "{at}: {body}");
+        } else {
+            assert_eq!(
+                (status, error_of(&body), body["detail"]["field"].as_str()),
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Some("invalid_request"),
+                    Some("delivered_at")
+                ),
+                "{at}: {body}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_phone_with_the_clock_ahead_still_delivers_and_the_time_is_cut_to_the_receipt() {
+    let d = donations().await;
+    let (app, shelter, volunteer) = (&d.s.app, &d.s.shelter, &d.s.volunteer);
+    let ahead = |secs: u64| (store::now() + std::time::Duration::from_secs(secs)).to_string();
+    let behind = |secs: u64| (store::now() - std::time::Duration::from_secs(secs)).to_string();
+
+    // 10 minutes and 2 hours ahead: 201, delivered_at is the receipt, and it is marked in the delivery and the audit.
+    for (item, secs) in [("kit", 600), ("cesta", 7_200)] {
+        let (status, body) = deliver(
+            app,
+            volunteer,
+            shelter,
+            &d.p1,
+            item,
+            json!({ "delivered_at": ahead(secs) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{secs}: {body}");
+        let doc = delivery_doc(app, body["delivery_id"].as_str().unwrap()).await;
+        assert_eq!(doc.delivered_at, doc.received_at, "{secs}");
+        assert!(doc.delivered_at_clamped, "{secs}");
+    }
+    assert!(
+        crate::test_support::audit_actions(&app.state.db)
+            .await
+            .contains(&"delivery.create_clamped".to_string())
+    );
+    // A time that is not ahead is left as it is and not marked.
+    let (_, normal) = deliver(
+        app,
+        volunteer,
+        shelter,
+        &d.p2,
+        "agua",
+        json!({ "delivered_at": behind(60) }),
+    )
+    .await;
+    let doc = delivery_doc(app, normal["delivery_id"].as_str().unwrap()).await;
+    assert!(!doc.delivered_at_clamped && doc.delivered_at < doc.received_at);
+
+    // The same delivery sent again answers the same.
+    let id = new_id();
+    let send = |at: String| {
+        deliver(
+            app,
+            volunteer,
+            shelter,
+            &d.p2,
+            "colchao",
+            json!({ "id": id, "delivered_at": at, "admin_approval": true }),
+        )
+    };
+    let _ = send(ahead(3_600)).await; // a volunteer's approval is refused for a high value item: 403
+    let (status, first) = deliver(
+        app,
+        &d.s.admin,
+        shelter,
+        &d.p2,
+        "colchao",
+        json!({ "id": id, "delivered_at": ahead(3_600), "admin_approval": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    let (status, again) = deliver(
+        app,
+        &d.s.admin,
+        shelter,
+        &d.p2,
+        "colchao",
+        json!({ "id": id, "delivered_at": ahead(3_600), "admin_approval": true }),
+    )
+    .await;
+    assert_eq!((status, &again), (StatusCode::CREATED, &first));
+
+    // The duplicate decision uses the cut time: one 6 days 23 hours ago, and one 2 hours ahead that
+    // would be 7 days 1 hour apart (no duplicate) if it were not cut.
+    let (_, old) = deliver(
+        app,
+        volunteer,
+        shelter,
+        &d.p1,
+        "vale",
+        json!({ "delivered_at": behind(7 * 86_400 - 3_600), "offline": true }),
+    )
+    .await;
+    assert_eq!(old["status"], "in_review", "{old}"); // offline, high value, no admin
+    let (status, dup) = deliver(
+        app,
+        &d.s.admin,
+        shelter,
+        &d.p1,
+        "vale",
+        json!({ "delivered_at": ahead(7_200), "admin_approval": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{dup}");
+    assert_eq!(dup["status"], "in_review", "{dup}");
+    assert_eq!(dup["reasons"][0]["kind"], "duplicate_in_period");
+}
+
+#[tokio::test]
+async fn an_admin_approval_where_no_selfie_would_be_asked_is_an_ordinary_delivery() {
+    let d = donations().await;
+    let (app, shelter) = (&d.s.app, &d.s.shelter);
+    // The flag on an ordinary item, by an admin (person 1) and by a volunteer (person 2): card,
+    // nobody approved, no 403.
+    for (who, person) in [(&d.s.admin, &d.p1), (&d.s.volunteer, &d.p2)] {
+        let (status, body) = deliver(
+            app,
+            who,
+            shelter,
+            person,
+            "kit",
+            json!({ "admin_approval": true }),
+        )
+        .await;
+        assert_eq!(
+            (status, body["status"].as_str()),
+            (StatusCode::CREATED, Some("ok")),
+            "{body}"
+        );
+        let doc = delivery_doc(app, body["delivery_id"].as_str().unwrap()).await;
+        assert_eq!(
+            (doc.verification, doc.approved_by),
+            (crate::deliveries::Verification::Card, None)
+        );
+    }
+    assert!(
+        !crate::test_support::audit_actions(&app.state.db)
+            .await
+            .iter()
+            .any(|a| a.starts_with("delivery.admin_approval"))
+    );
+}

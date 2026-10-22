@@ -1,7 +1,7 @@
 export type RouteName =
   | 'home' | 'login' | 'return' | 'switch_operator' | 'profile'
   | 'shelter_new' | 'shelter' | 'shelter_members' | 'invite' | 'endorse' | 'inbox'
-  | 'shelter_checkin' | 'shelter_people' | 'shelter_household' | 'shelter_exit' | 'person' | 'privacy' | 'diagnostics'
+  | 'shelter_checkin' | 'shelter_people' | 'shelter_household' | 'shelter_exit' | 'shelter_delivery' | 'shelter_items' | 'shelter_review' | 'person' | 'privacy' | 'diagnostics'
   | 'rescue' | 'search' | 'roles' | 'match' | 'family'
   | 'not_found'
 
@@ -39,8 +39,8 @@ export function resolveRoute(pathname: string): Route {
   if (simple) return { name: simple }
   const shelter = /^\/shelter\/([^/]+)(\/members)?$/.exec(pathname)
   if (shelter) return { name: shelter[2] ? 'shelter_members' : 'shelter', id: decodeURIComponent(shelter[1]!) }
-  const sub = /^\/shelter\/([^/]+)\/(checkin|people|exit)$/.exec(pathname)
-  if (sub) return { name: `shelter_${sub[2]}` as 'shelter_checkin' | 'shelter_people' | 'shelter_exit', id: decodeURIComponent(sub[1]!) }
+  const sub = /^\/shelter\/([^/]+)\/(checkin|people|exit|delivery|items|review)$/.exec(pathname)
+  if (sub) return { name: `shelter_${sub[2]}` as RouteName, id: decodeURIComponent(sub[1]!) }
   const household = /^\/shelter\/([^/]+)\/households\/([^/]+)$/.exec(pathname)
   if (household) return { name: 'shelter_household', id: decodeURIComponent(household[1]!), household_id: decodeURIComponent(household[2]!) }
   const person = /^\/person\/([^/]+)$/.exec(pathname)

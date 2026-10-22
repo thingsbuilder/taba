@@ -1,4 +1,4 @@
-import { phase3Label, queueErrorKey } from './queue-errors'
+import { deliveryQueueErrorKey, isDeliveryItem, phase3Label, queueErrorKey } from './queue-errors'
 import type { Db, QueueItem } from './db'
 
 // What the "Pendências" list shows for a queue item (spec 9.2).
@@ -10,6 +10,8 @@ export interface PendingView {
   state: QueueItem['state']
   /** i18n key of the error, when the item waits for a person. */
   errorKey?: string
+  /** Where a person settles it, for the items that cannot be sent again as they are (a delivery waiting for a selfie or an admin). */
+  openPath?: string
   /** Whether sending it again can help: the daily search limit cannot be beaten by waiting a minute. */
   retryable: boolean
   /** What the text of the error needs, such as which household got in the way. */
@@ -89,8 +91,9 @@ export function pendingViews(items: QueueItem[], shelterId?: string, names: Conf
         id: i.id,
         labelKey: labelOf(i),
         state: i.state,
-        errorKey: conflict?.key ?? (i.error ? queueErrorKey(i.error) : undefined),
-        retryable: i.error !== 'search_limit',
+        errorKey: conflict?.key ?? (i.error ? (isDeliveryItem(i) ? deliveryQueueErrorKey(i.error) : queueErrorKey(i.error)) : undefined),
+        retryable: i.error !== 'search_limit' && !isDeliveryItem(i),
+        ...(isDeliveryItem(i) && i.shelter_id ? { openPath: `/shelter/${i.shelter_id}/delivery` } : {}),
         ...(conflict ? { errorParams: conflict.params } : {}),
         shelterId: i.shelter_id,
       }

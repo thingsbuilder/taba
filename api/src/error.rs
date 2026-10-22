@@ -80,6 +80,31 @@ impl ApiError {
     }
 }
 
+// Phase 5 codes (doc da fase 5, "O que a fase cria"). Each is raised by the module that owns the rule.
+#[allow(dead_code)] // stage 0 scaffold: the owners of phase 5 start using these
+impl ApiError {
+    /// A route that is registered but not written yet.
+    pub fn not_implemented() -> Self {
+        Self::new(StatusCode::NOT_IMPLEMENTED, "not_implemented")
+    }
+
+    pub fn liveness_required() -> Self {
+        Self::new(StatusCode::PRECONDITION_REQUIRED, "liveness_required")
+    }
+
+    pub fn admin_approval_required() -> Self {
+        Self::new(StatusCode::FORBIDDEN, "admin_approval_required")
+    }
+
+    pub fn card_not_found() -> Self {
+        Self::new(StatusCode::NOT_FOUND, "card_not_found")
+    }
+
+    pub fn person_not_in_household() -> Self {
+        Self::new(StatusCode::NOT_FOUND, "person_not_in_household")
+    }
+}
+
 /// Lets a handler's error cross a Firestore transaction (see `store::fs_error`).
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

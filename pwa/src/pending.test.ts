@@ -29,3 +29,14 @@ it('can be limited to one shelter', () => {
   const views = pendingViews([item({ id: 'b', state: 'held', shelter_id: 's1' }), item({ id: 'x', state: 'held', shelter_id: 's2' })], 's2')
   expect(views.map((v) => v.id)).toEqual(['x'])
 })
+
+it('lists a delivery that waits for a selfie or an admin with its own label and error text, to settle on the delivery screen', () => {
+  const views = pendingViews([
+    item({ id: 'd', path: '/v1/shelters/s1/deliveries', state: 'needs_action', error: 'revalidation_failed', shelter_id: 's1' }),
+    item({ id: 'e', path: '/v1/shelters/s1/deliveries', state: 'needs_action', error: 'liveness_required', shelter_id: 's1' }),
+  ])
+  expect(views).toEqual([
+    { id: 'd', labelKey: 'delivery.queue_label', state: 'needs_action', errorKey: 'delivery.error_revalidation_failed', retryable: false, openPath: '/shelter/s1/delivery', shelterId: 's1' },
+    { id: 'e', labelKey: 'delivery.queue_label', state: 'needs_action', errorKey: 'error.liveness_required', retryable: false, openPath: '/shelter/s1/delivery', shelterId: 's1' },
+  ])
+})
