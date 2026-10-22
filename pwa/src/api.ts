@@ -289,7 +289,7 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
     listMatches: (secret: string) => call<{ matches: MatchSummary[] }>('GET', '/v1/matches', { secret }),
     /** An `image/jpeg`: the caller reads the blob, so this one returns the raw response. */
     getMatchThumbnail: (secret: string, id: string) => fetchFn(`/v1/matches/${id}/thumbnail`, { headers: { Authorization: `Bearer ${secret}` } }),
-    getMatch: (secret: string, id: string) => call<{ match: MatchDetail }>('GET', `/v1/matches/${id}`, { secret }),
+    getMatch: (secret: string, id: string) => call<MatchDetail>('GET', `/v1/matches/${id}`, { secret }),
     decideMatch: (secret: string, id: string, body: MatchDecisionRequest) =>
       call<MatchDecisionResponse>('POST', `/v1/matches/${id}/decision`, { secret, body }),
     grantRole: (secret: string, volunteerId: string, role: MediatorRole) =>

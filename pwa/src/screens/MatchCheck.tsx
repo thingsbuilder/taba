@@ -34,7 +34,7 @@ export function MatchCheck({ ctx, matchId }: { ctx: AppContext; matchId: string 
     if (!active) return navigate('/login', true)
     if (!online) return
     void api.getMatch(active.secret, matchId).then((res) => {
-      if (res.ok) setMatch(res.data.match)
+      if (res.ok) setMatch(res.data)
       else setError(res.error)
     })
   }, [online, matchId])
