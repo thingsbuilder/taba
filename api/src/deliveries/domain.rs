@@ -1,133 +1,30 @@
-//! The rules of a delivery, with no database and no HTTP: the types stored in `deliveries`, what a
-//! delivery needs (draw, liveness, admin approval), what makes two deliveries a duplicate, what is
-//! told of the other one, and the two transitions of a delivery's life (recorded, reviewed).
-//! `mod.rs` reads and writes around them; `deliveries_admin.rs` calls the review.
+//! The rules of a delivery, with no database and no HTTP: what a delivery needs (draw, liveness,
+//! admin approval), what makes two deliveries a duplicate, what is told of the other one, the two
+//! transitions of a delivery's life (recorded, reviewed) and the validation of a shelter's items
+//! (spec 3.5.2). `persist.rs` reads and writes around them.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use axum::http::StatusCode;
 use firestore::FirestoreInstant;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use super::model::{
+    DeliveryDoc, DeliveryStatus, ItemSpec, Items, Reason, ReasonKind, Verification, invalid,
+};
 use crate::error::ApiError;
 use crate::shelters::{Confirmation, ShelterDoc};
 
-pub const COLLECTION: &str = "deliveries";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ItemScope {
-    PerPerson,
-    PerHousehold,
-}
-
-/// One item a shelter gives (spec 3.5.2); `shelters.items` maps the item name to this.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ItemSpec {
-    pub scope: ItemScope,
-    /// Days between two deliveries of the item; absent means the default of 7. Ignored when `once_per_event`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub period_days: Option<u32>,
-    #[serde(default)]
-    pub once_per_event: bool,
-    #[serde(default)]
-    pub high_value: bool,
-}
-
-/// `shelters.items` (spec 7): item name to its rule.
-pub type Items = BTreeMap<String, ItemSpec>;
-
-/// How the person who took the item was checked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Verification {
-    Card,
-    Liveness,
-    AdminApproval,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeliveryStatus {
-    Ok,
-    InReview,
-    ReviewedOk,
-    Irregular,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReasonKind {
-    DuplicateInPeriod,
-    LivenessUnavailable,
-}
-
-/// Why a delivery waits for review (spec 4.7).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Reason {
-    pub kind: ReasonKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_delivery_id: Option<String>,
-}
-
-/// `deliveries/{delivery_id}` (UUID of the client), spec 7. `person_id` is a token id or, for a
-/// `no_biometrics` person, a client UUID; `late biometrics` repoints it (`people::repoint_person_refs`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeliveryDoc {
-    pub shelter_id: String,
-    pub shelter_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub event_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub person_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub household_id: Option<String>,
-    /// Phase 6 fills it when the delivery is pseudonymized.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub household_pseudonym: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub card_code: Option<String>,
-    pub item: String,
-    pub scope: ItemScope,
-    pub quantity: u32,
-    /// Empty once the delivery is pseudonymized.
-    #[serde(default)]
-    pub delivered_by: String,
-    /// The phone's clock.
-    #[serde(with = "firestore::serialize_as_timestamp")]
-    pub delivered_at: FirestoreInstant,
-    #[serde(with = "firestore::serialize_as_timestamp")]
-    pub received_at: FirestoreInstant,
-    pub verification: Verification,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approved_by: Option<String>,
-    pub status: DeliveryStatus,
-    #[serde(default)]
-    pub reasons: Vec<Reason>,
-    /// The app said the delivery was made offline and the server believed it (`offline_claim`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub offline_claimed: bool,
-    /// The phone's `delivered_at` was ahead of the server's clock and was cut to `received_at`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub delivered_at_clamped: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reviewed_by: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review_note: Option<String>,
-    #[serde(default)]
-    pub pseudonymized: bool,
-}
-
-const DEFAULT_PERIOD_DAYS: i64 = 7;
+pub(super) const DEFAULT_PERIOD_DAYS: i64 = 7;
 pub(crate) const DAY_MICROS: i64 = 86_400_000_000;
 /// A delivery the app calls offline reaches the server later: one that arrives within this of its
 /// own `delivered_at` was not queued, and the claim is ignored (the server treats it as online).
-const OFFLINE_MIN_DELAY_MICROS: i64 = 30_000_000;
+pub(super) const OFFLINE_MIN_DELAY_MICROS: i64 = 30_000_000;
 /// `delivered_at` is the phone's clock: refused when older than this; a time ahead of the server's
 /// is not refused (a phone with the clock ahead would never get a delivery through) but cut to the
 /// moment of receipt.
-const MAX_AGE_MICROS: i64 = 30 * DAY_MICROS;
+pub(super) const MAX_AGE_MICROS: i64 = 30 * DAY_MICROS;
 
 // ---- the decision ----
 
@@ -394,306 +291,43 @@ impl DeliveryDoc {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::shelters::{Address, ShelterStatus};
-    use crate::store;
-    use crate::test_support::new_id;
+pub(super) const MAX_ITEMS: usize = 50;
+pub(super) const MAX_ITEM_NAME_CHARS: usize = 60;
+pub(super) const MAX_PERIOD_DAYS: u32 = 365;
 
-    const DAYS: i64 = DAY_MICROS;
-
-    fn spec(scope: ItemScope, period: Option<u32>, once: bool, high: bool) -> ItemSpec {
-        ItemSpec {
-            scope,
-            period_days: period,
-            once_per_event: once,
-            high_value: high,
+/// Trims the names, refuses the ones that are empty, long, with control characters or that repeat
+/// (ignoring case), and drops `period_days` where `once_per_event` makes it meaningless.
+pub(super) fn valid_items(items: Items) -> Result<Items, ApiError> {
+    if items.len() > MAX_ITEMS {
+        return Err(invalid("items"));
+    }
+    let mut seen = BTreeSet::new();
+    let mut valid = Items::new();
+    for (name, mut spec) in items {
+        let name = name.trim().to_string();
+        if name.is_empty()
+            || name.chars().count() > MAX_ITEM_NAME_CHARS
+            || name.chars().any(char::is_control)
+            || !seen.insert(name.to_lowercase())
+        {
+            return Err(invalid("item"));
         }
-    }
-
-    fn shelter(confirmation: Confirmation) -> ShelterDoc {
-        let now = store::now();
-        ShelterDoc {
-            id: None,
-            name: "Abrigo".into(),
-            lat: 0.0,
-            lon: 0.0,
-            accuracy_m: 5.0,
-            geohash: String::new(),
-            address: Address::default(),
-            event_id: Some("e1".into()),
-            capacity: None,
-            created_by: "v".into(),
-            client_created_at: now,
-            created_at: now,
-            status: ShelterStatus::Open,
-            confirmation,
-            confirmation_type: None,
-            can_endorse: false,
-            endorsements: vec![],
-            revocations: vec![],
-            flagged: false,
-            other_site_reason: None,
-            conflicts_with: None,
-            items: Items::new(),
+        if spec.once_per_event {
+            spec.period_days = None;
+        } else if spec
+            .period_days
+            .is_some_and(|days| days == 0 || days > MAX_PERIOD_DAYS)
+        {
+            return Err(invalid("period_days"));
         }
+        valid.insert(name, spec);
     }
+    Ok(valid)
+}
 
-    fn write(decision: Decision) -> Write {
-        let now = store::now();
-        Write {
-            id: "d2".into(),
-            shelter_id: "s1".into(),
-            shelter: shelter(Confirmation::Unconfirmed),
-            volunteer_id: "vol".into(),
-            card_code: "ABCD2345".into(),
-            person_id: "p1".into(),
-            household_id: "h1".into(),
-            item: "cesta".into(),
-            spec: spec(ItemScope::PerHousehold, None, false, false),
-            quantity: 1,
-            delivered_at: now,
-            decision,
-            offline_claimed: false,
-            delivered_at_clamped: false,
-            received_at: now,
-            capture_id: None,
-        }
-    }
-
-    /// A fixed instant plus `micros`, so differences between two of them are exact.
-    fn at(micros: i64) -> FirestoreInstant {
-        FirestoreInstant::from_microsecond(1_800_000_000_000_000 + micros).unwrap()
-    }
-
-    // ---- the draw and the decision ----
-
-    #[test]
-    fn the_draw_is_deterministic_and_close_to_the_rate() {
-        let id = new_id();
-        assert_eq!(is_sampled(&id, 0.05), is_sampled(&id, 0.05));
-        let ids: Vec<String> = (0..20_000).map(|_| new_id()).collect();
-        let drawn = ids.iter().filter(|id| is_sampled(id, 0.05)).count();
-        assert!((700..=1300).contains(&drawn), "{drawn} of 20000");
-        assert!(ids.iter().all(|id| !is_sampled(id, 0.0)));
-        assert!(ids.iter().all(|id| is_sampled(id, 1.0)));
-        // growing the rate never undraws an id
-        assert!(
-            ids.iter()
-                .all(|id| !is_sampled(id, 0.05) || is_sampled(id, 0.5))
-        );
-    }
-
-    #[test]
-    fn the_decision_table() {
-        use Decision::*;
-        // (high_value, sampled, unavailable, admin_approval, has_capture)
-        let cases = [
-            ((false, false, false, false, false), Card),
-            ((false, true, false, false, false), Ask),
-            ((true, false, false, false, false), Ask),
-            ((true, false, false, false, true), Revalidate),
-            ((false, false, false, false, true), Revalidate),
-            ((true, true, false, true, true), AdminApproval),
-            ((false, false, false, true, false), AdminApproval),
-            ((true, false, true, false, false), Unavailable),
-            ((true, false, true, true, false), AdminApproval),
-            ((false, true, true, false, false), Card),
-            ((false, false, true, false, true), Card),
-        ];
-        for ((high, sampled, unavailable, admin, capture), expected) in cases {
-            assert_eq!(
-                decide(high, sampled, unavailable, admin, capture),
-                expected,
-                "{high} {sampled} {unavailable} {admin} {capture}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_period_is_strictly_shorter_than_period_days_and_ignored_for_once_per_event() {
-        let base = store::now();
-        let week = spec(ItemScope::PerPerson, None, false, false);
-        let at_ = |micros: i64| {
-            FirestoreInstant::from_microsecond(base.as_microsecond() + micros).unwrap()
-        };
-        assert!(within_period(&week, base, at_(7 * DAYS - 1)));
-        assert!(!within_period(&week, base, at_(7 * DAYS)));
-        assert!(
-            within_period(&week, at_(7 * DAYS - 1), base),
-            "either order"
-        );
-        let three = spec(ItemScope::PerPerson, Some(3), false, false);
-        assert!(!within_period(&three, base, at_(3 * DAYS)));
-        let once = spec(ItemScope::PerPerson, Some(3), true, false);
-        assert!(within_period(&once, base, at_(400 * DAYS)));
-    }
-
-    #[test]
-    fn the_offline_claim_needs_a_real_wait_and_a_future_clock_is_cut_at_receipt() {
-        let received = at(0);
-        assert!(offline_claim_accepted(
-            true,
-            at(-OFFLINE_MIN_DELAY_MICROS),
-            received
-        ));
-        assert!(!offline_claim_accepted(
-            true,
-            at(-OFFLINE_MIN_DELAY_MICROS + 1),
-            received
-        ));
-        assert!(!offline_claim_accepted(false, at(-60_000_000), received));
-
-        assert_eq!(
-            plausible_delivered_at(at(1), received),
-            Some((received, true))
-        );
-        assert_eq!(
-            plausible_delivered_at(at(-MAX_AGE_MICROS), received),
-            Some((at(-MAX_AGE_MICROS), false))
-        );
-        assert_eq!(
-            plausible_delivered_at(at(-MAX_AGE_MICROS - 1), received),
-            None
-        );
-    }
-
-    #[test]
-    fn what_is_told_of_the_other_delivery_follows_who_asks() {
-        let unconfirmed = shelter(Confirmation::Unconfirmed);
-        let confirmed = shelter(Confirmation::Confirmed);
-        // -> (date, name)
-        assert_eq!(
-            previous_visibility(&unconfirmed, "a", "a", None),
-            (true, true)
-        );
-        assert_eq!(
-            previous_visibility(&unconfirmed, "a", "b", Some(&confirmed)),
-            (false, false)
-        );
-        assert_eq!(
-            previous_visibility(&confirmed, "a", "b", Some(&unconfirmed)),
-            (true, false)
-        );
-        assert_eq!(
-            previous_visibility(&confirmed, "a", "b", Some(&confirmed)),
-            (true, true)
-        );
-        assert_eq!(
-            previous_visibility(&confirmed, "a", "b", None),
-            (true, false)
-        );
-    }
-
-    // ---- invariants (matrix of Q03: what each operation may do to them) ----
-
-    /// A repeated take is flagged, never refused: whatever the decision, a duplicate is a reason
-    /// and the delivery is recorded in review.
-    #[test]
-    fn a_repeated_take_is_flagged_never_refused() {
-        for decision in [
-            Decision::Card,
-            Decision::Revalidate,
-            Decision::AdminApproval,
-            Decision::Unavailable,
-        ] {
-            let w = write(decision);
-            let doc = w.delivery(w.reasons(Some("d1".into())));
-            assert_eq!(doc.status, DeliveryStatus::InReview, "{decision:?}");
-            assert!(
-                doc.reasons
-                    .iter()
-                    .any(|r| r.kind == ReasonKind::DuplicateInPeriod
-                        && r.previous_delivery_id.as_deref() == Some("d1")),
-                "{decision:?}"
-            );
-        }
-        let w = write(Decision::Card);
-        assert_eq!(w.delivery(w.reasons(None)).status, DeliveryStatus::Ok);
-    }
-
-    #[test]
-    fn a_duplicate_and_a_liveness_that_could_not_be_done_carry_both_reasons() {
-        let w = write(Decision::Unavailable);
-        let kinds: Vec<_> = w
-            .reasons(Some("d1".into()))
-            .iter()
-            .map(|r| r.kind)
-            .collect();
-        assert_eq!(
-            kinds,
-            [
-                ReasonKind::DuplicateInPeriod,
-                ReasonKind::LivenessUnavailable
-            ]
-        );
-    }
-
-    /// A repeated item does not repeat its effect: a delivery is never its own duplicate, so the
-    /// same request sent again is not flagged against itself.
-    #[test]
-    fn a_delivery_is_never_its_own_duplicate() {
-        let mut w = write(Decision::Card);
-        w.delivered_at = at(0);
-        assert!(!counts_against(&w, &w.id, at(0)));
-        assert!(counts_against(&w, "d1", at(0)));
-        assert!(counts_against(&w, "d1", at(-7 * DAYS + 1)));
-        assert!(!counts_against(&w, "d1", at(-7 * DAYS)));
-    }
-
-    /// A replay does not widen access: the stored delivery answers the same shelter and volunteer
-    /// again; anyone else using the id gets a conflict, never the stored data.
-    #[test]
-    fn a_replay_answers_only_the_volunteer_and_shelter_that_made_it() {
-        let doc = write(Decision::Card).delivery(vec![]);
-        assert!(same_delivery(doc.clone(), "s1", "vol").is_ok());
-        for (shelter_id, volunteer_id) in [("s1", "other"), ("s2", "vol"), ("s2", "other")] {
-            let error = same_delivery(doc.clone(), shelter_id, volunteer_id).unwrap_err();
-            assert_eq!(error.code, "delivery_id_taken");
-        }
-    }
-
-    /// A repeated review does not repeat its effect: the second neither changes the decision nor
-    /// replaces the reviewer and the note.
-    #[test]
-    fn a_review_decides_once() {
-        let w = write(Decision::Card);
-        let mut doc = w.delivery(w.reasons(Some("d1".into())));
-        doc.review(ReviewDecision::Irregular, "admin1", Some("first".into()))
-            .unwrap();
-        assert_eq!(doc.status, DeliveryStatus::Irregular);
-        for decision in [ReviewDecision::ReviewedOk, ReviewDecision::Irregular] {
-            let error = doc
-                .review(decision, "admin2", Some("second".into()))
-                .unwrap_err();
-            assert_eq!(error.code, "delivery_not_in_review");
-        }
-        assert_eq!(doc.status, DeliveryStatus::Irregular);
-        assert_eq!(doc.reviewed_by.as_deref(), Some("admin1"));
-        assert_eq!(doc.review_note.as_deref(), Some("first"));
-    }
-
-    #[test]
-    fn only_a_delivery_in_review_can_be_reviewed() {
-        let mut ok = write(Decision::Card).delivery(vec![]);
-        assert!(
-            ok.review(ReviewDecision::ReviewedOk, "admin", None)
-                .is_err()
-        );
-        assert_eq!(ok.status, DeliveryStatus::Ok);
-        assert!(ok.reviewed_by.is_none());
-    }
-
-    #[test]
-    fn the_audit_action_says_how_the_delivery_was_vouched_for() {
-        let mut w = write(Decision::Card);
-        assert_eq!(w.audit_parts(), ["create", "", ""]);
-        w.offline_claimed = true;
-        w.delivered_at_clamped = true;
-        assert_eq!(w.audit_parts(), ["create", "_offline", "_clamped"]);
-        let admin = write(Decision::AdminApproval);
-        assert_eq!(admin.audit_parts()[0], "admin_approval");
-        assert_eq!(admin.delivery(vec![]).approved_by.as_deref(), Some("vol"));
-    }
+pub(super) fn status_name(status: DeliveryStatus) -> String {
+    serde_json::to_value(status)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
 }

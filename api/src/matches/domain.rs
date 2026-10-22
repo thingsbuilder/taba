@@ -5,7 +5,7 @@
 use firestore::FirestoreInstant;
 use serde::Deserialize;
 
-use super::{
+use super::model::{
     DecidedBy, MAX_NOTE_CHARS, MatchDoc, MatchStatus, MediatorKind, forbidden, invalid_request,
 };
 use crate::auth::Volunteer;
@@ -176,7 +176,7 @@ fn percent_encode(text: &str) -> String {
 
 /// The first message to the family (spec 11.1), in the language they chose. It says nothing
 /// about where the person is. An unknown language gets Portuguese.
-fn whatsapp_message(language: &str) -> &'static str {
+pub(super) fn whatsapp_message(language: &str) -> &'static str {
     match language {
         "en" => {
             "Hello! This is about the search you registered on Taba. We found the person you are looking for and the contact with you was authorized. Can we talk here?"
@@ -196,182 +196,4 @@ pub(super) fn whatsapp_link(family: &Family) -> String {
         "https://wa.me/{digits}?text={}",
         percent_encode(whatsapp_message(&family.language))
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::auth::Membership;
-    use crate::store;
-    use crate::volunteers::VolunteerDoc;
-
-    fn volunteer(roles: &[GlobalRole], admin_of: &[(&str, Confirmation)]) -> Volunteer {
-        let now = store::now();
-        Volunteer {
-            id: "v".into(),
-            doc: VolunteerDoc {
-                name: "V".into(),
-                phone: None,
-                show_phone: false,
-                language: "pt-BR".into(),
-                global_roles: roles.to_vec(),
-                role_grants: vec![],
-                banned: false,
-                banned_by: None,
-                banned_at: None,
-                flagged: false,
-                flag_reasons: vec![],
-                created_at: now,
-                last_seen_at: now,
-            },
-            memberships: admin_of
-                .iter()
-                .map(|(shelter, confirmation)| Membership {
-                    shelter_id: shelter.to_string(),
-                    name: String::new(),
-                    role: ShelterRole::Admin,
-                    confirmation: *confirmation,
-                    event_id: None,
-                })
-                .collect(),
-            session_id: "s".into(),
-        }
-    }
-
-    fn open_match(kind: MediatorKind, shelter: Option<&str>) -> MatchDoc {
-        MatchDoc {
-            id: None,
-            search_id: "s".into(),
-            person_id: "p".into(),
-            is_child: kind == MediatorKind::Protection,
-            mediator_kind: kind,
-            mediator_shelter_id: shelter.map(str::to_string),
-            status: MatchStatus::Open,
-            decided_by: None,
-            decided_by_volunteer: None,
-            decided_at: None,
-            note: None,
-            created_at: store::now(),
-        }
-    }
-
-    #[test]
-    fn a_page_read_with_one_extra_row_is_cut_and_flagged_only_past_the_limit() {
-        for (rows, kept, more) in [(99, 99, false), (100, 100, false), (101, 100, true)] {
-            let (page, flag) = cap((0..rows).collect::<Vec<_>>(), 100);
-            assert_eq!((page.len(), flag), (kept, more), "{rows} rows");
-        }
-        // The first rows are the ones kept: the page is newest first.
-        assert_eq!(cap(vec![1, 2, 3], 2), (vec![1, 2], true));
-    }
-
-    /// Every queue a volunteer is sent to by `queues_of` is one they attend, and a match they
-    /// attend lives in one of those queues: nothing attended is out of reach of the listing.
-    #[test]
-    fn the_queues_listed_are_exactly_the_ones_attended() {
-        let volunteers = [
-            volunteer(&[GlobalRole::CivilDefense], &[]),
-            volunteer(&[GlobalRole::Mediator], &[]),
-            volunteer(&[GlobalRole::Protection], &[]),
-            volunteer(&[GlobalRole::Validator], &[]),
-            volunteer(&[], &[("a", Confirmation::Confirmed)]),
-            volunteer(&[], &[("a", Confirmation::Unconfirmed)]),
-            volunteer(&[], &[]),
-        ];
-        let matches = [
-            open_match(MediatorKind::Protection, None),
-            open_match(MediatorKind::Central, None),
-            open_match(MediatorKind::Shelter, Some("a")),
-            open_match(MediatorKind::Shelter, Some("b")),
-        ];
-        for v in &volunteers {
-            let queues = queues_of(v);
-            for m in &matches {
-                let reached = queues.iter().any(|(kind, shelter)| {
-                    *kind == m.mediator_kind
-                        && shelter
-                            .as_deref()
-                            .is_none_or(|s| m.mediator_shelter_id.as_deref() == Some(s))
-                });
-                assert_eq!(attends(v, m), reached, "{:?} {:?}", v.memberships, m);
-            }
-        }
-    }
-
-    #[test]
-    fn only_who_attends_decides_and_only_once() {
-        let admin = volunteer(&[], &[("a", Confirmation::Confirmed)]);
-        let other = volunteer(&[], &[("b", Confirmation::Confirmed)]);
-        let m = open_match(MediatorKind::Shelter, Some("a"));
-        let at = store::now();
-        let decide_as = |who: &Volunteer, m: MatchDoc| {
-            decide(who, m, Decision::Decline, DecidedBy::Person, None, at)
-        };
-        assert_eq!(decide_as(&other, m.clone()).unwrap_err().code, "forbidden");
-        let decided = decide_as(&admin, m).unwrap();
-        assert_eq!(
-            (
-                decided.status,
-                decided.decided_by,
-                decided.decided_by_volunteer.as_deref()
-            ),
-            (MatchStatus::Declined, Some(DecidedBy::Person), Some("v"))
-        );
-        // Deciding it again, whatever the decision, changes nothing and says so.
-        for decision in [Decision::Accept, Decision::Decline, Decision::NotThePerson] {
-            let again = decide(
-                &admin,
-                decided.clone(),
-                decision,
-                DecidedBy::Operator,
-                None,
-                at,
-            );
-            assert_eq!(again.unwrap_err().code, "match_already_decided");
-        }
-    }
-
-    #[test]
-    fn a_note_is_trimmed_and_bounded() {
-        assert_eq!(clean_note(None).unwrap(), None);
-        assert_eq!(clean_note(Some("  ".into())).unwrap(), None);
-        assert_eq!(
-            clean_note(Some(" ok ".into())).unwrap().as_deref(),
-            Some("ok")
-        );
-        assert!(clean_note(Some("x".repeat(MAX_NOTE_CHARS))).is_ok());
-        assert_eq!(
-            clean_note(Some("x".repeat(MAX_NOTE_CHARS + 1)))
-                .unwrap_err()
-                .code,
-            "invalid_request"
-        );
-    }
-
-    #[test]
-    fn the_whatsapp_link_keeps_only_the_digits_and_encodes_the_text() {
-        let family = |phone: &str, language: &str| Family {
-            name: "J".into(),
-            phone: phone.into(),
-            relationship: "x".into(),
-            language: language.into(),
-        };
-        let link = whatsapp_link(&family("+55 (51) 99999-0000", "en"));
-        let (head, text) = link.split_once("?text=").unwrap();
-        assert_eq!(head, "https://wa.me/5551999990000");
-        assert!(text.starts_with("Hello%21%20"));
-        assert!(
-            text.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"%-._~".contains(&b))
-        );
-        assert_ne!(whatsapp_message("pt-BR"), whatsapp_message("en"));
-        assert_ne!(whatsapp_message("es"), whatsapp_message("en"));
-        // no place, no shelter, no name in the first message
-        for language in ["pt-BR", "en", "es"] {
-            let text = whatsapp_message(language).to_lowercase();
-            assert!(
-                !text.contains("abrigo") && !text.contains("shelter") && !text.contains("refugio")
-            );
-        }
-    }
 }
