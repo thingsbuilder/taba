@@ -142,14 +142,17 @@ async fn release_lock(db: &FirestoreDb) -> Result<(), ApiError> {
     store::replace(db, STATE, LOCK_DOC, &lock).await
 }
 
-/// Deletions made on `day` (a date in `TZ_PILOT`), and the events whose dry run was already
-/// audited that day.
+/// Deletions made on `day` (a date in `TZ_PILOT`), the events whose dry run was already audited
+/// that day and whether the data without an event was counted.
 #[derive(Serialize, Deserialize, Default)]
 struct DailyDoc {
     day: String,
     deleted: u32,
     #[serde(default)]
     dry_run_logged: Vec<String>,
+    /// The data without an event was already counted today (it reads every old document).
+    #[serde(default)]
+    without_event_counted: bool,
 }
 
 async fn daily_doc(db: &FirestoreDb, day: &str) -> Result<DailyDoc, ApiError> {
@@ -576,8 +579,11 @@ impl<'a> Pass<'a> {
 
     /// Dry run only: searches, rescues and people with no event, older than `PURGE_AFTER_DAYS`.
     /// No event's end discards them and the pass does not delete them by age (pending decision of
-    /// the owner); they are counted under the id `no_event` of `purge.dry_run`.
+    /// the owner); they are counted under the id `no_event` of `purge.dry_run`, once a day.
     async fn count_without_event(&mut self) -> Result<(), ApiError> {
+        if daily_doc(self.db(), &self.day).await?.without_event_counted {
+            return Ok(());
+        }
         let cutoff = micros_ahead(
             self.now,
             -i64::from(self.state.config.purge_after_days) * DAY_MICROS,
@@ -588,7 +594,7 @@ impl<'a> Pass<'a> {
             (rescues::COLLECTION, "received_at", "rescues_without_event"),
             (people::COLLECTION, "updated_at", "people_without_event"),
         ] {
-            // ponytail: reads every old document of the collection (two fields) once an hour in a
+            // ponytail: reads every old document of the collection (two fields) once a day in a
             // dry run; add a null-event index if that shows in the bill.
             let old: Vec<WithoutEvent> = self
                 .db()
@@ -606,6 +612,16 @@ impl<'a> Pass<'a> {
                 bump(&mut counts, label, n);
             }
         }
+        let day = self.day.clone();
+        store::transact(self.db(), |db, tx| {
+            let day = day.clone();
+            Box::pin(async move {
+                let mut today = daily_doc(&db, &day).await?;
+                today.without_event_counted = true;
+                tx_replace(&db, tx, STATE, DAILY_DOC, &today)
+            })
+        })
+        .await?;
         if counts.is_empty() {
             return Ok(());
         }
@@ -1570,6 +1586,26 @@ mod tests {
             assert_eq!(dry[0]["counts"]["searches_without_event"], json!(1));
             assert_eq!(dry[0]["counts"]["rescues_without_event"], json!(1));
             assert_eq!(dry[0]["counts"]["people_without_event"], json!(1));
+
+            // The second pass of the day does not read them again: with the audit mark cleared, a
+            // new old search would show up in a second entry if it did.
+            let mut today = daily_doc(
+                &w.app.state.db,
+                &day_of(store::now(), &w.app.state.config.tz_pilot),
+            )
+            .await
+            .unwrap();
+            assert!(today.without_event_counted);
+            today.dry_run_logged.clear();
+            put(&w.app, STATE, DAILY_DOC, &today).await;
+            let mut late: SearchDoc = store::get(&w.app.state.db, searches::COLLECTION, &search)
+                .await
+                .unwrap()
+                .unwrap();
+            late.created_at = old;
+            put(&w.app, searches::COLLECTION, &new_id(), &late).await;
+            run(&w.app.state).await.unwrap();
+            assert_eq!(audited(&w.app, "purge.dry_run").await.len(), 1);
         }
     }
 

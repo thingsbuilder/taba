@@ -4,7 +4,7 @@
 
 - Base: LGPD, art. 38 (RIPD), e a [base legal](<base legal LGPD.md>) do projeto.
 - Versão: piloto (fases 0 a 6 da spec).
-- Estado da implementação: conferido contra o código final da fase 6 (versão 1.0.0 do app): o painel, a exportação do abrigo, o descarte em `purge_at` (com a chave `PURGE_ENABLED`) e as anomalias existem como descrito nas seções 7, 10 e 11. O que o código faz de diferente da spec está em [Pontos a confirmar](#14-pontos-a-confirmar).
+- Estado da implementação: conferido contra o código final da fase 6 (versão 1.0.0 do app): o painel, a exportação do abrigo, o descarte em `purge_at` (com a chave `PURGE_ENABLED`; dados sem evento ficam fora dele) e as anomalias existem como descrito nas seções 7, 10 e 11. O que o código faz de diferente da spec está em [Pontos a confirmar](#14-pontos-a-confirmar).
 
 ## 1. Identificação
 
@@ -145,8 +145,8 @@ Não há pesquisa livre por nome na rede (Q22).
 7. Só em `accept` o atendente recebe nome, telefone, parentesco e idioma da família e um link `wa.me` com mensagem pronta. A tela orienta apagar o número depois. A resposta com o contato não é guardada na tabela de idempotência (o código a substitui por `match_already_decided`).
 8. A localização da pessoa nunca é enviada automaticamente.
 9. **Link da família** (opcional): o operador gera um link de uso único válido por 12 horas. A família abre `/f/<code>` (público, sem login) e envia dados e fotos da própria galeria. A busca fica em nome do operador, com o limite diário, a auditoria e a mediação dele. O operador não lê o conteúdo enviado. Limites: no máximo 5 tentativas com falha por link; 20 envios por hora por aparelho e IP, 100 por hora por IP (contadores na memória do processo). O link só é consumido quando ao menos uma foto gerou token.
-10. Ao encerrar o evento, cada busca ativa sem match aceito gera o alerta `search_expiring` para quem a registrou, com a data do descarte e a orientação de procurar a delegacia e a Cruz Vermelha.
-11. A busca fica ativa até o descarte do evento do abrigo de origem. Todos os dados dela, inclusive o contato da família, são apagados no descarte (seção 10).
+10. Ao encerrar o evento, cada busca ativa desse evento sem match aceito gera o alerta `search_expiring` para quem a registrou, com a data do descarte e a orientação de procurar a delegacia e a Cruz Vermelha.
+11. A busca de um evento fica ativa até o descarte desse evento, e todos os dados dela, inclusive o contato da família, são apagados no descarte (seção 10). **Busca sem evento (`event_id` nulo) hoje não é descartada por idade:** nenhum fim de evento a alcança e nenhuma regra por idade existe (decisão pendente do dono, ponto 23 da seção 14).
 
 ## 9. Compartilhamento e suboperadores
 
@@ -164,7 +164,7 @@ Não há pesquisa livre por nome na rede (Q22).
 | Dado | Prazo | Mecanismo |
 |---|---|---|
 | Miniatura | Na hora em que `name` ou `wristband` for preenchido (mesma escrita). Quando todos os eventos da pessoa estiverem encerrados (tarefa horária). Pessoa sem evento nem abrigo: `PURGE_AFTER_DAYS` após a última alteração | `drop_thumbnail_if_identified`; `jobs.rs` (`person.thumbnail_purge` na auditoria) |
-| Pessoas, núcleos, cartões, resgates, buscas (com `person_ids` e contato da família), matches, alertas, memberships e abrigos do evento | `purge_at` = encerramento do evento + `PURGE_AFTER_DAYS` (30 dias). Pessoa só é apagada quando todos os seus eventos venceram | Tarefa horária de descarte (`purge.rs`) |
+| Pessoas, núcleos, cartões, resgates, buscas (com `person_ids` e contato da família), matches, alertas, memberships e abrigos do evento | `purge_at` = encerramento do evento + `PURGE_AFTER_DAYS` (30 dias). Pessoa só é apagada quando todos os seus eventos venceram | Tarefa horária de descarte (`purge.rs`). Não vale para buscas, resgates e pessoas sem evento (ver abaixo) |
 | Entregas | Pseudonimizadas no `purge_at`: somem `person_id` e `card_code`; `household_id` vira `household_pseudonym` aleatório por núcleo; somem também `delivered_by`, `approved_by`, `reviewed_by` e `review_note`; ficam abrigo (nome), item, escopo, quantidade, data e status. Apagadas em `delivery_purge_at` = encerramento + `DELIVERY_RETENTION_DAYS` (90 dias no piloto; com controlador, o prazo é dele) | Mesma tarefa |
 | Evento | Fica só com nome, datas e `stats`, `status = purged` | Mesma tarefa |
 | Perfil de voluntário | 365 dias após `last_seen_at`; banidos ficam | Mesma tarefa |
@@ -178,7 +178,7 @@ Não há pesquisa livre por nome na rede (Q22).
 
 **Quando o evento encerra:** por todos os abrigos fechados, ou por inatividade de `INACTIVITY_DAYS` (30). O evento encerrado não reabre.
 
-**Chave de segurança do descarte.** O descarte apaga de forma irreversível. A variável `PURGE_ENABLED` vem **desligada** (`false`). Desligada, a tarefa horária só conta o que apagaria (modo seco) e registra as contagens no log e na auditoria. O dono da instalação a liga (`purge_enabled: true` no inventário) depois de testar com um evento de teste. **Enquanto estiver desligada, nenhum dado vence.** O RIPD só vale como "descarte em 30 dias" depois que a chave for ligada.
+**Chave de segurança do descarte.** O descarte apaga de forma irreversível. A variável `PURGE_ENABLED` vem **desligada** (`false`). Desligada, a tarefa horária só conta o que apagaria (modo seco) e registra as contagens no log e na auditoria. O dono da instalação a liga (`purge_enabled: true` no inventário) depois de testar com um evento de teste. **Enquanto estiver desligada, nenhum dado vence.** O RIPD só vale como "descarte em 30 dias" depois que a chave for ligada, e mesmo ligada ela não alcança os dados sem evento. A contagem desses dados no modo seco roda uma vez por dia.
 
 Lotes de 400 escritas; a tarefa para ao passar de 15 000 exclusões no dia (cota da camada gratuita) e retoma na hora seguinte. O descarte de um evento grande pode levar mais de um dia.
 
@@ -238,7 +238,7 @@ Severidade (impacto no titular) e probabilidade são **avaliação técnica prel
 | R2 | Agressor usa a busca para achar a vítima | Alta | Média | Seção 11.2: resposta idêntica, mediação, contato só após aceite, sem localização automática, cota diária, auditoria | Baixo |
 | R3 | **Abrigo falso** capta dados de pessoas | Alta | Baixa | `unconfirmed` sem busca, mediação nem exportação; criador com liveness e banível; confirmação por validador ou aval presencial; alerta de proximidade | Baixo |
 | R4 | **Operador mal-intencionado** (voluntário credenciado) consulta ou copia dados | Alta | Média | Papéis mínimos; sem pesquisa livre por nome; auditoria em escrita e em acesso a miniatura e match; anomalias informativas; banimento; identificação por rosto | Médio. As anomalias só informam, não bloqueiam; ninguém monitora em tempo real. O estado das anomalias é em memória: um reinício da API o zera, e a sincronização da fila offline (vários registros de uma vez) pode gerar falso positivo |
-| R5 | **Vazamento** do Firestore ou das chaves | Alta | Baixa | Foto nunca guardada; token só como HMAC; miniatura cifrada; segredos fora do git; conta de serviço só com `roles/datastore.user`; descarte em 30 dias | Médio. Nome, necessidades de saúde, vulnerabilidades, telefone da família e `stays` ficam em claro no Firestore. Sem backup |
+| R5 | **Vazamento** do Firestore ou das chaves | Alta | Baixa | Foto nunca guardada; token só como HMAC; miniatura cifrada; segredos fora do git; conta de serviço só com `roles/datastore.user`; descarte em 30 dias do que pertence a um evento (dados sem evento ficam, ver seção 10) | Médio. Nome, necessidades de saúde, vulnerabilidades, telefone da família e `stays` ficam em claro no Firestore. Sem backup |
 | R6 | **Falso positivo de match** expõe contato da família a quem não é a pessoa, ou liga pessoas erradas | Média | Média | Mediador confere os dados com a pessoa antes de aceitar; `not_the_person`; só o aceite libera o contato; indicador no painel | Baixo |
 | R7 | **Coerção ao consentimento**: pessoa em abrigo sente que precisa dar a selfie para receber abrigo ou doação | Média | Média | Recusa tem caminho de primeira classe (`no_biometrics`); texto "Recusar a selfie não tira abrigo nem doação"; dois botões de mesmo peso; taxa de recusa por abrigo no painel; voluntário marca a base legal | Médio. Depende da conduta do voluntário |
 | R8 | Criança tratada sem o consentimento dos pais | Média | Alta | Base `child_protection` (art. 14, § 3º); alerta imediato para `protection`; saída só com responsável conferido ou com `protection`/DC; alertas de exceção à DC | Baixo |
@@ -246,7 +246,7 @@ Severidade (impacto no titular) e probabilidade são **avaliação técnica prel
 | R10 | **Perda ou roubo do aparelho** com sessões e cache de pessoas | Média | Média | Fotos cifradas; sessão de 7 dias; 5 PINs errados apagam a sessão (quando o PIN existir); banimento apaga sessões no servidor | **Alto enquanto o PIN estiver desligado.** O cache de pessoas e a fila (nome, contato da família) ficam em claro no celular |
 | R11 | **Perda dos dados do navegador** (Safari apaga IndexedDB após ~7 dias sem uso quando o app não está instalado) | Média | Média | Convite para instalar o app; `navigator.storage.persist()` | Médio. Cadastros offline ainda não enviados podem se perder |
 | R12 | **Retenção além do prazo**: descarte desligado (`PURGE_ENABLED=false`) ou falho; entradas de idempotência fora do descarte | Média | Média | Modo seco mostra o que apagaria; lotes e retomada; TTL de 7 dias na idempotência | Médio até o dono ligar a chave e testar |
-| R13 | **Uso secundário** (polícia, imigração) por pressão externa | Alta | Baixa | Nenhuma integração nem exportação para esses órgãos; descarte em 30 dias; texto de consentimento; CSV e painel sem identificação | Médio. Depende do controlador resistir a ordens; **A confirmar** |
+| R13 | **Uso secundário** (polícia, imigração) por pressão externa | Alta | Baixa | Nenhuma integração nem exportação para esses órgãos; descarte em 30 dias do que pertence a um evento; texto de consentimento; CSV e painel sem identificação | Médio. Depende do controlador resistir a ordens; **A confirmar** |
 | R14 | **Reidentificação por agregados pequenos** no CSV diário e no painel (um indígena num abrigo de 8 pessoas) | Média | Média | CSV sem nome nem `person_id` | Médio. Não há supressão de células pequenas: **A confirmar** |
 | R15 | **Transferência internacional** sem mecanismo do art. 33 | Média | Alta (no piloto) | Documentada; instância própria em `southamerica-east1`; mecanismo a definir com o controlador | Alto até o controlador definir |
 | R16 | Fornecedor (Unico) trata ou retém a foto além do necessário | Alta | Baixa | Servidor descarta a foto; Unico prevê descartar a selfie depois do token | Médio. Contrato e DPA: **A confirmar** |
@@ -287,6 +287,7 @@ Cada item é uma decisão do dono, uma divergência entre spec e código, ou um 
 20. **Limites das rotas públicas.** `POST /captures`, `POST /sessions` e convites não têm limite de taxa (Q15 adiada). Decidir se o piloto aceita.
 21. **Resistência a pedido de autoridade.** A recusa de repasse a polícia e imigração é uma regra de produto, não técnica. O controlador precisa assumi-la por escrito.
 22. **Indicador "processos da Unico por pessoa".** É uma estimativa: divide as capturas que ainda existem (documentos de vida curta) pelas pessoas do abrigo, e não a contagem cobrada pela Unico. Serve de ordem de grandeza; o consumo de créditos está no painel da Unico.
+23. **Dados sem evento.** Buscas sem `event_id`, resgates sem `event_id` e pessoas sem `event_ids` não são descartados por idade (seção 10). O dono decide a regra por idade e se a busca avisa a família (`search_expiring`) antes de apagar.
 
 ## 15. Aprovação
 
