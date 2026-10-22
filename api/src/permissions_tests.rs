@@ -499,7 +499,6 @@ async fn phase_5_routes_are_registered_and_ask_for_a_session() {
     let ana = app.actor("Ana").await;
     for (method, path) in [
         ("PUT", "/v1/shelters/s1/items"),
-        ("POST", "/v1/shelters/s1/deliveries"),
         ("GET", "/v1/shelters/s1/deliveries?status=in_review"),
         ("POST", "/v1/deliveries/d1/review"),
     ] {

@@ -46,3 +46,12 @@ Compartilhado e já pronto: `error.rs` (`liveness_required` 428, `admin_approval
 ## Regras de convivência
 
 As mesmas das fases 3 e 4: arquivos disjuntos, nada de refatoração fora da sua linha, commits pequenos em inglês, testes de concorrência onde a spec 6.2.4 pede, testes automáticos nunca chamam a Unico, nada da instalação no repo.
+
+## Decisões do engenheiro B (entrega)
+
+- **`offline: true` no corpo.** O app marca a entrega feita sem sinal (ou com o Unico degradado no cliente). Servidor: sem sorteio; item `high_value` sem `admin_approval` vira `in_review` com `liveness_unavailable`; com `admin_approval` por admin, `ok`. O servidor também lê `system/status`: em modo degradado vale a mesma regra. O corpo aceita campos desconhecidos.
+- **Idempotência pelo `id` do corpo.** O reenvio depois da selfie (`capture_id`) é chamada direta, sem `Idempotency-Key`: o mesmo `id` com o mesmo voluntário e abrigo devolve a mesma resposta `201`, sem consultar a Unico de novo; outro voluntário (ou outro abrigo) com o mesmo `id` recebe `409 delivery_id_taken`.
+- **`428 liveness_required`** traz `detail: {reason: "high_value" | "sample", admin_approval_only: bool}`; `admin_approval_only` é `true` para pessoa `no_biometrics` (a selfie não resolve: só a aprovação do admin).
+- **Revalidação que falha (`409 revalidation_failed`):** nenhuma entrega é gravada; a captura é consumida e a auditoria `delivery.revalidation_failed` é gravada.
+- **Janela de duplicidade:** duas entregas do item a menos de `period_days` de distância (em qualquer ordem, por causa da fila offline); `once_per_event` não tem janela. Só contam entregas de eventos ativos (ou sem evento).
+- **Auditoria:** `delivery.create` ou `delivery.admin_approval`, base `fraud_prevention`, com o `volunteer_id` de quem enviou (o admin, na aprovação): o nome sai do cadastro do voluntário, a auditoria não guarda nomes.
