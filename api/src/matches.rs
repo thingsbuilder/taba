@@ -276,6 +276,13 @@ pub async fn list_matches(
             "created_at": m.created_at.to_string(),
         }));
     }
+    if !listed.is_empty() {
+        // The listing names the missing persons: a read of match data (spec 4.10).
+        let entry = AuditEntry::new("match.list", "match_queue", &volunteer.id)
+            .by(&volunteer.id)
+            .basis(LegalBasis::VitalInterest);
+        audit_now(&state, entry).await?;
+    }
     Ok(Json(json!({ "matches": listed })))
 }
 
