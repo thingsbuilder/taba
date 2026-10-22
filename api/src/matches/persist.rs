@@ -7,7 +7,7 @@ use firestore::{FirestoreDb, path};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{COLLECTION, LIST_LIMIT, MatchDoc, MatchStatus, MediatorKind, match_not_found};
+use super::model::{COLLECTION, LIST_LIMIT, MatchDoc, MatchStatus, MediatorKind, match_not_found};
 use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
