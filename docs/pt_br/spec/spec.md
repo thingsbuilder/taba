@@ -395,7 +395,7 @@ Por evento e por abrigo:
 - indicadores do piloto: taxa de recusa da selfie [dec. k, C1]; matches `not_the_person` [dec. k, A6]; justificativas de "outro local" [dec. k, M7]; processos Unico por pessoa atendida;
 - abrigos aguardando aval.
 
-CSV diário para o boletim: `GET /v1/dashboard/events/{id}/daily.csv` (uma linha por abrigo, com as contagens acima; sem nome nem `person_id`). Contagens por agregação `count()` do Firestore. Como o aviso diz, cada recorte conta as pessoas que estão em abrigo agora (`current_shelter_id`); quem já saiu aparece nas saídas por destino. Os matches das filas central e de proteção são da rede, não do evento. "Processos Unico por pessoa" é uma estimativa a partir das capturas que ainda existem. `GET /dashboard/events` traz, por evento, os abrigos `unconfirmed` (`unconfirmed_shelters`: nome, posição, quem criou), que é onde um validador ou a Defesa Civil acha o que confirmar sem saber o ID. O painel guarda um cache de 30 s no servidor. A exportação do abrigo (`export.csv`) tem três seções (pessoas, núcleos, entregas), grava a auditoria `export.shelter` com `public_policy` e não tem BOM.
+CSV diário para o boletim: `GET /v1/dashboard/events/{id}/daily.csv` (uma linha por abrigo, com as contagens acima; sem nome nem `person_id`). Contagens por agregação `count()` do Firestore. Como o aviso diz, cada recorte conta as pessoas que estão em abrigo agora (`current_shelter_id`); quem já saiu aparece nas saídas por destino. Os matches das filas central e de proteção são da rede, não do evento. "Processos Unico por pessoa" é uma estimativa a partir das capturas que ainda existem. `GET /dashboard/events` traz, por evento, os abrigos `unconfirmed` (`unconfirmed_shelters`: nome, posição, quem criou), que é onde um validador ou a Defesa Civil acha o que confirmar sem saber o ID. O painel guarda um cache de 30 s no servidor. A exportação do abrigo (`export.csv`) tem três seções (pessoas, núcleos, entregas), grava a auditoria `export.shelter` com `public_policy` e não tem BOM. Cada seção lê no máximo 5000 linhas; se foi cortada, o CSV traz a linha `# warning,truncated,<seção>,<limite>` (por exemplo `# warning,truncated,people,5000`). O detalhe do painel traz `generated_at` (quando a resposta foi montada; o cache a serve por até 30 s), `complete` (`false` quando uma leitura limitada foi cortada) e `partial_indicators` (os indicadores que são só um subconjunto: `shelters`, `exits` ou `pets`); a lista de eventos traz `generated_at` e `complete`.
 
 Contatos de referência do evento (`reference_contacts: {civil_defense_phone, child_protection_phone}`) são definidos por DC ou validador (`PATCH /v1/events/{id}`) [dec. k].
 
@@ -820,7 +820,7 @@ Datas: `Timestamp`. `client_*` = hora do celular; sem prefixo = hora do servidor
 `at`, `volunteer_id?`, `device_id?`, `ip?`, `shelter_id?`, `action`, `target_kind`, `target_id`, `legal_basis?`, `lat?`, `lon?`, `taken_over_from?`, `expires_at` (TTL de 1 ano [dec. k, Q21]). Sem nome nem foto.
 
 ### `idempotency/{key}`
-`volunteer_id?`, `route`, `http_status`, `body`, `expires_at` (7 dias, TTL).
+`volunteer_id?`, `route`, `state` (`pending` | `done`; documento antigo sem `state` é `done`), `fingerprint` (resumo de método, caminho, query e corpo), `attempts` (quantas vezes a chave foi reivindicada; mais de uma = a reivindicação venceu sem recibo), `lease_until?` (enquanto `pending`, a reivindicação vale até aí; 60 s), `http_status`, `body`, `expires_at` (7 dias, TTL). A chave é reivindicada (`pending`) antes do handler rodar e vira `done` com a resposta `2xx`; uma recusa libera a reivindicação.
 
 `legal_basis` (enum): `consent` (art. 11, I) | `vital_interest` (art. 11, II, "e") | `fraud_prevention` (art. 11, II, "g") | `public_policy` (art. 11, II, "b") | `child_protection` (art. 14, § 3º) | `family_consent` (art. 7º, I).
 
@@ -829,6 +829,8 @@ Datas: `Timestamp`. `client_*` = hora do celular; sem prefixo = hora do servidor
 ## 8. API REST
 
 Base `https://<domain>/v1`. JSON. Autenticação `Authorization: Bearer <session>` exceto onde indicado "público". Rotas que escrevem aceitam `Idempotency-Key` (o app usa o `id` do item da fila) e `X-Device-Id`; chave repetida devolve a resposta gravada em `idempotency`. Rotas que dependem da Unico respondem `503 unico_degraded` em modo degradado.
+
+Erros de `Idempotency-Key`: a mesma chave de outro voluntário ou de outra rota → `422 idempotency_key_mismatch`; a mesma chave e rota com outro corpo → `409 idempotency_key_reused`; a mesma requisição enquanto a primeira ainda roda → espera a resposta dela e, passado o limite de espera, `503 idempotency_in_progress` com `Retry-After: 1` (o app tenta de novo). Chave malformada → `400 invalid_idempotency_key`.
 
 ### 8.1 Status, capturas e sessão
 | Método e rota | Auth | Corpo | Resposta |
@@ -879,11 +881,11 @@ Base `https://<domain>/v1`. JSON. Autenticação `Authorization: Bearer <session
 | Método e rota | Corpo | Resposta |
 |---|---|---|
 | `POST /shelters/{id}/checkins` | `{id, capture_id? \| photo_base64? \| no_biometrics: true, biometrics_declined?, data: {name?, social_name?, wristband?, birth_year?, is_child, child_status?, needs?, vulnerabilities?}, thumbnail_base64?, legal_basis: consent\|vital_interest\|child_protection, client_created_at}` | `201 {person_id, level, is_new, history}`; `422 no_face\|capture_inconclusive\|invalid_image` |
-| `GET /shelters/{id}/people` | — (membro) | pessoas com `current_shelter_id = id` (histórico por 4.11) |
-| `GET /shelters/{id}/people/needs-selfie` | — | `assisted` e `no_biometrics` sem recusa no abrigo |
+| `GET /shelters/{id}/people` | — (membro) | `{people, has_more}`: pessoas com `current_shelter_id = id` (histórico por 4.11), até 1000 por página, mais recentes primeiro; `has_more: true` quando há mais e não há cursor |
+| `GET /shelters/{id}/people/needs-selfie` | — | `{people, has_more}`: `assisted` e `no_biometrics` sem recusa no abrigo (mesmo limite; `has_more` vale para essa seleção) |
 | `GET /people/{person_id}` | — (4.11) | pessoa |
 | `PATCH /people/{person_id}` | `{data, client_edited_at}` | `200`; apaga a miniatura se `name` ou `wristband` vierem preenchidos; `child_status` só por `protection` ou DC |
-| `PUT /people/{person_id}/biometrics` | `{capture_id? \| photo_base64?}` | `200 {person_id, level}`; `422 no_face\|capture_inconclusive` |
+| `PUT /people/{person_id}/biometrics` | `{capture_id? \| photo_base64?}` | `200 {person_id, level}`; `422 no_face\|capture_inconclusive`; `422 merge_too_large` (`detail: {limit: 450}`: a fusão com um registro antigo mexeria em referências demais para uma transação; nada é gravado) |
 | `POST /people/{person_id}/guardians` | `{guardian_id, link: declared\|document_checked}` | `200`; `422 guardian_not_verified` |
 | `GET /people/{person_id}/thumbnail` | — (4.6) | `image/jpeg`, auditado |
 | `POST /shelters/{id}/exits` | `{person_id, exit_destination, destination_municipality?, guardian_id?, capture_id?, exception?: {reason}}` | `200`; `409 revalidation_failed`; `403 protection_role_required` |
@@ -898,7 +900,7 @@ Base `https://<domain>/v1`. JSON. Autenticação `Authorization: Bearer <session
 | Método e rota | Corpo | Resposta |
 |---|---|---|
 | `POST /shelters/{id}/deliveries` | `{id, card_code, person_id, item, quantity, delivered_at, capture_id?, admin_approval?: true}` | `201 {delivery_id, status, reasons}`; `428 liveness_required`; `409 revalidation_failed`; `403 admin_approval_required`; `404 card_not_found\|person_not_in_household` |
-| `GET /shelters/{id}/deliveries?status=` | — (admin) | lista |
+| `GET /shelters/{id}/deliveries?status=` | — (admin) | `{deliveries, has_more}`; `has_more: true` quando há mais do que cabe na página |
 | `POST /deliveries/{id}/review` | `{decision: reviewed_ok\|irregular, note}` (admin) | `200` |
 
 Na resposta de `POST /shelters/{id}/deliveries`, cada item de `reasons` traz `kind`, `previous_delivery_id?`, `previous_delivered_at?` e `previous_shelter_name?` (conforme a regra do item 6 de 3.5.3, 4.7). `PUT /shelters/{id}/items` responde `{items}`; `GET /shelters/{id}/deliveries` responde `{deliveries: [...]}` com nomes (`person_name`, `delivered_by_name`, `approved_by_name`), nunca o `person_id`.
@@ -911,7 +913,7 @@ Detalhes das entregas: o corpo aceita `offline: true` (entrega feita sem sinal o
 | `POST /rescues` | `{id, photo_base64?, lat, lon, accuracy, captured_at, data?: {name?, wristband?, note?}, landing_point?, destination_shelter_id?, thumbnail_base64?}` | `201 {rescue_id, person_id, level}` |
 | `PATCH /rescues/{id}` | `{landing_point?, destination_shelter_id?}` (autor) | `200` |
 | `POST /searches` | `{id, photos_base64: [1..5], missing_person: {name, nickname?, notes}, family: {name, phone, relationship, language}}` | `202 {message: "search_registered", usable_photos}` (igual com ou sem match); `429 search_limit` |
-| `GET /matches` | — | filas que o voluntário atende (4.8) |
+| `GET /matches` | — | `{matches, has_more}`: filas que o voluntário atende (4.8); cada fila lista no máximo 100 por status, e `has_more: true` diz que alguma passou disso |
 | `GET /matches/{id}` | — | detalhes para conferência, sem contato da família; `search_photos` = quantas fotos da família há para ver |
 | `GET /matches/{id}/search-photos/{n}` | — | foto `n` (0 a 4) que a família enviou, `no-store`; só quem atende o match, e só com o match aberto; auditado (`search_photo.view`) |
 | `POST /matches/{id}/decision` | `{decision: accept\|decline\|not_the_person, decided_by: person\|operator, note?}` | `200 {family?, whatsapp_link?}`; `409 match_already_decided` |
@@ -919,7 +921,7 @@ Detalhes das entregas: o corpo aceita `offline: true` (entrega feita sem sinal o
 ### 8.8 Painel, alertas, exportação
 | Método e rota | Auth | Resposta |
 |---|---|---|
-| `GET /dashboard/events` | Val, DC | eventos com contagens |
+| `GET /dashboard/events` | Val, DC | `{events, generated_at, complete}`: eventos com contagens; `complete: false` quando uma leitura limitada foi cortada |
 | `GET /dashboard/events/{id}` | Val, DC | 3.10 |
 | `GET /dashboard/events/{id}/daily.csv` | Val, DC | CSV diário para o boletim (3.10) |
 | `GET /alerts` | admin (dos seus abrigos, não informativos), `protection` (de proteção), DC (todos) | lista |

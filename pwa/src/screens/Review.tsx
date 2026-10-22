@@ -14,6 +14,7 @@ export function Review({ ctx, shelterId }: { ctx: AppContext; shelterId: string 
   const { active, api } = ctx
   const online = useOnline()
   const [list, setList] = useState<DeliveryView[] | null>(null)
+  const [hasMore, setHasMore] = useState(false)
   const [notes, setNotes] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
   const isAdmin = !!active && roleIn(active, shelterId) === 'admin'
@@ -21,7 +22,10 @@ export function Review({ ctx, shelterId }: { ctx: AppContext; shelterId: string 
   const load = async () => {
     if (!active) return
     const res = await api.listDeliveries(active.secret, shelterId, 'in_review')
-    if (res.ok) setList(res.data.deliveries)
+    if (res.ok) {
+      setList(res.data.deliveries)
+      setHasMore(res.data.has_more === true)
+    }
     else setError(t(reviewErrorKey(res.status) ?? errorKey(res.error)))
   }
   useEffect(() => {
@@ -46,6 +50,7 @@ export function Review({ ctx, shelterId }: { ctx: AppContext; shelterId: string 
       <h1 class="title">{t('review.title')}</h1>
       {!online && <p class="notice notice-warning" role="status">{t('review.needs_signal')}</p>}
       {error && <p class="notice notice-error" role="alert">{error}</p>}
+      {hasMore && <p class="notice notice-warning" role="status">{t('review.has_more')}</p>}
       {list?.length === 0 && <p class="body" role="status">{t('review.empty')}</p>}
       {list?.map((d) => (
         <section class="card notice-warning" key={d.id}>

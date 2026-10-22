@@ -51,7 +51,7 @@ it('the screens\' own errors have their own texts', () => {
 })
 
 it('gives every phase 4 code its own text in Portuguese and English', () => {
-  for (const code of ['search_limit', 'match_already_decided', 'event_closed', 'search_link_invalid', 'too_many_requests', 'rescue_not_found', 'search_id_taken', 'liveness_required', 'admin_approval_required', 'person_not_in_household', 'card_not_found', 'delivery_not_found', 'delivery_not_in_review', 'delivery_id_taken']) {
+  for (const code of ['search_limit', 'match_already_decided', 'event_closed', 'search_link_invalid', 'too_many_requests', 'rescue_not_found', 'search_id_taken', 'liveness_required', 'admin_approval_required', 'person_not_in_household', 'card_not_found', 'delivery_not_found', 'delivery_not_in_review', 'delivery_id_taken', 'idempotency_key_reused', 'idempotency_in_progress', 'merge_too_large']) {
     const key = errorKey(code)
     expect(key, code).not.toBe('error.generic')
     expect(ptBR, key).toHaveProperty([key])

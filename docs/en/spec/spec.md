@@ -395,7 +395,7 @@ Per event and per shelter:
 - pilot indicators: selfie refusal rate [dec. k, C1]; `not_the_person` matches [dec. k, A6]; "other site" justifications [dec. k, M7]; Unico processes per person served;
 - shelters awaiting endorsement.
 
-Daily CSV for the bulletin: `GET /v1/dashboard/events/{id}/daily.csv` (one row per shelter, with the counts above; no name or `person_id`). Counts via Firestore `count()` aggregation. As the notice says, each cut counts the people who are in a shelter now (`current_shelter_id`); whoever already left shows in the exits by destination. The matches of the central and protection queues belong to the network, not to the event. "Unico processes per person" is an estimate from the captures that still exist. `GET /dashboard/events` carries, per event, the `unconfirmed` shelters (`unconfirmed_shelters`: name, position, who created it), which is where a validator or the Civil Defense finds what to confirm without knowing an id. The dashboard keeps a 30 s cache on the server. The shelter export (`export.csv`) has three sections (people, households, deliveries), writes the `export.shelter` audit with `public_policy` and has no BOM.
+Daily CSV for the bulletin: `GET /v1/dashboard/events/{id}/daily.csv` (one row per shelter, with the counts above; no name or `person_id`). Counts via Firestore `count()` aggregation. As the notice says, each cut counts the people who are in a shelter now (`current_shelter_id`); whoever already left shows in the exits by destination. The matches of the central and protection queues belong to the network, not to the event. "Unico processes per person" is an estimate from the captures that still exist. `GET /dashboard/events` carries, per event, the `unconfirmed` shelters (`unconfirmed_shelters`: name, position, who created it), which is where a validator or the Civil Defense finds what to confirm without knowing an id. The dashboard keeps a 30 s cache on the server. The shelter export (`export.csv`) has three sections (people, households, deliveries), writes the `export.shelter` audit with `public_policy` and has no BOM. Each section reads at most 5000 rows; if one was cut, the CSV carries the line `# warning,truncated,<section>,<limit>` (for example `# warning,truncated,people,5000`). The dashboard detail carries `generated_at` (when the answer was built; the cache serves it for up to 30 s), `complete` (`false` when a bounded read was cut) and `partial_indicators` (the indicators that are only a subset: `shelters`, `exits` or `pets`); the events list carries `generated_at` and `complete`.
 
 The event's reference contacts (`reference_contacts: {civil_defense_phone, child_protection_phone}`) are set by Civil Defense or a validator (`PATCH /v1/events/{id}`) [dec. k].
 
@@ -820,7 +820,7 @@ Dates: `Timestamp`. `client_*` = phone time; no prefix = server time.
 `at`, `volunteer_id?`, `device_id?`, `ip?`, `shelter_id?`, `action`, `target_kind`, `target_id`, `legal_basis?`, `lat?`, `lon?`, `taken_over_from?`, `expires_at` (1-year TTL [dec. k, Q21]). No name and no photo.
 
 ### `idempotency/{key}`
-`volunteer_id?`, `route`, `http_status`, `body`, `expires_at` (7 days, TTL).
+`volunteer_id?`, `route`, `state` (`pending` | `done`; an old document without `state` is `done`), `fingerprint` (digest of method, path, query and body), `attempts` (how many times the key was claimed; more than one means a claim lapsed without a receipt), `lease_until?` (while `pending`, the claim holds until then; 60 s), `http_status`, `body`, `expires_at` (7 days, TTL). The key is claimed (`pending`) before the handler runs and becomes `done` with the `2xx` response; a refusal releases the claim.
 
 `legal_basis` (enum): `consent` (art. 11, I) | `vital_interest` (art. 11, II, "e") | `fraud_prevention` (art. 11, II, "g") | `public_policy` (art. 11, II, "b") | `child_protection` (art. 14, § 3) | `family_consent` (art. 7, I).
 
@@ -829,6 +829,8 @@ Dates: `Timestamp`. `client_*` = phone time; no prefix = server time.
 ## 8. REST API
 
 Base `https://<domain>/v1`. JSON. Authentication `Authorization: Bearer <session>` except where marked "public". Routes that write accept `Idempotency-Key` (the app uses the queue item's `id`) and `X-Device-Id`; a repeated key returns the response stored in `idempotency`. Routes that depend on Unico respond `503 unico_degraded` in degraded mode.
+
+`Idempotency-Key` errors: the same key from another volunteer or for another route → `422 idempotency_key_mismatch`; the same key and route with another body → `409 idempotency_key_reused`; the same request while the first still runs → waits for its response and, past the wait limit, `503 idempotency_in_progress` with `Retry-After: 1` (the app tries again). A malformed key → `400 invalid_idempotency_key`.
 
 ### 8.1 Status, captures and session
 | Method and route | Auth | Body | Response |
@@ -879,11 +881,11 @@ Base `https://<domain>/v1`. JSON. Authentication `Authorization: Bearer <session
 | Method and route | Body | Response |
 |---|---|---|
 | `POST /shelters/{id}/checkins` | `{id, capture_id? \| photo_base64? \| no_biometrics: true, biometrics_declined?, data: {name?, social_name?, wristband?, birth_year?, is_child, child_status?, needs?, vulnerabilities?}, thumbnail_base64?, legal_basis: consent\|vital_interest\|child_protection, client_created_at}` | `201 {person_id, level, is_new, history}`; `422 no_face\|capture_inconclusive\|invalid_image` |
-| `GET /shelters/{id}/people` | — (member) | people with `current_shelter_id = id` (history per 4.11) |
-| `GET /shelters/{id}/people/needs-selfie` | — | `assisted` and `no_biometrics` without refusal at the shelter |
+| `GET /shelters/{id}/people` | — (member) | `{people, has_more}`: people with `current_shelter_id = id` (history per 4.11), up to 1000 per page, most recent first; `has_more: true` when there are more and there is no cursor |
+| `GET /shelters/{id}/people/needs-selfie` | — | `{people, has_more}`: `assisted` and `no_biometrics` without refusal at the shelter (same limit; `has_more` is about this selection) |
 | `GET /people/{person_id}` | — (4.11) | person |
 | `PATCH /people/{person_id}` | `{data, client_edited_at}` | `200`; deletes the thumbnail if `name` or `wristband` come filled in; `child_status` only by `protection` or DC |
-| `PUT /people/{person_id}/biometrics` | `{capture_id? \| photo_base64?}` | `200 {person_id, level}`; `422 no_face\|capture_inconclusive` |
+| `PUT /people/{person_id}/biometrics` | `{capture_id? \| photo_base64?}` | `200 {person_id, level}`; `422 no_face\|capture_inconclusive`; `422 merge_too_large` (`detail: {limit: 450}`: the fusion with an old record would touch too many references for one transaction; nothing is written) |
 | `POST /people/{person_id}/guardians` | `{guardian_id, link: declared\|document_checked}` | `200`; `422 guardian_not_verified` |
 | `GET /people/{person_id}/thumbnail` | — (4.6) | `image/jpeg`, audited |
 | `POST /shelters/{id}/exits` | `{person_id, exit_destination, destination_municipality?, guardian_id?, capture_id?, exception?: {reason}}` | `200`; `409 revalidation_failed`; `403 protection_role_required` |
@@ -898,7 +900,7 @@ Base `https://<domain>/v1`. JSON. Authentication `Authorization: Bearer <session
 | Method and route | Body | Response |
 |---|---|---|
 | `POST /shelters/{id}/deliveries` | `{id, card_code, person_id, item, quantity, delivered_at, capture_id?, admin_approval?: true}` | `201 {delivery_id, status, reasons}`; `428 liveness_required`; `409 revalidation_failed`; `403 admin_approval_required`; `404 card_not_found\|person_not_in_household` |
-| `GET /shelters/{id}/deliveries?status=` | — (admin) | list |
+| `GET /shelters/{id}/deliveries?status=` | — (admin) | `{deliveries, has_more}`; `has_more: true` when there are more than the page holds |
 | `POST /deliveries/{id}/review` | `{decision: reviewed_ok\|irregular, note}` (admin) | `200` |
 
 In the response of `POST /shelters/{id}/deliveries`, each item of `reasons` carries `kind`, `previous_delivery_id?`, `previous_delivered_at?` and `previous_shelter_name?` (per the rule of item 6 of 3.5.3, 4.7). `PUT /shelters/{id}/items` answers `{items}`; `GET /shelters/{id}/deliveries` answers `{deliveries: [...]}` with names (`person_name`, `delivered_by_name`, `approved_by_name`), never the `person_id`.
@@ -911,7 +913,7 @@ Delivery details: the body accepts `offline: true` (a delivery made without sign
 | `POST /rescues` | `{id, photo_base64?, lat, lon, accuracy, captured_at, data?: {name?, wristband?, note?}, landing_point?, destination_shelter_id?, thumbnail_base64?}` | `201 {rescue_id, person_id, level}` |
 | `PATCH /rescues/{id}` | `{landing_point?, destination_shelter_id?}` (author) | `200` |
 | `POST /searches` | `{id, photos_base64: [1..5], missing_person: {name, nickname?, notes}, family: {name, phone, relationship, language}}` | `202 {message: "search_registered", usable_photos}` (same with or without a match); `429 search_limit` |
-| `GET /matches` | — | queues the volunteer handles (4.8) |
+| `GET /matches` | — | `{matches, has_more}`: queues the volunteer handles (4.8); each queue lists at most 100 per status, and `has_more: true` says one went past that |
 | `GET /matches/{id}` | — | details for checking, without the family's contact; `search_photos` = how many family photos there are to see |
 | `GET /matches/{id}/search-photos/{n}` | — | photo `n` (0 to 4) the family sent, `no-store`; only who attends the match, and only while it is open; audited (`search_photo.view`) |
 | `POST /matches/{id}/decision` | `{decision: accept\|decline\|not_the_person, decided_by: person\|operator, note?}` | `200 {family?, whatsapp_link?}`; `409 match_already_decided` |
@@ -919,7 +921,7 @@ Delivery details: the body accepts `offline: true` (a delivery made without sign
 ### 8.8 Dashboard, alerts, export
 | Method and route | Auth | Response |
 |---|---|---|
-| `GET /dashboard/events` | Val, DC | events with counts |
+| `GET /dashboard/events` | Val, DC | `{events, generated_at, complete}`: events with counts; `complete: false` when a bounded read was cut |
 | `GET /dashboard/events/{id}` | Val, DC | 3.10 |
 | `GET /dashboard/events/{id}/daily.csv` | Val, DC | daily CSV for the bulletin (3.10) |
 | `GET /alerts` | admin (of their shelters, non-informational), `protection` (protection alerts), DC (all) | list |

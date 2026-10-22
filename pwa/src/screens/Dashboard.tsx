@@ -3,7 +3,7 @@ import type { AlertView } from '../api'
 import type { EventDashboard, EventList } from '../api-phase6'
 import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
-import { ANOMALY_KINDS, anomaliesOf, canSeeDashboard, dashboardErrorKey, formatDecimal, formatGeneratedAt, formatNumber, formatRatio, saveCsv } from '../dashboard'
+import { ANOMALY_KINDS, anomaliesOf, canSeeDashboard, dashboardErrorKey, formatDecimal, formatGeneratedAt, formatNumber, formatRatio, partialNotice, saveCsv } from '../dashboard'
 import { logEvent } from '../diagnostics'
 import { useOnline } from '../hooks'
 import { getLanguage, t } from '../i18n'
@@ -99,7 +99,7 @@ export function Dashboard({ ctx }: { ctx: AppContext }) {
       {online && error && <p class="notice notice-error" role="alert">{t(error)}</p>}
       {online && !error && !events && <p class="body" role="status">{t('dashboard.loading')}</p>}
       {online && events && events.length === 0 && <p class="body">{t('dashboard.no_events')}</p>}
-      {online && list && !list.complete && <p class="notice notice-error" role="alert">{t('dashboard.list_partial')}</p>}
+      {online && list && list.complete === false && <p class="notice notice-error" role="alert">{t('dashboard.list_partial')}</p>}
       {online && events && events.length > 0 && (
         <>
           <label class="field">
@@ -139,12 +139,8 @@ export function Dashboard({ ctx }: { ctx: AppContext }) {
           {!data && !error && <p class="body" role="status">{t('dashboard.loading')}</p>}
           {data && totals && (
             <>
-              <p class="caption">{t('dashboard.updated_at', { time: formatGeneratedAt(data.generated_at) })}</p>
-              {!data.complete && (
-                <p class="notice notice-error" role="alert">
-                  {t('dashboard.partial', { what: data.partial_indicators.map((k) => t(`dashboard.partial.${k}`)).join(', ') })}
-                </p>
-              )}
+              {data.generated_at && <p class="caption">{t('dashboard.updated_at', { time: formatGeneratedAt(data.generated_at) })}</p>}
+              {partialNotice(data) && <p class="notice notice-error" role="alert">{partialNotice(data)}</p>}
               <button type="button" class="button" disabled={busy} onClick={() => void downloadDaily()}>{t('dashboard.daily_csv')}</button>
 
               <Block title={t('dashboard.people')}>

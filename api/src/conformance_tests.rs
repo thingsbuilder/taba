@@ -128,19 +128,41 @@ const READ_AUDIT: &[(&str, &str, &str)] = &[
     ("GET", "/v1/people/{person_id}/thumbnail", "thumbnail.view"),
 ];
 
-/// The source of every module, test modules left out.
+/// The source of every module under `src/`, test modules left out (`conformance_tests.rs` and
+/// every `tests.rs` are test code; the others are cut at their `#[cfg(test)]` module). The name is
+/// the path relative to `src/`.
 fn sources() -> Vec<(String, String)> {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    std::fs::read_dir(dir)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "rs"))
-        .filter(|p| !p.to_string_lossy().ends_with("conformance_tests.rs"))
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = vec![];
+    walk(&root, &mut files);
+    files.sort();
+    files
+        .into_iter()
+        .filter(|p| {
+            let name = p.file_name().unwrap();
+            name != "conformance_tests.rs" && name != "tests.rs"
+        })
         .map(|p| {
             let text = std::fs::read_to_string(&p).unwrap();
             // Test modules close each file: the action has to be in the code that runs.
             let production = text.split("#[cfg(test)]\nmod ").next().unwrap().to_string();
-            (p.file_name().unwrap().to_string_lossy().into(), production)
+            (
+                p.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                production,
+            )
         })
         .collect()
 }
