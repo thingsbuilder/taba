@@ -665,6 +665,7 @@ Na VM, lidas de `/etc/taba/env`; em desenvolvimento, de `.env` criado a partir d
 | `DELIVERY_SAMPLE_RATE` | 0.05 | [dec. k, Q41] |
 | `ANOMALY_CHECKINS_PER_10MIN` | 30 | [dec. k, Q39] |
 | `ANOMALY_RESCUES_PER_10MIN` | 100 | [dec. k, Q39] |
+| `PURGE_ENABLED` | `false` | O descarte (10.1.2) apaga de verdade só com `true`; desligado, a tarefa horária apenas conta o que apagaria (modo seco) |
 
 #### 6.2.3 Formato de erro
 `{"error": "<stable_code>", "detail": {...}}`. O app traduz o código; o servidor não traduz texto. Mensagens de log em inglês [dec. j].

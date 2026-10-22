@@ -665,6 +665,7 @@ On the VM, read from `/etc/taba/env`; in development, from `.env` created from `
 | `DELIVERY_SAMPLE_RATE` | 0.05 | [dec. k, Q41] |
 | `ANOMALY_CHECKINS_PER_10MIN` | 30 | [dec. k, Q39] |
 | `ANOMALY_RESCUES_PER_10MIN` | 100 | [dec. k, Q39] |
+| `PURGE_ENABLED` | `false` | The discard (10.1.2) deletes for real only with `true`; off, the hourly task only counts what it would delete (dry run) |
 
 #### 6.2.3 Error format
 `{"error": "<stable_code>", "detail": {...}}`. The app translates the code; the server does not translate text. Log messages in English [dec. j].
