@@ -46,9 +46,11 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,woff2,svg,png,webmanifest}'],
+        // /sobre is a static landing page, not part of the offline app.
+        globIgnores: ['sobre/**'],
         navigateFallback: '/index.html',
         // The API is never an app-shell route: /v1/* always goes to the network.
-        navigateFallbackDenylist: [/^\/v1\//],
+        navigateFallbackDenylist: [/^\/v1\//, /^\/sobre(\/|$)/],
         cleanupOutdatedCaches: true,
       },
     }),
