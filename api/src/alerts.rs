@@ -16,9 +16,10 @@ use crate::store::{self, fs_error, tx_create, tx_replace};
 use crate::volunteers::GlobalRole;
 
 pub const COLLECTION: &str = "alerts";
-/// A page of one listing; recipients are filtered in memory.
-// ponytail: alerts are filtered per recipient after the query. Fine for a pilot's volume; add a
-// `shelter_ids` array-contains query per admin shelter if the open alerts ever pass a few hundred.
+/// The most alerts one source returns (see `Source`): its newest `LIST_LIMIT` open ones.
+// ponytail: each source is queried for its own recipients, so other recipients' alerts never push
+// one out; a single source holding more than 200 open alerts leaves its oldest out of the listing.
+// Add a cursor if one shelter, or the Civil Defense, ever keeps more than that open.
 const LIST_LIMIT: u32 = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,12 +47,29 @@ pub enum AlertKind {
 }
 
 impl AlertKind {
-    /// The snake_case name the kind is stored under.
+    /// The snake_case name the kind is stored under; a test keeps it equal to the serde name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ShelterFlagged => "shelter_flagged",
+            Self::EventOverlap => "event_overlap",
+            Self::VolunteerRemoved => "volunteer_removed",
+            Self::EndorserFlagged => "endorser_flagged",
+            Self::ChildSeparated => "child_separated",
+            Self::RevalidationFailed => "revalidation_failed",
+            Self::ExceptionalExit => "exceptional_exit",
+            Self::HouseholdConflict => "household_conflict",
+            Self::UnicoLimit => "unico_limit",
+            Self::SearchExpiring => "search_expiring",
+            Self::FamilySearchReceived => "family_search_received",
+            Self::AnomalyVolume => "anomaly_volume",
+            Self::AnomalyDistance => "anomaly_distance",
+            Self::OutOfArea => "out_of_area",
+        }
+    }
+
+    /// Kept for callers outside this module (audit actions).
     pub fn name(self) -> String {
-        serde_json::to_value(self)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_default()
+        self.as_str().to_string()
     }
 
     /// Kinds that only the volunteers in `volunteer_ids` receive and resolve, not even the Civil
@@ -69,6 +87,14 @@ impl AlertKind {
         )
     }
 }
+
+/// The kinds a validator who is not Civil Defense receives (`is_recipient`).
+const VALIDATOR_KINDS: [AlertKind; 4] = [
+    AlertKind::EndorserFlagged,
+    AlertKind::AnomalyVolume,
+    AlertKind::AnomalyDistance,
+    AlertKind::OutOfArea,
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlertDoc {
@@ -205,37 +231,90 @@ fn can_receive_any(volunteer: &Volunteer) -> bool {
         || !volunteer.memberships.is_empty()
 }
 
-/// The open alerts that name the volunteer in `volunteer_ids`.
-async fn open_alerts_about(
+/// One way into the alerts a volunteer may receive. Each is a query by recipient, run before the
+/// limit, so alerts of other recipients cannot crowd a recipient's own out of the page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Source {
+    /// Everything raised for the Civil Defense.
+    CivilDefense,
+    /// The kinds only validators and the Civil Defense read.
+    ValidatorKinds,
+    Protection,
+    /// The non-informational alerts of a shelter the volunteer administers.
+    Shelter(String),
+    /// The alerts that name the volunteer in `volunteer_ids`.
+    Personal,
+}
+
+impl Source {
+    /// Whether the source's query returns `alert` for `volunteer_id`; mirrors `open_from`. Kept
+    /// for the reachability test, which cannot run the queries over every combination.
+    #[cfg(test)]
+    fn admits(&self, alert: &AlertDoc, volunteer_id: &str) -> bool {
+        match self {
+            Self::CivilDefense => alert.for_civil_defense,
+            Self::ValidatorKinds => VALIDATOR_KINDS.contains(&alert.kind),
+            Self::Protection => alert.for_protection,
+            Self::Shelter(id) => !alert.informational && alert.shelter_ids.contains(id),
+            Self::Personal => alert.volunteer_ids.iter().any(|v| v == volunteer_id),
+        }
+    }
+}
+
+fn sources_of(volunteer: &Volunteer) -> Vec<Source> {
+    let mut sources = vec![Source::Personal];
+    if volunteer.has_global(GlobalRole::CivilDefense) {
+        sources.push(Source::CivilDefense);
+    } else if volunteer.has_global(GlobalRole::Validator) {
+        sources.push(Source::ValidatorKinds);
+    }
+    if volunteer.has_global(GlobalRole::Protection) {
+        sources.push(Source::Protection);
+    }
+    sources.extend(
+        volunteer
+            .memberships
+            .iter()
+            .filter(|m| volunteer.is_admin_of(&m.shelter_id))
+            .map(|m| Source::Shelter(m.shelter_id.clone())),
+    );
+    sources
+}
+
+/// The newest `LIST_LIMIT` open alerts of one source.
+async fn open_from(
     db: &FirestoreDb,
+    source: &Source,
     volunteer_id: &str,
 ) -> Result<Vec<AlertDoc>, ApiError> {
     db.fluent()
         .select()
         .from(COLLECTION)
         .filter(|q| {
-            q.for_all([
-                q.field(path!(AlertDoc::resolved)).eq(false),
-                q.field(path!(AlertDoc::volunteer_ids))
-                    .array_contains(volunteer_id),
-            ])
-        })
-        .limit(LIST_LIMIT)
-        .obj()
-        .query()
-        .await
-        .map_err(fs_error)
-}
-
-async fn open_alerts(db: &FirestoreDb, informational: bool) -> Result<Vec<AlertDoc>, ApiError> {
-    db.fluent()
-        .select()
-        .from(COLLECTION)
-        .filter(|q| {
-            q.for_all([
-                q.field(path!(AlertDoc::resolved)).eq(false),
-                q.field(path!(AlertDoc::informational)).eq(informational),
-            ])
+            let open = q.field(path!(AlertDoc::resolved)).eq(false);
+            match source {
+                Source::CivilDefense => {
+                    q.for_all([open, q.field(path!(AlertDoc::for_civil_defense)).eq(true)])
+                }
+                Source::ValidatorKinds => q.for_all([
+                    open,
+                    q.field(path!(AlertDoc::kind))
+                        .is_in(VALIDATOR_KINDS.map(AlertKind::as_str).to_vec()),
+                ]),
+                Source::Protection => {
+                    q.for_all([open, q.field(path!(AlertDoc::for_protection)).eq(true)])
+                }
+                Source::Shelter(id) => q.for_all([
+                    open,
+                    q.field(path!(AlertDoc::informational)).eq(false),
+                    q.field(path!(AlertDoc::shelter_ids)).array_contains(id),
+                ]),
+                Source::Personal => q.for_all([
+                    open,
+                    q.field(path!(AlertDoc::volunteer_ids))
+                        .array_contains(volunteer_id),
+                ]),
+            }
         })
         .order_by([(
             path!(AlertDoc::created_at),
@@ -248,6 +327,19 @@ async fn open_alerts(db: &FirestoreDb, informational: bool) -> Result<Vec<AlertD
         .map_err(fs_error)
 }
 
+/// The open alerts `volunteer` receives: the union of their sources, without repeats, newest first
+/// (ties by id), then the final `is_recipient` check.
+fn arrange(mut alerts: Vec<AlertDoc>, volunteer: &Volunteer) -> Vec<AlertDoc> {
+    alerts.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    alerts.dedup_by(|a, b| a.id == b.id);
+    alerts.retain(|alert| is_recipient(volunteer, alert));
+    alerts
+}
+
 pub async fn get_alerts(
     State(state): State<AppState>,
     volunteer: Volunteer,
@@ -255,21 +347,11 @@ pub async fn get_alerts(
     if !can_receive_any(&volunteer) {
         return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden"));
     }
-    let mut alerts = open_alerts(&state.db, false).await?;
-    if volunteer.is_validator_or_civil_defense() {
-        alerts.extend(open_alerts(&state.db, true).await?);
+    let mut found = vec![];
+    for source in sources_of(&volunteer) {
+        found.extend(open_from(&state.db, &source, &volunteer.id).await?);
     }
-    for own in open_alerts_about(&state.db, &volunteer.id).await? {
-        if !alerts.iter().any(|a| a.id == own.id) {
-            alerts.push(own);
-        }
-    }
-    alerts.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    let visible: Vec<Value> = alerts
-        .iter()
-        .filter(|alert| is_recipient(&volunteer, alert))
-        .map(view)
-        .collect();
+    let visible: Vec<Value> = arrange(found, &volunteer).iter().map(view).collect();
     Ok(Json(json!({ "alerts": visible })))
 }
 
@@ -639,16 +721,178 @@ mod tests {
         assert_eq!(all_docs(&w.app.state.db, COLLECTION).await.len(), 1);
     }
 
+    const ALL_KINDS: [AlertKind; 14] = [
+        AlertKind::ShelterFlagged,
+        AlertKind::EventOverlap,
+        AlertKind::VolunteerRemoved,
+        AlertKind::EndorserFlagged,
+        AlertKind::ChildSeparated,
+        AlertKind::RevalidationFailed,
+        AlertKind::ExceptionalExit,
+        AlertKind::HouseholdConflict,
+        AlertKind::UnicoLimit,
+        AlertKind::SearchExpiring,
+        AlertKind::FamilySearchReceived,
+        AlertKind::AnomalyVolume,
+        AlertKind::AnomalyDistance,
+        AlertKind::OutOfArea,
+    ];
+
     #[test]
-    fn alerts_serialize_with_the_documented_kind_names() {
-        let kinds = [
-            (AlertKind::ShelterFlagged, "shelter_flagged"),
-            (AlertKind::EventOverlap, "event_overlap"),
-            (AlertKind::VolunteerRemoved, "volunteer_removed"),
-            (AlertKind::EndorserFlagged, "endorser_flagged"),
-        ];
-        for (kind, name) in kinds {
-            assert_eq!(serde_json::to_value(kind).unwrap(), json!(name));
+    fn the_kind_name_is_the_serde_name_of_every_variant() {
+        for kind in ALL_KINDS {
+            assert_eq!(
+                serde_json::to_value(kind).unwrap(),
+                json!(kind.as_str()),
+                "{kind:?}"
+            );
         }
+    }
+
+    fn viewer(id: &str, roles: &[GlobalRole], admin_of: &[&str], member_of: &[&str]) -> Volunteer {
+        use crate::auth::Membership;
+        use crate::members::ShelterRole;
+        use crate::shelters::Confirmation;
+        let now = store::now();
+        let membership = |shelter: &&str, role| Membership {
+            shelter_id: shelter.to_string(),
+            name: String::new(),
+            role,
+            confirmation: Confirmation::Confirmed,
+            event_id: None,
+        };
+        Volunteer {
+            id: id.into(),
+            doc: crate::volunteers::VolunteerDoc {
+                name: "V".into(),
+                phone: None,
+                show_phone: false,
+                language: "pt-BR".into(),
+                global_roles: roles.to_vec(),
+                role_grants: vec![],
+                banned: false,
+                banned_by: None,
+                banned_at: None,
+                flagged: false,
+                flag_reasons: vec![],
+                created_at: now,
+                last_seen_at: now,
+            },
+            memberships: admin_of
+                .iter()
+                .map(|s| membership(s, ShelterRole::Admin))
+                .chain(
+                    member_of
+                        .iter()
+                        .map(|s| membership(s, ShelterRole::Volunteer)),
+                )
+                .collect(),
+            session_id: "s".into(),
+        }
+    }
+
+    #[test]
+    fn every_alert_a_volunteer_receives_is_reachable_by_one_of_their_sources() {
+        let volunteers = [
+            viewer("cd", &[GlobalRole::CivilDefense], &[], &[]),
+            viewer("validator", &[GlobalRole::Validator], &[], &[]),
+            viewer("protection", &[GlobalRole::Protection], &[], &[]),
+            viewer("mediator", &[GlobalRole::Mediator], &[], &[]),
+            viewer("admin", &[], &["a"], &["b"]),
+            viewer("member", &[], &[], &["a"]),
+            viewer("stranger", &[], &[], &[]),
+        ];
+        let mut received = 0;
+        for kind in ALL_KINDS {
+            for informational in [false, true] {
+                for for_protection in [false, true] {
+                    for shelters in [vec![], vec!["a".to_string()], vec!["b".to_string()]] {
+                        for about in [vec![], vec!["admin".to_string()], vec!["cd".to_string()]] {
+                            let mut alert = AlertDoc::new(kind, "t", "t", json!({}));
+                            alert.informational = informational;
+                            alert.for_protection = for_protection;
+                            alert.shelter_ids = shelters.clone();
+                            alert.volunteer_ids = about.clone();
+                            // As `new` and `personal` build them: only personal kinds skip the Civil Defense.
+                            alert.for_civil_defense = !kind.is_personal();
+                            for volunteer in &volunteers {
+                                if !is_recipient(volunteer, &alert) {
+                                    continue;
+                                }
+                                received += 1;
+                                assert!(
+                                    sources_of(volunteer)
+                                        .iter()
+                                        .any(|s| s.admits(&alert, &volunteer.id)),
+                                    "{} cannot reach {alert:?}",
+                                    volunteer.id
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(received > 100);
+    }
+
+    #[test]
+    fn an_alert_reached_by_two_sources_is_listed_once_newest_first() {
+        let now = store::now();
+        let mut older = alert_for(&["a"]);
+        older.created_at = now;
+        let mut newer = alert_for(&["a"]);
+        newer.created_at = store::now();
+        let mut tie = newer.clone();
+        let (older_id, newer_id, tie_id) = ("1".to_string(), "2".to_string(), "3".to_string());
+        older.id = Some(older_id.clone());
+        newer.id = Some(newer_id.clone());
+        tie.id = Some(tie_id.clone());
+        // The Civil Defense admin of shelter A is reached through both sources.
+        let volunteer = viewer("both", &[GlobalRole::CivilDefense], &["a"], &[]);
+        let found = vec![
+            older.clone(),
+            newer.clone(),
+            older.clone(),
+            tie.clone(),
+            newer.clone(),
+        ];
+        let ids: Vec<_> = arrange(found, &volunteer)
+            .into_iter()
+            .map(|a| a.id.unwrap())
+            .collect();
+        assert_eq!(ids, [newer_id, tie_id, older_id]);
+    }
+
+    /// More open alerts of other recipients than the page holds; the ones listed are still found.
+    #[tokio::test]
+    async fn alerts_for_a_recipient_are_not_pushed_out_by_other_recipients_alerts() {
+        let w = world().await;
+        let protection_officer = w.app.actor("Prot").await;
+        w.app
+            .grant(&protection_officer, GlobalRole::Protection)
+            .await;
+        let validator = w.app.actor("Val").await;
+        w.app.grant(&validator, GlobalRole::Validator).await;
+
+        let mut separated = AlertDoc::new(AlertKind::ChildSeparated, "child", "c1", json!({}))
+            .for_shelters(vec![w.shelter_a.clone()]);
+        separated.for_protection = true;
+        let separated = seed(&w.app, separated).await;
+        let mut anomaly = AlertDoc::new(AlertKind::AnomalyVolume, "volunteer", "v1", json!({}))
+            .about_volunteers(vec!["someone".into()]);
+        anomaly.informational = true;
+        let anomaly = seed(&w.app, anomaly).await;
+        let expiring = seed(&w.app, personal(AlertKind::SearchExpiring, &w.volunteer_a)).await;
+        for _ in 0..=LIST_LIMIT {
+            seed(&w.app, alert_for(&[&w.shelter_b])).await;
+        }
+
+        assert_eq!(listed(&w.app, &w.admin_a).await, [separated.clone()]);
+        assert_eq!(listed(&w.app, &protection_officer).await, [separated]);
+        assert_eq!(listed(&w.app, &validator).await, [anomaly]);
+        assert_eq!(listed(&w.app, &w.volunteer_a).await, [expiring]);
+        // A source holding more than the limit lists its newest `LIST_LIMIT` (the ponytail above).
+        assert_eq!(listed(&w.app, &w.admin_b).await.len(), LIST_LIMIT as usize);
     }
 }
