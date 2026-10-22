@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AlertView } from './api'
 import { anomaliesOf, canSeeDashboard, formatNumber, formatRatio, saveCsv } from './dashboard'
-import { setLanguage } from './i18n'
+import { setLanguage, t } from './i18n'
 
 const alert = (kind: string, over: Partial<AlertView> = {}): AlertView => ({
   id: kind, kind, informational: true, target_kind: 'shelter', target_id: 's', event_id: 'e1', shelter_ids: [], volunteer_ids: [], detail: {}, created_at: '', resolved: false, ...over,
@@ -24,6 +24,16 @@ describe('dashboard helpers', () => {
     setLanguage('en')
     expect(formatNumber(1234567)).toBe('1,234,567')
     expect(formatRatio(0.125)).toBe('12.5%')
+  })
+
+  it('labels the household and animal cuts as those created at the shelter, and the Unico ratio as an estimate', () => {
+    expect(t('dashboard.households')).toContain('criados neste abrigo')
+    expect(t('dashboard.pets')).toContain('criados neste abrigo')
+    expect(t('dashboard.unico_per_person')).toContain('estimativa')
+    setLanguage('en')
+    expect(t('dashboard.households')).toContain('created at this shelter')
+    expect(t('dashboard.pets')).toContain('created at this shelter')
+    expect(t('dashboard.unico_per_person')).toContain('estimate')
   })
 
   it('keeps only open anomaly alerts of the event', () => {

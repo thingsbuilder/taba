@@ -93,7 +93,7 @@ export function Dashboard({ ctx }: { ctx: AppContext }) {
     <main class="screen">
       <BackLink />
       <h1 class="title">{t('dashboard.title')}</h1>
-      <p class="notice" role="note">{data?.notice ?? t('dashboard.notice')}</p>
+      <p class="notice" role="note">{t('dashboard.notice')}</p>
       {!online && <p class="notice notice-error" role="alert">{t('dashboard.offline')}</p>}
       {online && error && <p class="notice notice-error" role="alert">{t(error)}</p>}
       {online && !error && !events && <p class="body" role="status">{t('dashboard.loading')}</p>}
