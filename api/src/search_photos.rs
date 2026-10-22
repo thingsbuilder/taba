@@ -91,9 +91,35 @@ pub fn write(
     Ok(n)
 }
 
-/// Keeps the photos of a search that has an open match. Skips (writes nothing) when the search is
-/// gone or already has photos, or when no match of it is open any more (it was decided while the
-/// photos waited to be written).
+/// Whether the person of the search was found: one of its matches was accepted and none is open.
+/// Declined and `not_the_person` matches do not count, the search stays active for other people.
+/// `deciding` is a match whose new status is not written yet.
+pub async fn found(
+    db: &FirestoreDb,
+    search_id: &str,
+    deciding: Option<(&str, MatchStatus)>,
+) -> Result<bool, ApiError> {
+    let all: Vec<MatchDoc> = db
+        .fluent()
+        .select()
+        .from(matches::COLLECTION)
+        .filter(|q| q.for_all([q.field(path!(MatchDoc::search_id)).eq(search_id)]))
+        .obj()
+        .query()
+        .await
+        .map_err(fs_error)?;
+    let statuses: Vec<MatchStatus> = all
+        .iter()
+        .map(|m| match deciding {
+            Some((id, status)) if m.id.as_deref() == Some(id) => status,
+            _ => m.status,
+        })
+        .collect();
+    Ok(statuses.contains(&MatchStatus::Accepted) && !statuses.contains(&MatchStatus::Open))
+}
+
+/// Keeps the photos of an active search. Skips (writes nothing) when the search is gone, closed,
+/// already has photos or was found while the photos waited to be written.
 async fn keep(
     db: &FirestoreDb,
     key: &[u8],
@@ -108,25 +134,10 @@ async fn keep(
             else {
                 return Ok(());
             };
-            if search.status != SearchStatus::Active || search.retained_photos > 0 {
-                return Ok(());
-            }
-            let open: Vec<MatchDoc> = db
-                .fluent()
-                .select()
-                .from(matches::COLLECTION)
-                .filter(|q| {
-                    q.for_all([
-                        q.field(path!(MatchDoc::search_id)).eq(search_id.as_str()),
-                        q.field(path!(MatchDoc::status)).eq(MatchStatus::Open),
-                    ])
-                })
-                .limit(1)
-                .obj()
-                .query()
-                .await
-                .map_err(fs_error)?;
-            if open.is_empty() {
+            if search.status != SearchStatus::Active
+                || search.retained_photos > 0
+                || found(&db, &search_id, None).await?
+            {
                 return Ok(());
             }
             search.retained_photos = write(&db, tx, &key, &search_id, &photos)?;

@@ -2740,26 +2740,10 @@ async fn wait_for_photos(app: &TestApp, n: usize) -> Vec<crate::search_photos::P
 }
 
 #[tokio::test]
-async fn the_family_photos_are_kept_only_for_a_search_with_a_match_and_erased_on_the_decision() {
+async fn the_family_photos_of_every_active_search_are_kept_and_a_later_match_shows_them() {
     let s = scene().await;
-    // A search nobody matches keeps nothing.
-    let (status, _) = jpeg_search(&s.app, &s.admin, "tok-nobody", &new_id()).await;
-    assert_eq!(status, StatusCode::ACCEPTED);
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(crate::search_photos::all(&s.app.state.db).await.is_empty());
-
-    // Someone is at the shelter; a search for them has a match and keeps the image, encrypted
-    // (the second "photo" is not an image and is not kept).
-    let (status, body) = checkin_photo(
-        &s.app,
-        &s.volunteer,
-        &s.shelter,
-        "tok-here",
-        json!({ "data": { "name": "Ana" } }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    let (status, _) = jpeg_search(&s.app, &s.admin, "tok-here", &new_id()).await;
+    // A search nobody matches yet keeps its image (the second "photo" is not an image).
+    let (status, _) = jpeg_search(&s.app, &s.admin, "tok-later", &new_id()).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     let kept = wait_for_photos(&s.app, 1).await;
     assert!(
@@ -2770,8 +2754,21 @@ async fn the_family_photos_are_kept_only_for_a_search_with_a_match_and_erased_on
             .windows(4)
             .any(|w| w == &FAMILY_JPEG[..4])
     );
+    assert!(
+        matches_of(&s.app, &s.admin).await.is_empty(),
+        "no match yet: nothing to see"
+    );
 
-    // The attendant of the queue sees it; a plain volunteer does not.
+    // The person turns up afterwards: the match shows the photos to who attends it.
+    let (status, body) = checkin_photo(
+        &s.app,
+        &s.volunteer,
+        &s.shelter,
+        "tok-later",
+        json!({ "data": { "name": "Ana" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
     let listed = matches_of(&s.app, &s.admin).await;
     let id = listed[0]["id"].as_str().unwrap().to_string();
     let (status, view) = call(&s.app, &s.admin, "GET", &format!("/v1/matches/{id}"), None).await;
@@ -2786,7 +2783,7 @@ async fn the_family_photos_are_kept_only_for_a_search_with_a_match_and_erased_on
         StatusCode::FORBIDDEN
     );
 
-    // The decision erases it.
+    // A decline keeps them: the search stays active for other people.
     let (status, body) = call(
         &s.app,
         &s.admin,
@@ -2796,7 +2793,37 @@ async fn the_family_photos_are_kept_only_for_a_search_with_a_match_and_erased_on
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(crate::search_photos::all(&s.app.state.db).await.is_empty());
+    assert_eq!(crate::search_photos::all(&s.app.state.db).await.len(), 1);
+
+    // Another search whose person is found and accepted: its photos go, the first search's stay.
+    let (status, body) = checkin_photo(
+        &s.app,
+        &s.volunteer,
+        &s.shelter,
+        "tok-found",
+        json!({ "data": { "name": "Bia" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, _) = jpeg_search(&s.app, &s.admin, "tok-found", &new_id()).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    wait_for_photos(&s.app, 2).await;
+    let open = matches_of(&s.app, &s.admin)
+        .await
+        .into_iter()
+        .find(|m| m["status"] == "open")
+        .unwrap();
+    let found = open["id"].as_str().unwrap();
+    let (status, body) = call(
+        &s.app,
+        &s.admin,
+        "POST",
+        &format!("/v1/matches/{found}/decision"),
+        Some(json!({ "decision": "accept", "decided_by": "person" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(crate::search_photos::all(&s.app.state.db).await.len(), 1);
 }
 
 #[tokio::test]

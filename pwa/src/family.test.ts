@@ -25,7 +25,7 @@ describe('family page language', () => {
     expect(ft('pt-BR', 'error_offline')).toBe('Sem sinal. Tente de novo.')
   })
   it('says in the consent what is kept, who sees it and that police and immigration never get it', () => {
-    expect(ft('pt-BR', 'consent_stored')).toContain('só até a equipe conferir o rosto')
+    expect(ft('pt-BR', 'consent_stored')).toContain('enquanto a busca estiver ativa (no máximo 30 dias)')
     expect(ft('pt-BR', 'consent_no_police')).toMatch(/polícia.*imigração/)
     expect(ft('en', 'consent_no_police')).toMatch(/police.*immigration/)
     expect(ft('es', 'consent_no_police')).toMatch(/policía.*inmigración/)

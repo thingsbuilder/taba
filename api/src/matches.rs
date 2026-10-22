@@ -576,27 +576,13 @@ pub async fn post_decision(
             tx_replace(&db, tx, COLLECTION, &match_id, &m)?;
             let entry = match_audit(decision.action(), &volunteer, &m, ("match", &match_id));
             audit::add(&db, tx, &entry)?;
-            // The family's photos stay while any other match of the search is still open.
-            let others_open: Vec<MatchDoc> = db
-                .fluent()
-                .select()
-                .from(COLLECTION)
-                .filter(|q| {
-                    q.for_all([
-                        q.field(path!(MatchDoc::search_id)).eq(m.search_id.as_str()),
-                        q.field(path!(MatchDoc::status)).eq(MatchStatus::Open),
-                    ])
-                })
-                .obj()
-                .query()
-                .await
-                .map_err(fs_error)?;
-            // `others_open` still has this match: its own status is not written yet.
-            if others_open.len() <= 1 {
+            // The family's photos go when the person is found: a match accepted and none open.
+            // A decline keeps them: the search stays active for other people (spec 4.8).
+            if search_photos::found(&db, &m.search_id, Some((&match_id, m.status))).await? {
                 if let Some(mut search) =
                     store::get::<SearchDoc>(&db, searches::COLLECTION, &m.search_id).await?
                 {
-                    search_photos::discard(&db, tx, &m.search_id, &mut search, "decided")?;
+                    search_photos::discard(&db, tx, &m.search_id, &mut search, "found")?;
                 }
             }
             Ok(family)
@@ -1222,8 +1208,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_decision_erases_the_photos_of_the_last_open_match() {
-        for decision in ["accept", "decline", "not_the_person"] {
+    async fn accepting_the_last_open_match_erases_the_photos_and_a_decline_keeps_them() {
+        for (decision, erased) in [
+            ("accept", true),
+            ("decline", false),
+            ("not_the_person", false),
+        ] {
             let w = world().await;
             let id = seed(
                 &w.app,
@@ -1234,20 +1224,18 @@ mod tests {
             )
             .await;
             let search_id = keep_photos(&w.app, &id, &[JPEG.to_vec(), JPEG.to_vec()]).await;
-            assert_eq!(search_photos::all(&w.app.state.db).await.len(), 2);
             assert_eq!(
                 decide(&w.app, &w.admin_a, &id, decision).await.0,
                 StatusCode::OK
             );
-            assert!(
-                search_photos::all(&w.app.state.db).await.is_empty(),
-                "{decision}"
-            );
+            let left = search_photos::all(&w.app.state.db).await.len();
+            assert_eq!(left, if erased { 0 } else { 2 }, "{decision}");
             let search: SearchDoc = store::get(&w.app.state.db, searches::COLLECTION, &search_id)
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(search.retained_photos, 0);
+            assert_eq!(search.retained_photos, if erased { 0 } else { 2 });
+            // Nobody sees them once the match is decided, kept or not.
             assert_eq!(
                 raw_get(
                     &w.app,
@@ -1259,16 +1247,14 @@ mod tests {
                 StatusCode::NOT_FOUND
             );
             assert_eq!(
-                audit_of(&w.app, "search_photos.discard.decided")
-                    .await
-                    .len(),
-                1
+                audit_of(&w.app, "search_photos.discard.found").await.len(),
+                usize::from(erased)
             );
         }
     }
 
     #[tokio::test]
-    async fn the_photos_stay_while_another_match_of_the_search_is_open() {
+    async fn the_photos_stay_until_a_match_is_accepted_and_none_is_open() {
         let w = world().await;
         let first = seed(
             &w.app,
@@ -1278,18 +1264,20 @@ mod tests {
             "en",
         )
         .await;
-        let search_id = keep_photos(&w.app, &first, &[JPEG.to_vec()]).await;
+        keep_photos(&w.app, &first, &[JPEG.to_vec()]).await;
         let mut second = stored(&w.app, &first).await;
         second.person_id = "another-person".into();
         store::replace(&w.app.state.db, COLLECTION, "second-match", &second)
             .await
             .unwrap();
 
+        // Accepted, but another match is still open.
         assert_eq!(
-            decide(&w.app, &w.admin_a, &first, "decline").await.0,
+            decide(&w.app, &w.admin_a, &first, "accept").await.0,
             StatusCode::OK
         );
         assert_eq!(search_photos::all(&w.app.state.db).await.len(), 1);
+        // The last open one is declined: someone was found, the photos go.
         assert_eq!(
             decide(&w.app, &w.admin_a, "second-match", "decline")
                 .await
@@ -1297,7 +1285,6 @@ mod tests {
             StatusCode::OK
         );
         assert!(search_photos::all(&w.app.state.db).await.is_empty());
-        let _ = search_id;
     }
 
     #[tokio::test]

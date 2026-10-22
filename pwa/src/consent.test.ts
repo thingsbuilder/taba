@@ -39,10 +39,10 @@ describe('the consent screen in three languages', () => {
   })
 
   it.each([
-    ['pt-BR', ptBR, /só até a equipe conferir/],
-    ['en', en, /only until the team checks/],
-    ['es', es, /solo hasta que el equipo compruebe/],
-  ] as const)('%s tells the family their photos are kept only until the check', (_lang, dict, kept) => {
+    ['pt-BR', ptBR, /enquanto a busca estiver ativa \(no máximo 30 dias\)/],
+    ['en', en, /while the search is active \(30 days at most\)/],
+    ['es', es, /mientras la búsqueda esté activa \(30 días como máximo\)/],
+  ] as const)('%s tells the family their photos are kept while the search is active, 30 days at most', (_lang, dict, kept) => {
     expect((dict as Record<string, string>)['family.consent_stored']).toMatch(kept)
   })
 
