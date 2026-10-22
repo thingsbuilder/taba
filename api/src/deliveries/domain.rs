@@ -315,10 +315,10 @@ impl Write {
         }
     }
 
-    /// What the audit says besides the delivery: the offline claim the server believed and a clock cut.
-    pub fn audit_action(&self) -> String {
-        format!(
-            "delivery.{}{}{}",
+    /// What the audit says besides the delivery, as the three parts of `delivery.{}{}{}`: how it
+    /// was vouched for, the offline claim the server believed and a clock cut.
+    pub fn audit_parts(&self) -> [&'static str; 3] {
+        [
             if self.decision == Decision::AdminApproval {
                 "admin_approval"
             } else {
@@ -330,7 +330,7 @@ impl Write {
             } else {
                 ""
             },
-        )
+        ]
     }
 }
 
@@ -688,12 +688,12 @@ mod tests {
     #[test]
     fn the_audit_action_says_how_the_delivery_was_vouched_for() {
         let mut w = write(Decision::Card);
-        assert_eq!(w.audit_action(), "delivery.create");
+        assert_eq!(w.audit_parts(), ["create", "", ""]);
         w.offline_claimed = true;
         w.delivered_at_clamped = true;
-        assert_eq!(w.audit_action(), "delivery.create_offline_clamped");
+        assert_eq!(w.audit_parts(), ["create", "_offline", "_clamped"]);
         let admin = write(Decision::AdminApproval);
-        assert_eq!(admin.audit_action(), "delivery.admin_approval");
+        assert_eq!(admin.audit_parts()[0], "admin_approval");
         assert_eq!(admin.delivery(vec![]).approved_by.as_deref(), Some("vol"));
     }
 }

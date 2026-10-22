@@ -11,7 +11,7 @@ use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::store::{self, tx_replace};
-use crate::volunteers::{COLLECTION as VOLUNTEERS, GlobalRole, RoleGrant, VolunteerDoc};
+use crate::volunteers::{COLLECTION as VOLUNTEERS, GlobalRole, VolunteerDoc};
 
 #[derive(Debug, Deserialize)]
 pub struct RoleRequest {
@@ -50,19 +50,8 @@ async fn change(
             let mut doc: VolunteerDoc = store::get(&db, VOLUNTEERS, &target)
                 .await?
                 .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "volunteer_not_found"))?;
-            if doc.global_roles.contains(&role) == grant {
+            if !doc.set_role(role, grant, &by, store::now()) {
                 return Ok(());
-            }
-            if grant {
-                doc.global_roles.push(role);
-                doc.role_grants.push(RoleGrant {
-                    role,
-                    by: by.clone(),
-                    at: store::now(),
-                });
-            } else {
-                doc.global_roles.retain(|r| *r != role);
-                doc.role_grants.retain(|g| g.role != role);
             }
             tx_replace(&db, tx, VOLUNTEERS, &target, &doc)?;
             let verb = if grant { "grant" } else { "revoke" };

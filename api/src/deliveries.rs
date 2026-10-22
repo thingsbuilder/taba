@@ -190,14 +190,19 @@ async fn record(
 
     let reasons = w.reasons(find_duplicate(db, w).await?);
     let doc = w.delivery(reasons);
+    let parts = w.audit_parts();
     tx_create(db, tx, COLLECTION, &w.id, &doc)?;
     audit::add(
         db,
         tx,
-        &AuditEntry::new(w.audit_action(), "delivery", &w.id)
-            .by(&w.volunteer_id)
-            .in_shelter(&w.shelter_id)
-            .basis(LegalBasis::FraudPrevention),
+        &AuditEntry::new(
+            format!("delivery.{}{}{}", parts[0], parts[1], parts[2]),
+            "delivery",
+            &w.id,
+        )
+        .by(&w.volunteer_id)
+        .in_shelter(&w.shelter_id)
+        .basis(LegalBasis::FraudPrevention),
     )?;
     Ok(doc)
 }

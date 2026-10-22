@@ -51,6 +51,20 @@ pub struct CardDoc {
     pub replaced_by: Option<String>,
 }
 
+impl CardDoc {
+    /// Cancels the card; `false` means it already was, so the first cancel (its time and
+    /// `replaced_by`) stays and nothing is written.
+    fn cancel(&mut self, replaced_by: Option<String>, at: FirestoreInstant) -> bool {
+        if self.status == CardStatus::Canceled {
+            return false;
+        }
+        self.status = CardStatus::Canceled;
+        self.canceled_at = Some(at);
+        self.replaced_by = replaced_by;
+        true
+    }
+}
+
 // ---- code ----
 
 const CODE_LEN: usize = 8;
@@ -236,9 +250,7 @@ pub async fn cancel_card(
             }
             crate::events::ensure_shelter_open(&db, &shelter).await?;
             let at = now();
-            card.status = CardStatus::Canceled;
-            card.canceled_at = Some(at);
-            card.replaced_by = replaced_by;
+            card.cancel(replaced_by, at);
             tx_replace(&db, tx, COLLECTION, &code, &card)?;
             if household.card_code.as_deref() == Some(code.as_str()) {
                 household.card_code = None;
@@ -310,6 +322,28 @@ mod tests {
     async fn one_household(w: &World) -> String {
         let ana = person(&w.app, "Ana", Some(&w.a)).await;
         household(&w.app, &w.vol_a, &w.a, &[&ana]).await
+    }
+
+    /// A repeated cancel does not repeat its effect: the first time and substitute stay.
+    #[test]
+    fn canceling_twice_keeps_the_first_cancel() {
+        let at = now();
+        let later = FirestoreInstant::from_microsecond(at.as_microsecond() + 1_000_000).unwrap();
+        let mut card = CardDoc {
+            code: Some("ABCD2345".into()),
+            household_id: "h".into(),
+            shelter_id: "s".into(),
+            status: CardStatus::Active,
+            issued_by: "v".into(),
+            client_issued_at: at,
+            created_at: at,
+            canceled_at: None,
+            replaced_by: None,
+        };
+        assert!(card.cancel(Some("WXYZ2345".into()), at));
+        assert!(!card.cancel(None, later));
+        assert_eq!(card.canceled_at, Some(at));
+        assert_eq!(card.replaced_by.as_deref(), Some("WXYZ2345"));
     }
 
     #[test]

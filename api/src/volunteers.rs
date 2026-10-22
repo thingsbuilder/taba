@@ -131,6 +131,34 @@ impl VolunteerDoc {
     }
 }
 
+impl VolunteerDoc {
+    /// Grants (`grant`) or revokes `role`, recording who granted it. `false` means the volunteer
+    /// already was in that state and nothing changed: repeating a change adds no second grant.
+    pub fn set_role(
+        &mut self,
+        role: GlobalRole,
+        grant: bool,
+        by: &str,
+        at: FirestoreInstant,
+    ) -> bool {
+        if self.global_roles.contains(&role) == grant {
+            return false;
+        }
+        if grant {
+            self.global_roles.push(role);
+            self.role_grants.push(RoleGrant {
+                role,
+                by: by.to_string(),
+                at,
+            });
+        } else {
+            self.global_roles.retain(|r| *r != role);
+            self.role_grants.retain(|g| g.role != role);
+        }
+        true
+    }
+}
+
 /// What the app may see of a profile.
 pub fn view(id: &str, doc: &VolunteerDoc) -> Value {
     json!({
@@ -170,24 +198,33 @@ pub struct ProfilePatch {
     language: Option<String>,
 }
 
+impl ProfilePatch {
+    /// Changes only the fields the patch names. On an invalid field `doc` may be half changed, so
+    /// callers patch a copy.
+    fn apply(&self, doc: &mut VolunteerDoc) -> Result<(), ApiError> {
+        if let Some(name) = &self.name {
+            doc.name = valid_name(name)?;
+        }
+        if let Some(phone) = &self.phone {
+            doc.phone = phone.as_deref().map(valid_phone).transpose()?.flatten();
+        }
+        if let Some(show_phone) = self.show_phone {
+            doc.show_phone = show_phone;
+        }
+        if let Some(language) = &self.language {
+            doc.language = valid_language(language)?;
+        }
+        Ok(())
+    }
+}
+
 pub async fn patch_me(
     State(state): State<AppState>,
     mut volunteer: Volunteer,
     Json(patch): Json<ProfilePatch>,
 ) -> Result<Json<Value>, ApiError> {
     let mut doc = volunteer.doc.clone();
-    if let Some(name) = &patch.name {
-        doc.name = valid_name(name)?;
-    }
-    if let Some(phone) = &patch.phone {
-        doc.phone = phone.as_deref().map(valid_phone).transpose()?.flatten();
-    }
-    if let Some(show_phone) = patch.show_phone {
-        doc.show_phone = show_phone;
-    }
-    if let Some(language) = &patch.language {
-        doc.language = valid_language(language)?;
-    }
+    patch.apply(&mut doc)?;
 
     let entry = AuditEntry::new("volunteer.update", "volunteer", &volunteer.id)
         .basis(LegalBasis::FraudPrevention)
@@ -224,6 +261,73 @@ mod tests {
     use super::*;
     use crate::members::{Change, change_role};
     use crate::test_support::{TestApp, audit_actions};
+
+    // ---- the document (no database) ----
+
+    fn doc() -> VolunteerDoc {
+        VolunteerDoc::from_profile(&ProfileInput {
+            name: "Ana".into(),
+            phone: Some("5551999990000".into()),
+            show_phone: true,
+            language: "pt-BR".into(),
+        })
+        .unwrap()
+    }
+
+    fn patch_of(body: Value) -> ProfilePatch {
+        serde_json::from_value(body).unwrap()
+    }
+
+    /// A repeated item does not repeat its effect: granting a role twice leaves one grant, and
+    /// revoking twice (or something never granted) changes nothing.
+    #[test]
+    fn a_role_is_granted_and_revoked_once_whatever_the_repetition() {
+        let at = crate::store::now();
+        let mut volunteer = doc();
+        assert!(volunteer.set_role(GlobalRole::Mediator, true, "validator", at));
+        assert!(!volunteer.set_role(GlobalRole::Mediator, true, "someone else", at));
+        assert_eq!(volunteer.global_roles, [GlobalRole::Mediator]);
+        assert_eq!(volunteer.role_grants.len(), 1);
+        assert_eq!(volunteer.role_grants[0].by, "validator");
+
+        assert!(volunteer.set_role(GlobalRole::Protection, true, "validator", at));
+        assert!(volunteer.set_role(GlobalRole::Mediator, false, "validator", at));
+        assert!(!volunteer.set_role(GlobalRole::Mediator, false, "validator", at));
+        assert_eq!(volunteer.global_roles, [GlobalRole::Protection]);
+        assert_eq!(volunteer.role_grants.len(), 1);
+        assert!(!doc().set_role(GlobalRole::Validator, false, "validator", at));
+    }
+
+    #[test]
+    fn a_patch_changes_only_the_fields_it_names_and_null_clears_the_phone() {
+        let mut volunteer = doc();
+        patch_of(json!({ "name": "  Bia " }))
+            .apply(&mut volunteer)
+            .unwrap();
+        assert_eq!(volunteer.name, "Bia");
+        assert_eq!(volunteer.phone.as_deref(), Some("5551999990000"));
+        assert!(volunteer.show_phone);
+
+        patch_of(json!({ "phone": null, "show_phone": false, "language": "en" }))
+            .apply(&mut volunteer)
+            .unwrap();
+        assert_eq!(volunteer.phone, None);
+        assert!(!volunteer.show_phone);
+        assert_eq!(volunteer.language, "en");
+        assert_eq!(volunteer.name, "Bia");
+    }
+
+    #[test]
+    fn an_invalid_patch_is_refused_naming_the_field() {
+        for (body, field) in [
+            (json!({ "name": " " }), "name"),
+            (json!({ "language": "fr" }), "language"),
+            (json!({ "phone": "1".repeat(MAX_PHONE_CHARS + 1) }), "phone"),
+        ] {
+            let error = patch_of(body).apply(&mut doc()).unwrap_err();
+            assert_eq!(error.detail["field"], field);
+        }
+    }
 
     async fn patch(app: &TestApp, secret: &str, body: Value) -> (StatusCode, Value) {
         let auth = format!("Bearer {secret}");
