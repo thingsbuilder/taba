@@ -44,4 +44,10 @@ describe('the phase 4 API client', () => {
     ])
     expect(calls[7]!.body).toEqual({ role: 'mediator' })
   })
+
+  it('reads the match detail as the body itself, as the API sends it', async () => {
+    const detail = { id: 'm1', status: 'open' }
+    const res = await createApi((async () => new Response(JSON.stringify(detail), { status: 200 })) as unknown as typeof fetch, async () => 'dev').getMatch('s', 'm1')
+    expect(res.ok && res.data).toEqual(detail)
+  })
 })
