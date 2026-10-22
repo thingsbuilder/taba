@@ -700,6 +700,7 @@ mod tests {
             status: s.status,
             reasons: s.reasons,
             offline_claimed: false,
+            delivered_at_clamped: false,
             reviewed_by: None,
             review_note: None,
             pseudonymized: false,

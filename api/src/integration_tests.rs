@@ -2067,15 +2067,9 @@ async fn the_server_believes_offline_only_for_a_delivery_that_waited_and_the_clo
             .offline_claimed
     );
 
-    // delivered_at: from 30 days back to 5 minutes ahead.
+    // delivered_at: from 30 days back; a time ahead is cut (see the next test).
     let days = |n: u64| (store::now() - std::time::Duration::from_secs(n * 86_400)).to_string();
-    let ahead = |secs: u64| (store::now() + std::time::Duration::from_secs(secs)).to_string();
-    for (at, ok) in [
-        (days(29), true),
-        (days(31), false),
-        (ahead(240), true),
-        (ahead(400), false),
-    ] {
+    for (at, ok) in [(days(29), true), (days(31), false)] {
         let (status, body) = deliver(
             app,
             volunteer,
@@ -2099,6 +2093,107 @@ async fn the_server_believes_offline_only_for_a_delivery_that_waited_and_the_clo
             );
         }
     }
+}
+
+#[tokio::test]
+async fn a_phone_with_the_clock_ahead_still_delivers_and_the_time_is_cut_to_the_receipt() {
+    let d = donations().await;
+    let (app, shelter, volunteer) = (&d.s.app, &d.s.shelter, &d.s.volunteer);
+    let ahead = |secs: u64| (store::now() + std::time::Duration::from_secs(secs)).to_string();
+    let behind = |secs: u64| (store::now() - std::time::Duration::from_secs(secs)).to_string();
+
+    // 10 minutes and 2 hours ahead: 201, delivered_at is the receipt, and it is marked in the delivery and the audit.
+    for (item, secs) in [("kit", 600), ("cesta", 7_200)] {
+        let (status, body) = deliver(
+            app,
+            volunteer,
+            shelter,
+            &d.p1,
+            item,
+            json!({ "delivered_at": ahead(secs) }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{secs}: {body}");
+        let doc = delivery_doc(app, body["delivery_id"].as_str().unwrap()).await;
+        assert_eq!(doc.delivered_at, doc.received_at, "{secs}");
+        assert!(doc.delivered_at_clamped, "{secs}");
+    }
+    assert!(
+        crate::test_support::audit_actions(&app.state.db)
+            .await
+            .contains(&"delivery.create_clamped".to_string())
+    );
+    // A time that is not ahead is left as it is and not marked.
+    let (_, normal) = deliver(
+        app,
+        volunteer,
+        shelter,
+        &d.p2,
+        "agua",
+        json!({ "delivered_at": behind(60) }),
+    )
+    .await;
+    let doc = delivery_doc(app, normal["delivery_id"].as_str().unwrap()).await;
+    assert!(!doc.delivered_at_clamped && doc.delivered_at < doc.received_at);
+
+    // The same delivery sent again answers the same.
+    let id = new_id();
+    let send = |at: String| {
+        deliver(
+            app,
+            volunteer,
+            shelter,
+            &d.p2,
+            "colchao",
+            json!({ "id": id, "delivered_at": at, "admin_approval": true }),
+        )
+    };
+    let _ = send(ahead(3_600)).await; // a volunteer's approval is refused for a high value item: 403
+    let (status, first) = deliver(
+        app,
+        &d.s.admin,
+        shelter,
+        &d.p2,
+        "colchao",
+        json!({ "id": id, "delivered_at": ahead(3_600), "admin_approval": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    let (status, again) = deliver(
+        app,
+        &d.s.admin,
+        shelter,
+        &d.p2,
+        "colchao",
+        json!({ "id": id, "delivered_at": ahead(3_600), "admin_approval": true }),
+    )
+    .await;
+    assert_eq!((status, &again), (StatusCode::CREATED, &first));
+
+    // The duplicate decision uses the cut time: one 6 days 23 hours ago, and one 2 hours ahead that
+    // would be 7 days 1 hour apart (no duplicate) if it were not cut.
+    let (_, old) = deliver(
+        app,
+        volunteer,
+        shelter,
+        &d.p1,
+        "vale",
+        json!({ "delivered_at": behind(7 * 86_400 - 3_600), "offline": true }),
+    )
+    .await;
+    assert_eq!(old["status"], "in_review", "{old}"); // offline, high value, no admin
+    let (status, dup) = deliver(
+        app,
+        &d.s.admin,
+        shelter,
+        &d.p1,
+        "vale",
+        json!({ "delivered_at": ahead(7_200), "admin_approval": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{dup}");
+    assert_eq!(dup["status"], "in_review", "{dup}");
+    assert_eq!(dup["reasons"][0]["kind"], "duplicate_in_period");
 }
 
 #[tokio::test]

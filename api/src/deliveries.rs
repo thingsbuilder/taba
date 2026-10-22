@@ -116,6 +116,9 @@ pub struct DeliveryDoc {
     /// The app said the delivery was made offline and the server believed it (`offline_claim`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub offline_claimed: bool,
+    /// The phone's `delivered_at` was ahead of the server's clock and was cut to `received_at`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delivered_at_clamped: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,9 +134,10 @@ const DAY_MICROS: i64 = 86_400_000_000;
 /// A delivery the app calls offline reaches the server later: one that arrives within this of its
 /// own `delivered_at` was not queued, and the claim is ignored (the server treats it as online).
 const OFFLINE_MIN_DELAY_MICROS: i64 = 30_000_000;
-/// `delivered_at` is the phone's clock: accepted from this long before the server's to a little ahead.
+/// `delivered_at` is the phone's clock: refused when older than this; a time ahead of the server's
+/// is not refused (a phone with the clock ahead would never get a delivery through) but cut to the
+/// moment of receipt.
 const MAX_AGE_MICROS: i64 = 30 * DAY_MICROS;
-const MAX_AHEAD_MICROS: i64 = 5 * 60_000_000;
 /// Most recent deliveries of the same item and owner that the duplicate check looks at.
 const MAX_PREVIOUS: u32 = 50;
 
@@ -237,10 +241,17 @@ fn offline_claim_accepted(
         && received_at.as_microsecond() - delivered_at.as_microsecond() >= OFFLINE_MIN_DELAY_MICROS
 }
 
-/// Whether the phone's `delivered_at` is plausible against the server's clock.
-fn delivered_at_in_range(delivered_at: FirestoreInstant, received_at: FirestoreInstant) -> bool {
-    let age = received_at.as_microsecond() - delivered_at.as_microsecond();
-    (-MAX_AHEAD_MICROS..=MAX_AGE_MICROS).contains(&age)
+/// The phone's `delivered_at` against the server's clock: a time in the future is cut to
+/// `received_at` (and says so); one older than 30 days is not plausible (`None`).
+fn plausible_delivered_at(
+    delivered_at: FirestoreInstant,
+    received_at: FirestoreInstant,
+) -> Option<(FirestoreInstant, bool)> {
+    if delivered_at > received_at {
+        return Some((received_at, true));
+    }
+    (received_at.as_microsecond() - delivered_at.as_microsecond() <= MAX_AGE_MICROS)
+        .then_some((delivered_at, false))
 }
 
 /// What the requesting shelter may be told about the delivery that makes its own a duplicate:
@@ -392,6 +403,8 @@ struct Write {
     delivered_at: FirestoreInstant,
     decision: Decision,
     offline_claimed: bool,
+    delivered_at_clamped: bool,
+    received_at: FirestoreInstant,
     /// The revalidation capture, already resolved to the person (`Decision::Revalidate`).
     capture_id: Option<String>,
 }
@@ -454,7 +467,7 @@ async fn record(
         quantity: w.quantity,
         delivered_by: w.volunteer.id.clone(),
         delivered_at: w.delivered_at,
-        received_at: now(),
+        received_at: w.received_at,
         verification: match w.decision {
             Decision::Revalidate => Verification::Liveness,
             Decision::AdminApproval => Verification::AdminApproval,
@@ -468,17 +481,23 @@ async fn record(
         },
         reasons,
         offline_claimed: w.offline_claimed,
+        delivered_at_clamped: w.delivered_at_clamped,
         reviewed_by: None,
         review_note: None,
         pseudonymized: false,
     };
     tx_create(db, tx, COLLECTION, &w.id, &doc)?;
-    let action = match (approved, w.offline_claimed) {
-        (true, true) => "delivery.admin_approval_offline",
-        (true, false) => "delivery.admin_approval",
-        (false, true) => "delivery.create_offline",
-        (false, false) => "delivery.create",
-    };
+    // What the audit says besides the delivery: the offline claim the server believed and a clock cut.
+    let action = format!(
+        "delivery.{}{}{}",
+        if approved { "admin_approval" } else { "create" },
+        if w.offline_claimed { "_offline" } else { "" },
+        if w.delivered_at_clamped {
+            "_clamped"
+        } else {
+            ""
+        },
+    );
     audit::add(
         db,
         tx,
@@ -620,9 +639,8 @@ pub async fn post_delivery(
         .parse()
         .map_err(|_| invalid("delivered_at"))?;
     let received_at = now();
-    if !delivered_at_in_range(delivered_at, received_at) {
-        return Err(invalid("delivered_at"));
-    }
+    let (delivered_at, delivered_at_clamped) =
+        plausible_delivered_at(delivered_at, received_at).ok_or_else(|| invalid("delivered_at"))?;
     let spec = shelter
         .items
         .get(&request.item)
@@ -701,6 +719,8 @@ pub async fn post_delivery(
         delivered_at,
         decision,
         offline_claimed,
+        delivered_at_clamped,
+        received_at,
         capture_id,
     };
     let doc = store::transact(&state.db, |db, tx| {
