@@ -2001,7 +2001,6 @@ households_created_here,pets_in_households_created_here"
     #[tokio::test]
     async fn the_served_panel_says_when_it_was_built_and_that_it_is_complete() {
         let w = world().await;
-        DETAIL.clear();
         let (_, body) = get_json(
             &w,
             &w.civil_defense,
