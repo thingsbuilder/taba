@@ -35,6 +35,8 @@ pub struct Config {
     pub delivery_sample_rate: f64,
     pub anomaly_checkins_per_10min: u32,
     pub anomaly_rescues_per_10min: u32,
+    /// Whether the hourly task deletes for real; off, it only counts what it would (spec 10.1.2).
+    pub purge_enabled: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -90,6 +92,7 @@ impl Config {
             delivery_sample_rate,
             anomaly_checkins_per_10min: number(&get, "ANOMALY_CHECKINS_PER_10MIN", "30")?,
             anomaly_rescues_per_10min: number(&get, "ANOMALY_RESCUES_PER_10MIN", "100")?,
+            purge_enabled: number(&get, "PURGE_ENABLED", "false")?,
         })
     }
 }
@@ -146,6 +149,7 @@ mod tests {
         assert_eq!(config.delivery_sample_rate, 0.05);
         assert_eq!(config.anomaly_checkins_per_10min, 30);
         assert_eq!(config.anomaly_rescues_per_10min, 100);
+        assert!(!config.purge_enabled);
         assert!(config.hmac_key.is_none() && config.domain.is_none());
     }
 
@@ -197,6 +201,15 @@ mod tests {
                 .unwrap()
                 .tz_pilot,
             "Europe/Lisbon"
+        );
+        assert!(
+            load(&[("GCP_PROJECT", "p"), ("PURGE_ENABLED", "true")])
+                .unwrap()
+                .purge_enabled
+        );
+        assert_eq!(
+            load(&[("GCP_PROJECT", "p"), ("PURGE_ENABLED", "maybe")]),
+            Err(ConfigError::Invalid("PURGE_ENABLED"))
         );
         assert_eq!(
             load(&[("GCP_PROJECT", "p"), ("INACTIVITY_DAYS", "0")]),

@@ -488,3 +488,26 @@ async fn anyone_signed_in_creates_a_shelter_and_reads_the_basics_of_any() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+// ---- Phase 6 (stage 0): every route is registered and asks for a session ----
+// Each owner replaces the rows of their routes with the real matrix of spec 2.3 (who may, who
+// gets 403) in the file of their module, and removes them from here.
+
+#[tokio::test]
+async fn phase_6_routes_are_registered_and_ask_for_a_session() {
+    let app = TestApp::new().await;
+    let ana = app.actor("Ana").await;
+    for (method, path) in [
+        ("GET", "/v1/dashboard/events"),
+        ("GET", "/v1/dashboard/events/e1"),
+        ("GET", "/v1/dashboard/events/e1/daily.csv"),
+        ("GET", "/v1/shelters/s1/export.csv"),
+    ] {
+        let (status, _, answer) = app.request(method, path, &[], None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}");
+        assert_eq!(answer["error"], "unauthorized", "{method} {path}");
+        let (status, answer) = app.send(method, path, &ana.secret, None).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{method} {path}");
+        assert_eq!(answer["error"], "not_implemented", "{method} {path}");
+    }
+}

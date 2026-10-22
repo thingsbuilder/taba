@@ -161,3 +161,27 @@ mod tests {
         );
     }
 }
+
+/// What an activity check looks at (spec 4.10).
+#[allow(dead_code)] // stage 0 scaffold: the owner of the anomalies uses it
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activity {
+    Checkin,
+    Rescue,
+}
+
+/// Records that `volunteer_id` did `activity` and raises the informational anomalies of spec 4.10
+/// (`anomaly_volume`, `anomaly_distance`, `out_of_area`: `informational = true`, for the Civil
+/// Defense, never in the admins' box). `at` is the point of a rescue (the shelter of a check-in);
+/// `person_id` is who was registered. Best effort, after the write: it never fails the request.
+/// Called by `people::post_checkin` and `rescues::post_rescue`. Owner D writes the body.
+#[allow(dead_code)] // stage 0 scaffold: the arguments are used once the body is written
+pub async fn note_activity(
+    _state: &crate::auth::AppState,
+    _volunteer_id: &str,
+    _activity: Activity,
+    _person_id: &str,
+    _at: Option<(f64, f64)>,
+    _event_id: Option<&str>,
+) {
+}

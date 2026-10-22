@@ -41,6 +41,17 @@ pub enum ClosureReason {
     Inactivity,
 }
 
+/// What an event keeps of its numbers when its data is discarded (spec 7, `events.stats`).
+#[allow(dead_code)] // stage 0 scaffold: the discard writes it
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventStats {
+    pub shelters: u32,
+    pub unique_people: u32,
+    pub households: u32,
+    pub rescues: u32,
+    pub deliveries: u32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReferenceContacts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -73,6 +84,23 @@ pub struct EventDoc {
         with = "firestore::serialize_as_optional_timestamp"
     )]
     pub purge_at: Option<FirestoreInstant>,
+    /// When the pseudonymized deliveries of the event are deleted: `closed_at` + `DELIVERY_RETENTION_DAYS`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "firestore::serialize_as_optional_timestamp"
+    )]
+    pub delivery_purge_at: Option<FirestoreInstant>,
+    /// When the discard of the event ran.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "firestore::serialize_as_optional_timestamp"
+    )]
+    pub purged_at: Option<FirestoreInstant>,
+    /// Written by the discard, before the data goes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<EventStats>,
     #[serde(default)]
     pub reference_contacts: ReferenceContacts,
 }
@@ -99,6 +127,9 @@ impl EventDoc {
             closed_at: None,
             closure_reason: None,
             purge_at: None,
+            delivery_purge_at: None,
+            purged_at: None,
+            stats: None,
             reference_contacts: ReferenceContacts::default(),
         }
     }
@@ -377,6 +408,9 @@ mod tests {
             closed_at: None,
             closure_reason: None,
             purge_at: None,
+            delivery_purge_at: None,
+            purged_at: None,
+            stats: None,
             reference_contacts: ReferenceContacts::default(),
         }
     }

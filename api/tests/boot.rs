@@ -92,6 +92,11 @@ fn serve_starts_without_a_rustls_panic() {
                 ("POST", "/v1/shelters/s1/deliveries"),
                 ("GET", "/v1/shelters/s1/deliveries"),
                 ("POST", "/v1/deliveries/d1/review"),
+                // Phase 6 routes.
+                ("GET", "/v1/dashboard/events"),
+                ("GET", "/v1/dashboard/events/e1"),
+                ("GET", "/v1/dashboard/events/e1/daily.csv"),
+                ("GET", "/v1/shelters/s1/export.csv"),
                 ("POST", "/v1/search-links"),
                 ("DELETE", "/v1/search-links/c1"),
                 // The two public routes of the family link need no session.

@@ -37,6 +37,12 @@ pub enum AlertKind {
     SearchExpiring,
     /// Phase 4: the family sent a search through the volunteer's link (spec 3.7 item 11); informational.
     FamilySearchReceived,
+    /// Phase 6, informational (spec 4.10): volume of check-ins or rescues of one volunteer above the limit.
+    AnomalyVolume,
+    /// Phase 6, informational: the same person registered 50 km apart within an hour.
+    AnomalyDistance,
+    /// Phase 6, informational: a rescue farther than `EVENT_RADIUS_KM` from every shelter of the volunteer.
+    OutOfArea,
 }
 
 impl AlertKind {

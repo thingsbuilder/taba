@@ -49,6 +49,7 @@ pub async fn run_once(state: &AppState) -> Result<(), ApiError> {
         notify_expiring_searches(state).await,
         delete_thumbnails(state).await,
         delete_expired(state).await,
+        crate::purge::run(state).await.map(|_| ()),
     ];
     steps.into_iter().collect()
 }
