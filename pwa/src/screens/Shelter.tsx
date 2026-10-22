@@ -3,6 +3,7 @@ import type { ApiResult, ShelterView } from '../api'
 import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
 import type { QueueItem, ShelterRecord } from '../db'
+import { saveCsv } from '../dashboard'
 import { useOnline } from '../hooks'
 import { t } from '../i18n'
 import { navigate } from '../nav'
@@ -196,6 +197,13 @@ export function Shelter({ ctx, shelterId }: { ctx: AppContext; shelterId: string
 
         {actions.members && <button type="button" class="button" onClick={() => navigate(`/shelter/${shelterId}/members`)}>{t('shelter.members')}</button>}
         {actions.requestEndorsement && online && <EndorseRequest ctx={ctx} shelterId={shelterId} />}
+        {online && role === 'admin' && confirmation === 'confirmed' && (
+          <button type="button" class="button button-secondary" onClick={async () => {
+            setError(null)
+            const res = await api.getShelterExport(secret, shelterId)
+            if (!(await saveCsv(res, `export-${shelterId}.csv`))) setError('generic')
+          }}>{t('export.title')}</button>
+        )}
         {online && actions.confirm && (
           <button type="button" class="button button-secondary" onClick={() => void run(() => api.confirmShelter(secret, shelterId))}>{t('shelter.confirm')}</button>
         )}

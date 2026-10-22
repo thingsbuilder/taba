@@ -14,6 +14,7 @@ import type { Queue } from './queue'
 import { type Route, resolveRoute, usesShell } from './routes'
 import { type LocalSession, applyMe, needsPin, getActive, listValid, removeSession } from './sessions'
 import { Checkin } from './screens/Checkin'
+import { Dashboard } from './screens/Dashboard'
 import { Delivery } from './screens/Delivery'
 import { Diagnostics } from './screens/Diagnostics'
 import { Endorse } from './screens/Endorse'
@@ -208,6 +209,8 @@ function Screen({ route, ctx, search }: { route: Route; ctx: AppContext; search:
       return <Household ctx={ctx} shelterId={route.id!} householdId={route.household_id!} />
     case 'shelter_exit':
       return <Exit ctx={ctx} shelterId={route.id!} />
+    case 'dashboard':
+      return <Dashboard ctx={ctx} />
     case 'shelter_delivery':
       return <Delivery ctx={ctx} shelterId={route.id!} />
     case 'shelter_items':

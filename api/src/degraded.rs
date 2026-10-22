@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::alerts::{self, AlertDoc, AlertKind};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::error::ApiError;
 use crate::status::{Reason, Unico};
 use crate::store::{self, tx_replace};
@@ -131,6 +132,12 @@ pub async fn resume(db: &FirestoreDb) -> Result<bool, ApiError> {
                     until: None,
                 };
                 tx_replace(&db, tx, COLLECTION, DOCUMENT, &doc)?;
+                audit::add(
+                    &db,
+                    tx,
+                    &AuditEntry::new("unico.resume", "system", DOCUMENT)
+                        .basis(LegalBasis::PublicPolicy),
+                )?;
             }
             Ok(degraded)
         })

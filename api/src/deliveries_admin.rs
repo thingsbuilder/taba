@@ -110,6 +110,7 @@ pub async fn put_items(
                 &db,
                 tx,
                 &AuditEntry::new("shelter.items", "shelter", &id)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&volunteer.id)
                     .in_shelter(&id),
             )?;
@@ -202,6 +203,10 @@ async fn volunteer_name(
 ) -> Result<Option<String>, ApiError> {
     if let Some(name) = cache.get(id) {
         return Ok(name.clone());
+    }
+    // A pseudonymized delivery has no volunteer.
+    if id.is_empty() {
+        return Ok(None);
     }
     let doc: Option<VolunteerDoc> = store::get(db, volunteers::COLLECTION, id).await?;
     let name = doc.map(|d| d.name);

@@ -776,6 +776,15 @@ pub async fn post_checkin(
     })
     .await?;
     crate::events::touch(&state, shelter.event_id.as_deref()).await;
+    crate::audit::note_activity(
+        &state,
+        &volunteer.id,
+        crate::audit::Activity::Checkin,
+        &person_id,
+        Some((shelter.lat, shelter.lon)),
+        shelter.event_id.as_deref(),
+    )
+    .await;
     Ok((
         StatusCode::CREATED,
         Json(json!({

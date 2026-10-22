@@ -12,7 +12,7 @@ use firestore::{FirestoreDb, FirestoreInstant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::households::{self, forbidden, load_household, load_members, members_view};
@@ -167,6 +167,7 @@ pub async fn post_card(
                 &db,
                 tx,
                 &AuditEntry::new("card.issue", "card", &code)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&volunteer.id)
                     .in_shelter(&shelter),
             )?;
@@ -249,6 +250,7 @@ pub async fn cancel_card(
                 &db,
                 tx,
                 &AuditEntry::new("card.cancel", "card", &code)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&volunteer.id)
                     .in_shelter(&shelter),
             )?;

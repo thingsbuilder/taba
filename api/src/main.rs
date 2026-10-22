@@ -4,6 +4,9 @@ mod auth;
 mod cards;
 mod children;
 mod config;
+#[cfg(test)]
+mod conformance_tests;
+mod dashboard;
 mod degraded;
 mod deliveries;
 mod deliveries_admin;
@@ -11,6 +14,7 @@ mod endorsements;
 mod error;
 mod events;
 mod exits;
+mod export;
 mod geo;
 mod households;
 mod idempotency;
@@ -24,6 +28,7 @@ mod members;
 mod people;
 #[cfg(test)]
 mod permissions_tests;
+mod purge;
 mod rescues;
 mod roles;
 mod search_links;
@@ -160,6 +165,14 @@ fn router(state: AppState) -> Router {
             "/v1/deliveries/{id}/review",
             post(deliveries_admin::review_delivery),
         )
+        // Phase 6
+        .route("/v1/dashboard/events", get(dashboard::list_events))
+        .route("/v1/dashboard/events/{id}", get(dashboard::get_event))
+        .route(
+            "/v1/dashboard/events/{id}/daily.csv",
+            get(dashboard::daily_csv),
+        )
+        .route("/v1/shelters/{id}/export.csv", get(export::export_csv))
         .route("/v1/search-links", post(search_links::post_search_link))
         .route(
             "/v1/search-links/{code}",

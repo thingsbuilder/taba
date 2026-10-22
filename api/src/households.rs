@@ -14,7 +14,7 @@ use firestore::{FirestoreDb, FirestoreInstant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::people::{self, PersonDoc};
@@ -285,6 +285,7 @@ pub async fn post_household(
                 &db,
                 tx,
                 &AuditEntry::new("household.create", "household", &new.id)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&volunteer.id)
                     .in_shelter(&shelter_id),
             )?;
@@ -407,6 +408,7 @@ pub async fn patch_household(
                 &db,
                 tx,
                 &AuditEntry::new("household.update", "household", &id)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&volunteer.id)
                     .in_shelter(&shelter),
             )?;

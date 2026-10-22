@@ -395,7 +395,7 @@ Per event and per shelter:
 - pilot indicators: selfie refusal rate [dec. k, C1]; `not_the_person` matches [dec. k, A6]; "other site" justifications [dec. k, M7]; Unico processes per person served;
 - shelters awaiting endorsement.
 
-Daily CSV for the bulletin: `GET /v1/dashboard/events/{id}/daily.csv` (one row per shelter, with the counts above; no name or `person_id`). Counts via Firestore `count()` aggregation.
+Daily CSV for the bulletin: `GET /v1/dashboard/events/{id}/daily.csv` (one row per shelter, with the counts above; no name or `person_id`). Counts via Firestore `count()` aggregation. As the notice says, each cut counts the people who are in a shelter now (`current_shelter_id`); whoever already left shows in the exits by destination. The matches of the central and protection queues belong to the network, not to the event. "Unico processes per person" is an estimate from the captures that still exist. `GET /dashboard/events` carries, per event, the `unconfirmed` shelters (`unconfirmed_shelters`: name, position, who created it), which is where a validator or the Civil Defense finds what to confirm without knowing an id. The dashboard keeps a 30 s cache on the server. The shelter export (`export.csv`) has three sections (people, households, deliveries), writes the `export.shelter` audit with `public_policy` and has no BOM.
 
 The event's reference contacts (`reference_contacts: {civil_defense_phone, child_protection_phone}`) are set by Civil Defense or a validator (`PATCH /v1/events/{id}`) [dec. k].
 
@@ -665,6 +665,7 @@ On the VM, read from `/etc/taba/env`; in development, from `.env` created from `
 | `DELIVERY_SAMPLE_RATE` | 0.05 | [dec. k, Q41] |
 | `ANOMALY_CHECKINS_PER_10MIN` | 30 | [dec. k, Q39] |
 | `ANOMALY_RESCUES_PER_10MIN` | 100 | [dec. k, Q39] |
+| `PURGE_ENABLED` | `false` | The discard (10.1.2) deletes for real only with `true`; off, the hourly task only counts what it would delete (dry run) |
 
 #### 6.2.3 Error format
 `{"error": "<stable_code>", "detail": {...}}`. The app translates the code; the server does not translate text. Log messages in English [dec. j].
@@ -711,6 +712,10 @@ The database is `(default)`, in native mode, in the installation's region — th
 | `shelters` | `event_id` ASC, `status` ASC |
 | `people` | `current_shelter_id` ASC, `updated_at` DESC |
 | `people` | `event_ids` ARRAY_CONTAINS, `level` ASC |
+| `people` | `current_shelter_id` ASC, `birth_year` ASC |
+| `people` | `current_shelter_id` ASC, `vulnerabilities.indigenous_people` ASC |
+| `people` | `current_shelter_id` ASC, `vulnerabilities.migrant_language` ASC |
+| `people` | `current_shelter_id` ASC, `vulnerabilities.disability` ARRAY_CONTAINS |
 | `households` | `member_ids` ARRAY_CONTAINS |
 | `cards` | `household_id` ASC, `status` ASC |
 | `deliveries` | `person_id` ASC, `item` ASC, `delivered_at` DESC |

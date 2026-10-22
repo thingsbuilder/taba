@@ -9,7 +9,7 @@ use firestore::{FirestoreDb, FirestoreInstant, FirestoreTransaction, path};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::store::{self, fs_error, tx_create, tx_replace};
@@ -37,13 +37,36 @@ pub enum AlertKind {
     SearchExpiring,
     /// Phase 4: the family sent a search through the volunteer's link (spec 3.7 item 11); informational.
     FamilySearchReceived,
+    /// Phase 6, informational (spec 4.10): volume of check-ins or rescues of one volunteer above the limit.
+    AnomalyVolume,
+    /// Phase 6, informational: the same person registered 50 km apart within an hour.
+    AnomalyDistance,
+    /// Phase 6, informational: a rescue farther than `EVENT_RADIUS_KM` from every shelter of the volunteer.
+    OutOfArea,
 }
 
 impl AlertKind {
+    /// The snake_case name the kind is stored under.
+    pub fn name(self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default()
+    }
+
     /// Kinds that only the volunteers in `volunteer_ids` receive and resolve, not even the Civil
     /// Defense (they concern one volunteer's searches, which nobody else reads).
     fn is_personal(self) -> bool {
         matches!(self, Self::SearchExpiring | Self::FamilySearchReceived)
+    }
+
+    /// Informational anomalies (spec 4.10): only validators and the Civil Defense read them, never
+    /// the volunteer they are about nor the shelter admins.
+    fn is_anomaly(self) -> bool {
+        matches!(
+            self,
+            Self::AnomalyVolume | Self::AnomalyDistance | Self::OutOfArea
+        )
     }
 }
 
@@ -141,6 +164,10 @@ pub fn is_recipient(volunteer: &Volunteer, alert: &AlertDoc) -> bool {
     if alert.kind.is_personal() {
         return alert.volunteer_ids.contains(&volunteer.id);
     }
+    if alert.kind.is_anomaly() {
+        return volunteer.is_validator_or_civil_defense()
+            && !alert.volunteer_ids.contains(&volunteer.id);
+    }
     if alert.kind == AlertKind::EndorserFlagged {
         return volunteer.is_validator_or_civil_defense()
             && !alert.volunteer_ids.contains(&volunteer.id);
@@ -229,7 +256,7 @@ pub async fn get_alerts(
         return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden"));
     }
     let mut alerts = open_alerts(&state.db, false).await?;
-    if volunteer.has_global(GlobalRole::CivilDefense) {
+    if volunteer.is_validator_or_civil_defense() {
         alerts.extend(open_alerts(&state.db, true).await?);
     }
     for own in open_alerts_about(&state.db, &volunteer.id).await? {
@@ -269,7 +296,9 @@ pub async fn resolve_alert(
             audit::add(
                 &db,
                 tx,
-                &AuditEntry::new("alert.resolve", "alert", &alert_id).by(&volunteer.id),
+                &AuditEntry::new("alert.resolve", "alert", &alert_id)
+                    .basis(LegalBasis::PublicPolicy)
+                    .by(&volunteer.id),
             )
         })
     })

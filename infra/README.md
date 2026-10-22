@@ -81,7 +81,11 @@ sudo sh -c 'set -a; . /etc/taba/env; exec /usr/local/bin/taba role grant <volunt
 
 ## Índices e TTL do Firestore
 
-`firestore/firestore.indexes.json` usa o formato do Firebase CLI: `indexes` (índices compostos) e `fieldOverrides` (um item com `"ttl": true` vira política de TTL). O `provision.yml` aplica os dois pela API REST e pode ser repetido. As fases só acrescentam entradas ao arquivo. Hoje há TTL em `sessions.expires_at`, `captures.expires_at` e `idempotency.expires_at`; o do `audit_log` (1 ano) entra na fase 6. A fase 2 acrescenta os índices de `shelters` (`status` + `geohash`, `event_id` + `status`), `memberships` (`volunteer_id` + `status`, `shelter_id` + `status`) e `alerts` (`resolved` + `informational` + `created_at`). O emulador do Firestore não exige índices, então os testes não avisam de um índice faltando.
+`firestore/firestore.indexes.json` usa o formato do Firebase CLI: `indexes` (índices compostos) e `fieldOverrides` (um item com `"ttl": true` vira política de TTL). O `provision.yml` aplica os dois pela API REST e pode ser repetido. As fases só acrescentam entradas ao arquivo. Hoje há TTL em `sessions.expires_at`, `captures.expires_at`, `idempotency.expires_at`, `search_links.expires_at` e `audit_log.expires_at` (1 ano, fase 6). A fase 2 acrescenta os índices de `shelters` (`status` + `geohash`, `event_id` + `status`), `memberships` (`volunteer_id` + `status`, `shelter_id` + `status`) e `alerts` (`resolved` + `informational` + `created_at`). O emulador do Firestore não exige índices, então os testes não avisam de um índice faltando.
+
+## Fase 6: painel e descarte
+
+Rode o `provision.yml` antes do `configure.yml`: ele cria os índices do painel (`people` por abrigo e corte, `alerts` por voluntário, `audit_log`) e o TTL de `audit_log.expires_at`. Espere os índices ficarem `READY` no console do Firestore antes de usar o painel; sem eles as consultas do painel falham. O descarte vem desligado: com `purge_enabled: false` no inventário (o padrão) a tarefa horária só conta o que apagaria (modo seco) e registra `purge.dry_run` na auditoria. Ligue `purge_enabled: true` só depois de ler essas contagens num evento de teste.
 
 ## Custo
 

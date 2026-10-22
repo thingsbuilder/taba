@@ -145,6 +145,7 @@ pub async fn create_invite(
                 &db,
                 tx,
                 &AuditEntry::new("invite.create", "invite", &code)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&by)
                     .in_shelter(&invite.shelter_id),
             )
@@ -253,6 +254,7 @@ pub async fn cancel_invite(
                 &db,
                 tx,
                 &AuditEntry::new("invite.cancel", "invite", &code)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&volunteer.id)
                     .in_shelter(&invite.shelter_id),
             )?;

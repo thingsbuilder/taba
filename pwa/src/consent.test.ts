@@ -27,6 +27,17 @@ describe('the consent screen in three languages', () => {
     expect(view.lines).toContain(police)
   })
 
+  it.each([
+    ['pt-BR', ptBR, /equipe de proteção/, /Está previsto apagar/],
+    ['en', en, /protection team/, /planned to be erased/],
+    ['es', es, /equipo de protección/, /Está previsto borrar/],
+  ] as const)('%s tells who sees the record beyond the shelter and promises erasure only as planned', (_lang, dict, protection, planned) => {
+    const d = dict as Record<string, string>
+    for (const key of ['consent.access', 'consent.privacy_s4_body']) expect(d[key], key).toMatch(protection)
+    for (const key of ['consent.retention', 'consent.privacy_s5_body', 'family.consent_retention']) expect(d[key], key).toMatch(planned)
+    expect(d['consent.privacy_s9_body']).toMatch(/\S/)
+  })
+
   it('shows the responsible and the unconfirmed notice when there are, and omits them when there are not', () => {
     const full = consentView('es', { unconfirmed: true, responsible: 'Ana Lima' })
     expect(full.responsible).toBe('Responsable del piloto: Ana Lima')

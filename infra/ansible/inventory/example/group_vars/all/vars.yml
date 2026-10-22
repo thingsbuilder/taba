@@ -32,5 +32,13 @@ thumbnail_key: "{{ vault_taba_thumbnail_key }}"
 # tz_pilot: America/Sao_Paulo
 # fração das entregas comuns que pedem selfie (0 a 1)
 # delivery_sample_rate: 0.05
+# dias que as entregas pseudonimizadas ficam depois do encerramento do evento
+# delivery_retention_days: 90
+# limiares das anomalias informativas (spec 4.10)
+# anomaly_checkins_per_10min: 30
+# anomaly_rescues_per_10min: 100
+# O descarte apaga dados de forma irreversível: desligado, a tarefa só conta o que apagaria.
+# Ligue (true) depois de testar com um evento de teste.
+# purge_enabled: false
 # Nome e contato do responsável pelo piloto, mostrados nas telas de coleta (spec 10.1.3)
 pilot_responsible: "Nome do responsável, contato"

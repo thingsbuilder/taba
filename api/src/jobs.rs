@@ -1,7 +1,7 @@
 //! The hourly task of `serve` (spec 6.2.6 items 1, 2, 4): closes events, raises `search_expiring`,
 //! deletes thumbnails, expires captures, invites and endorsement codes. Every step is idempotent
 //! (it reads what is still to do inside its own transaction), so a run that repeats or overlaps
-//! another one changes nothing twice. Discarding the data at `purge_at` is phase 6.
+//! another one changes nothing twice. The discard at `purge_at` is `purge.rs`.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::alerts::{self, AlertDoc, AlertKind};
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::AppState;
 use crate::endorsements;
 use crate::error::ApiError;
@@ -49,6 +49,7 @@ pub async fn run_once(state: &AppState) -> Result<(), ApiError> {
         notify_expiring_searches(state).await,
         delete_thumbnails(state).await,
         delete_expired(state).await,
+        crate::purge::run(state).await.map(|_| ()),
     ];
     steps.into_iter().collect()
 }
@@ -114,8 +115,11 @@ async fn closure_reason(
 }
 
 async fn close_events(state: &AppState) -> Result<(), ApiError> {
-    let (inactivity_days, purge_days) =
-        (state.config.inactivity_days, state.config.purge_after_days);
+    let (inactivity_days, purge_days, delivery_days) = (
+        state.config.inactivity_days,
+        state.config.purge_after_days,
+        state.config.delivery_retention_days,
+    );
     // ponytail: every active event is listed each hour; fine for a pilot's handful of events.
     for event in events_with(&state.db, EventStatus::Active).await? {
         store::transact(&state.db, |db, tx| {
@@ -137,8 +141,13 @@ async fn close_events(state: &AppState) -> Result<(), ApiError> {
                 event.closed_at = Some(now);
                 event.closure_reason = Some(reason);
                 event.purge_at = Some(plus_days(now, purge_days));
+                event.delivery_purge_at = Some(plus_days(now, delivery_days));
                 tx_replace(&db, tx, events::COLLECTION, &id, &event)?;
-                audit::add(&db, tx, &AuditEntry::new("event.close", "event", &id))
+                audit::add(
+                    &db,
+                    tx,
+                    &AuditEntry::new("event.close", "event", &id).basis(LegalBasis::PublicPolicy),
+                )
             })
         })
         .await?;
@@ -336,7 +345,8 @@ async fn delete_thumbnails(state: &AppState) -> Result<(), ApiError> {
                     audit::add(
                         &db,
                         tx,
-                        &AuditEntry::new("person.thumbnail_purge", "person", &person_id),
+                        &AuditEntry::new("person.thumbnail_purge", "person", &person_id)
+                            .basis(LegalBasis::PublicPolicy),
                     )?;
                 }
                 Ok(())
@@ -631,6 +641,13 @@ mod tests {
         assert_eq!(
             closed.purge_at,
             Some(plus_days(closed_at, w.app.state.config.purge_after_days))
+        );
+        assert_eq!(
+            closed.delivery_purge_at,
+            Some(plus_days(
+                closed_at,
+                w.app.state.config.delivery_retention_days
+            ))
         );
         assert!((store::now().as_second() - closed_at.as_second()).abs() < 60);
         let open = event(&w.app, &w.event).await;

@@ -65,6 +65,12 @@ Tudo da seção 16 (depois do piloto). Integração com S2iD, CadÚnico, saúde 
 | Índices e TTL | `people (event_ids, level)`, `audit_log (shelter_id, at)`, `audit_log (volunteer_id, at)`; TTL `audit_log.expires_at` |
 | Documentos | `docs/pt_br/RIPD.md` |
 
+## Ajustes desta execução (fase 6, execução noturna)
+- **Descarte com chave de segurança:** o descarte apaga dados de forma irreversível. A variável `PURGE_ENABLED` (padrão `false`) liga o descarte no `serve`; com `false` a tarefa só registra quanto apagaria (modo seco, com contagens no log e na auditoria). O dono liga (`purge_enabled: true` no `vars.yml` do inventário) depois de testar com um evento de teste. Os testes automáticos rodam com a chave ligada.
+- **Itens "Rever ..." (PIN, instalação opcional, regra da miniatura):** são decisões do dono, não código. Ficam no doc e no PR como pendentes; não implementar.
+- **Lista de abrigos a confirmar:** vem da própria resposta do painel (`GET /v1/dashboard/events` traz, por evento, os abrigos `unconfirmed`), e a PWA a mostra na `/dashboard` e como atalho na tela inicial de `validator` e `civil_defense`.
+- **Painel só para `validator` (leitura) e DC:** nenhum outro papel vê o painel.
+
 ## Dependências
 Todas as fases anteriores (o painel conta o que elas criam; o descarte apaga o que elas gravam).
 

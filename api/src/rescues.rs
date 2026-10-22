@@ -413,6 +413,15 @@ pub async fn post_rescue(
     })
     .await?;
     events::touch(&state, registration.event_id.as_deref()).await;
+    crate::audit::note_activity(
+        &state,
+        &volunteer.id,
+        crate::audit::Activity::Rescue,
+        &person_id,
+        Some((registration.lat, registration.lon)),
+        registration.event_id.as_deref(),
+    )
+    .await;
     Ok(created(&request.id, &person_id, level))
 }
 

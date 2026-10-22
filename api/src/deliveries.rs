@@ -101,6 +101,8 @@ pub struct DeliveryDoc {
     pub item: String,
     pub scope: ItemScope,
     pub quantity: u32,
+    /// Empty once the delivery is pseudonymized.
+    #[serde(default)]
     pub delivered_by: String,
     /// The phone's clock.
     #[serde(with = "firestore::serialize_as_timestamp")]
