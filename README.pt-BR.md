@@ -28,8 +28,14 @@ Principais funcionalidades:
 3. **Registro de resgatados** no ponto de desembarque ou triagem.
 4. **Voluntários**, convidados por QR code ou link, sempre verificados com Human Token.
 5. **Busca de desaparecidos** a partir de fotos enviadas pela família.
-6. **"Estou Seguro"**: o próprio morador se registra. Quem precisa de resgate é orientado a ligar 193 (Bombeiros) ou 199 (Defesa Civil).
-7. **Revalidação** em doações de alto valor e na saída de uma criança do abrigo.
+6. **Revalidação** em doações de alto valor e na saída de uma criança do abrigo.
+
+**Ainda não implementado** (previsto para depois do piloto, [seção 16 da especificação](docs/pt_br/spec/spec.md)):
+
+- **"Estou Seguro"**: o próprio morador se registra. Quem precisa de resgate é orientado a ligar 193 (Bombeiros) ou 199 (Defesa Civil).
+- **Aval remoto** e cadeia de confirmação de abrigos.
+- **Fusão de abrigos e de eventos.**
+- **Fotos do local.**
 
 Um abrigo pode ser criado por um único operador com um celular. O app funciona sem internet e sincroniza quando houver sinal. O abrigo novo nasce **não confirmado** e só enxerga os próprios dados até ser confirmado. Os abrigos formam **eventos** automaticamente, pela distância entre eles, sem ninguém precisar declarar num backoffice que um desastre começou.
 
