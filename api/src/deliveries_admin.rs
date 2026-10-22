@@ -19,7 +19,7 @@ use crate::deliveries::{
 use crate::error::ApiError;
 use crate::events;
 use crate::people::{self, PersonDoc};
-use crate::shelters::{self, Confirmation, ShelterDoc};
+use crate::shelters::{self, ShelterDoc};
 use crate::store::{self, fs_error, tx_replace};
 use crate::volunteers::{self, VolunteerDoc};
 
@@ -225,6 +225,7 @@ async fn person_name(
 
 async fn reason_view(
     db: &FirestoreDb,
+    requester: &ShelterDoc,
     shelter_id: &str,
     reason: &Reason,
 ) -> Result<ReasonView, ApiError> {
@@ -241,13 +242,19 @@ async fn reason_view(
     let Some(previous) = previous else {
         return Ok(view);
     };
-    view.previous_delivered_at = Some(previous.delivered_at.to_string());
     let other: Option<ShelterDoc> =
         store::get(db, shelters::COLLECTION, &previous.shelter_id).await?;
-    if let Some(other) = other {
-        if previous.shelter_id == shelter_id || other.confirmation == Confirmation::Confirmed {
-            view.previous_shelter_name = Some(other.name);
-        }
+    let (date, name) = deliveries::previous_visibility(
+        requester,
+        shelter_id,
+        &previous.shelter_id,
+        other.as_ref(),
+    );
+    if date {
+        view.previous_delivered_at = Some(previous.delivered_at.to_string());
+    }
+    if name {
+        view.previous_shelter_name = other.map(|o| o.name);
     }
     Ok(view)
 }
@@ -269,6 +276,9 @@ pub async fn list_deliveries(
         .and_then(|s| serde_json::from_value(Value::String(s.to_string())).ok())
         .ok_or_else(|| invalid("status"))?;
     let wanted = status_name(status);
+    let requester: ShelterDoc = store::get(&state.db, shelters::COLLECTION, &id)
+        .await?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "shelter_not_found"))?;
 
     let rows: Vec<Row> = state
         .db
@@ -296,7 +306,7 @@ pub async fn list_deliveries(
     for row in rows {
         let mut reasons = Vec::with_capacity(row.reasons.len());
         for reason in &row.reasons {
-            reasons.push(reason_view(&state.db, &id, reason).await?);
+            reasons.push(reason_view(&state.db, &requester, &id, reason).await?);
         }
         let person_name = match &row.person_id {
             Some(person_id) => person_name(&state.db, &mut people_seen, person_id).await?,
@@ -689,6 +699,7 @@ mod tests {
             approved_by: None,
             status: s.status,
             reasons: s.reasons,
+            offline_claimed: false,
             reviewed_by: None,
             review_note: None,
             pseudonymized: false,
@@ -932,11 +943,16 @@ mod tests {
         };
         let unc = reason_of("d1");
         assert_eq!(unc["previous_delivery_id"], "p-unc");
-        assert_eq!(unc["previous_delivered_at"], "2026-10-20T10:00:00Z");
-        assert!(unc.get("previous_shelter_name").is_none(), "{unc}");
+        // This shelter is not confirmed: of another shelter's delivery it is told nothing.
+        for other in [unc, reason_of("d2")] {
+            assert!(other.get("previous_delivered_at").is_none(), "{other}");
+            assert!(other.get("previous_shelter_name").is_none(), "{other}");
+        }
         assert!(!body.to_string().contains("Abrigo escondido"));
-        assert_eq!(reason_of("d2")["previous_shelter_name"], "Abrigo aberto");
+        assert!(!body.to_string().contains("Abrigo aberto"));
+        // Its own delivery it is told, with the date.
         assert_eq!(reason_of("d3")["previous_shelter_name"], "Ginásio");
+        assert!(reason_of("d3").get("previous_delivered_at").is_some());
         let gone = reason_of("d4");
         assert_eq!(gone["previous_delivery_id"], "gone");
         assert!(gone.get("previous_delivered_at").is_none());

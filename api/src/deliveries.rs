@@ -113,6 +113,9 @@ pub struct DeliveryDoc {
     pub status: DeliveryStatus,
     #[serde(default)]
     pub reasons: Vec<Reason>,
+    /// The app said the delivery was made offline and the server believed it (`offline_claim`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub offline_claimed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -125,6 +128,12 @@ const CAPTURES: &str = "captures";
 const MAX_QUANTITY: u32 = 1000;
 const DEFAULT_PERIOD_DAYS: i64 = 7;
 const DAY_MICROS: i64 = 86_400_000_000;
+/// A delivery the app calls offline reaches the server later: one that arrives within this of its
+/// own `delivered_at` was not queued, and the claim is ignored (the server treats it as online).
+const OFFLINE_MIN_DELAY_MICROS: i64 = 30_000_000;
+/// `delivered_at` is the phone's clock: accepted from this long before the server's to a little ahead.
+const MAX_AGE_MICROS: i64 = 30 * DAY_MICROS;
+const MAX_AHEAD_MICROS: i64 = 5 * 60_000_000;
 /// Most recent deliveries of the same item and owner that the duplicate check looks at.
 const MAX_PREVIOUS: u32 = 50;
 
@@ -215,6 +224,40 @@ fn within_period(spec: &ItemSpec, a: FirestoreInstant, b: FirestoreInstant) -> b
     }
     let days = spec.period_days.map_or(DEFAULT_PERIOD_DAYS, i64::from);
     (a.as_microsecond() - b.as_microsecond()).abs() < days * DAY_MICROS
+}
+
+/// Whether the app's `offline` claim is believed: only for a delivery that waited at least
+/// `OFFLINE_MIN_DELAY_MICROS` between `delivered_at` and now.
+fn offline_claim_accepted(
+    claimed: bool,
+    delivered_at: FirestoreInstant,
+    received_at: FirestoreInstant,
+) -> bool {
+    claimed
+        && received_at.as_microsecond() - delivered_at.as_microsecond() >= OFFLINE_MIN_DELAY_MICROS
+}
+
+/// Whether the phone's `delivered_at` is plausible against the server's clock.
+fn delivered_at_in_range(delivered_at: FirestoreInstant, received_at: FirestoreInstant) -> bool {
+    let age = received_at.as_microsecond() - delivered_at.as_microsecond();
+    (-MAX_AHEAD_MICROS..=MAX_AGE_MICROS).contains(&age)
+}
+
+/// What the requesting shelter may be told about the delivery that makes its own a duplicate:
+/// its own shelter's, always; another shelter's only to a confirmed requester (the date), and the
+/// name only when that other shelter is confirmed too (spec 3.5.3 item 6, 4.7).
+pub fn previous_visibility(
+    requester: &ShelterDoc,
+    requester_id: &str,
+    previous_shelter_id: &str,
+    other: Option<&ShelterDoc>,
+) -> (bool, bool) {
+    let own = previous_shelter_id == requester_id;
+    let confirmed = requester.confirmation == Confirmation::Confirmed;
+    let date = own || confirmed;
+    let name =
+        own || (confirmed && other.is_some_and(|o| o.confirmation == Confirmation::Confirmed));
+    (date, name)
 }
 
 /// What someone typed or scanned, as Crockford reads it (same rule as `cards.rs`).
@@ -348,6 +391,7 @@ struct Write {
     quantity: u32,
     delivered_at: FirestoreInstant,
     decision: Decision,
+    offline_claimed: bool,
     /// The revalidation capture, already resolved to the person (`Decision::Revalidate`).
     capture_id: Option<String>,
 }
@@ -423,15 +467,17 @@ async fn record(
             DeliveryStatus::InReview
         },
         reasons,
+        offline_claimed: w.offline_claimed,
         reviewed_by: None,
         review_note: None,
         pseudonymized: false,
     };
     tx_create(db, tx, COLLECTION, &w.id, &doc)?;
-    let action = if approved {
-        "delivery.admin_approval"
-    } else {
-        "delivery.create"
+    let action = match (approved, w.offline_claimed) {
+        (true, true) => "delivery.admin_approval_offline",
+        (true, false) => "delivery.admin_approval",
+        (false, true) => "delivery.create_offline",
+        (false, false) => "delivery.create",
     };
     audit::add(
         db,
@@ -504,19 +550,33 @@ async fn record_failed_revalidation(
 
 // ---- the answer ----
 
-/// `{delivery_id, status, reasons}` (spec 8.6). The other delivery's shelter name goes out only
-/// while that shelter is `confirmed` (spec 4.7).
-async fn answer(db: &FirestoreDb, id: &str, doc: &DeliveryDoc) -> Result<Value, ApiError> {
+/// `{delivery_id, status, reasons}` (spec 8.6). What is told of the other delivery follows
+/// `previous_visibility`.
+async fn answer(
+    db: &FirestoreDb,
+    id: &str,
+    doc: &DeliveryDoc,
+    requester: &ShelterDoc,
+    requester_id: &str,
+) -> Result<Value, ApiError> {
     let mut reasons = Vec::new();
     for reason in &doc.reasons {
         let mut view = json!({ "kind": reason.kind });
         if let Some(previous_id) = &reason.previous_delivery_id {
             view["previous_delivery_id"] = json!(previous_id);
             if let Some(previous) = store::get::<DeliveryDoc>(db, COLLECTION, previous_id).await? {
-                view["previous_delivered_at"] = json!(previous.delivered_at.to_string());
-                let shelter: Option<ShelterDoc> =
+                let other: Option<ShelterDoc> =
                     store::get(db, shelters::COLLECTION, &previous.shelter_id).await?;
-                if shelter.is_some_and(|s| s.confirmation == Confirmation::Confirmed) {
+                let (date, name) = previous_visibility(
+                    requester,
+                    requester_id,
+                    &previous.shelter_id,
+                    other.as_ref(),
+                );
+                if date {
+                    view["previous_delivered_at"] = json!(previous.delivered_at.to_string());
+                }
+                if name {
                     view["previous_shelter_name"] = json!(previous.shelter_name);
                 }
             }
@@ -549,11 +609,8 @@ pub async fn post_delivery(
         let existing = same_delivery(existing, &shelter_id, &volunteer.id)?;
         return Ok((
             StatusCode::CREATED,
-            Json(answer(&state.db, &request.id, &existing).await?),
+            Json(answer(&state.db, &request.id, &existing, &shelter, &shelter_id).await?),
         ));
-    }
-    if request.admin_approval && !volunteer.is_admin_of(&shelter_id) {
-        return Err(ApiError::admin_approval_required());
     }
     if request.quantity == 0 || request.quantity > MAX_QUANTITY {
         return Err(invalid("quantity"));
@@ -562,6 +619,10 @@ pub async fn post_delivery(
         .delivered_at
         .parse()
         .map_err(|_| invalid("delivered_at"))?;
+    let received_at = now();
+    if !delivered_at_in_range(delivered_at, received_at) {
+        return Err(invalid("delivered_at"));
+    }
     let spec = shelter
         .items
         .get(&request.item)
@@ -572,13 +633,20 @@ pub async fn post_delivery(
     let (household_id, person, person_id) =
         load_target(&state.db, &card_code, &request.person_id).await?;
 
-    let unavailable = request.offline || degraded::blocking_reason(&state.db).await?.is_some();
+    // `offline` is the app's word: it is believed only for a delivery that really waited.
+    let offline_claimed = offline_claim_accepted(request.offline, delivered_at, received_at);
+    let unavailable = offline_claimed || degraded::blocking_reason(&state.db).await?.is_some();
     let sampled = !unavailable && is_sampled(&request.id, state.config.delivery_sample_rate);
+    // The admin's approval stands in for a selfie, so it only counts where a selfie would be asked.
+    let approval = request.admin_approval && (spec.high_value || sampled);
+    if approval && !volunteer.is_admin_of(&shelter_id) {
+        return Err(ApiError::admin_approval_required());
+    }
     let decision = decide(
         spec.high_value,
         sampled,
         unavailable,
-        request.admin_approval,
+        approval,
         request.capture_id.is_some(),
     );
     let mut capture_id = None;
@@ -632,6 +700,7 @@ pub async fn post_delivery(
         quantity: request.quantity,
         delivered_at,
         decision,
+        offline_claimed,
         capture_id,
     };
     let doc = store::transact(&state.db, |db, tx| {
@@ -642,7 +711,7 @@ pub async fn post_delivery(
     events::touch(&state, shelter.event_id.as_deref()).await;
     Ok((
         StatusCode::CREATED,
-        Json(answer(&state.db, &request.id, &doc).await?),
+        Json(answer(&state.db, &request.id, &doc, &shelter, &shelter_id).await?),
     ))
 }
 
@@ -676,6 +745,10 @@ mod tests {
         }
     }
 
+    fn at_instant(offset_micros: i64) -> FirestoreInstant {
+        FirestoreInstant::from_microsecond(store::now().as_microsecond() + offset_micros).unwrap()
+    }
+
     fn at(base: FirestoreInstant, offset_micros: i64) -> String {
         FirestoreInstant::from_microsecond(base.as_microsecond() + offset_micros)
             .unwrap()
@@ -687,6 +760,15 @@ mod tests {
             "id": id, "card_code": CARD, "person_id": person, "item": item,
             "quantity": 1, "delivered_at": store::now().to_string(),
         })
+    }
+
+    /// A delivery the app queued offline: it says so and carries a `delivered_at` from minutes ago.
+    fn offline(body: Value) -> Value {
+        with(
+            with(body, "offline", json!(true)),
+            "delivered_at",
+            json!(at(store::now(), -10 * 60_000_000)),
+        )
     }
 
     fn with(mut body: Value, key: &str, value: Value) -> Value {
@@ -1180,7 +1262,7 @@ mod tests {
     async fn offline_high_value_without_an_admin_goes_to_review_and_with_one_is_ok() {
         let s = setup().await;
         let id = new_id();
-        let body = with(req(&id, &s.p1, "colchao"), "offline", json!(true));
+        let body = offline(req(&id, &s.p1, "colchao"));
         let (status, answer) = deliver(&s.w.app, &s.w.vol_a, &s.w.a, body).await;
         assert_eq!(status, StatusCode::CREATED, "{answer}");
         assert_eq!(answer["status"], "in_review");
@@ -1191,7 +1273,7 @@ mod tests {
         assert_eq!(stored(&s.w.app, &id).await.verification, Verification::Card);
 
         let approved = with(
-            with(req(&new_id(), &s.p2, "colchao"), "offline", json!(true)),
+            offline(req(&new_id(), &s.p2, "colchao")),
             "admin_approval",
             json!(true),
         );
@@ -1207,7 +1289,7 @@ mod tests {
         config.delivery_sample_rate = 1.0;
         s.w.app.state.config = std::sync::Arc::new(config);
         let (posts, gets) = (s.w.app.unico.post_count(), s.w.app.unico.get_count());
-        let body = with(req(&new_id(), &s.p1, "kit"), "offline", json!(true));
+        let body = offline(req(&new_id(), &s.p1, "kit"));
         let (status, answer) = deliver(&s.w.app, &s.w.vol_a, &s.w.a, body).await;
         assert_eq!(status, StatusCode::CREATED, "{answer}");
         assert_eq!(answer["status"], "ok");
@@ -1260,7 +1342,7 @@ mod tests {
         let first = req(&new_id(), &s.p1, "colchao");
         let first = with(first, "admin_approval", json!(true));
         deliver(&s.w.app, &s.w.admin_a, &s.w.a, first).await;
-        let body = with(req(&new_id(), &s.p1, "colchao"), "offline", json!(true));
+        let body = offline(req(&new_id(), &s.p1, "colchao"));
         let (_, answer) = deliver(&s.w.app, &s.w.vol_a, &s.w.a, body).await;
         let kinds: Vec<&str> = answer["reasons"]
             .as_array()
@@ -1324,7 +1406,7 @@ mod tests {
     #[tokio::test]
     async fn the_period_limits_and_the_default_of_seven_days() {
         let s = setup().await;
-        let base = store::now();
+        let base = at_instant(-29 * DAYS);
         let send = |offset: i64| {
             let body = with(
                 req(&unsampled(), &s.p1, "kit"),
@@ -1365,7 +1447,7 @@ mod tests {
             with(
                 req(&new_id(), &s.p1, "colchao"),
                 "delivered_at",
-                json!(at(base, -400 * DAYS)),
+                json!(at(base, -25 * DAYS)),
             ),
             "admin_approval",
             json!(true),
@@ -1419,7 +1501,15 @@ mod tests {
         .await;
         assert_eq!(b["status"], "in_review");
         assert_eq!(b["reasons"][0]["previous_delivery_id"], first);
-        assert_eq!(b["reasons"][0]["previous_shelter_name"], "Abrigo B");
+        // the requester, shelter A, is not confirmed: it is told nothing of the other shelter's delivery
+        assert!(
+            b["reasons"][0].get("previous_shelter_name").is_none(),
+            "{b}"
+        );
+        assert!(
+            b["reasons"][0].get("previous_delivered_at").is_none(),
+            "{b}"
+        );
 
         // once the event of B is closed its deliveries no longer count
         let shelter_b: ShelterDoc = store::get(&s.w.app.state.db, shelters::COLLECTION, &s.w.b)
