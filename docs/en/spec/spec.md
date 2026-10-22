@@ -893,6 +893,8 @@ Base `https://<domain>/v1`. JSON. Authentication `Authorization: Bearer <session
 | `GET /shelters/{id}/deliveries?status=` | — (admin) | list |
 | `POST /deliveries/{id}/review` | `{decision: reviewed_ok\|irregular, note}` (admin) | `200` |
 
+In the response of `POST /shelters/{id}/deliveries`, each item of `reasons` carries `kind`, `previous_delivery_id?`, `previous_delivered_at?` and `previous_shelter_name?` (the last only when the shelter of the other delivery is `confirmed`, 4.7). `PUT /shelters/{id}/items` answers `{items}`; `GET /shelters/{id}/deliveries` answers `{deliveries: [...]}` with names (`person_name`, `delivered_by_name`, `approved_by_name`), never the `person_id`.
+
 ### 8.7 Rescues, searches and matches
 | Method and route | Body | Response |
 |---|---|---|
