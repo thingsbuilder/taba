@@ -46,6 +46,11 @@ export function Shelter({ ctx, shelterId }: { ctx: AppContext; shelterId: string
       })
     }
   }, [online, shelterId, items.length])
+  const [inReview, setInReview] = useState(0)
+  useEffect(() => {
+    if (!active || !online || roleIn(active, shelterId) !== 'admin') return
+    void api.listDeliveries(active.secret, shelterId, 'in_review').then((res) => res.ok && setInReview(res.data.deliveries.length))
+  }, [online, shelterId])
   useEffect(() => {
     setCapacity(String(view?.capacity ?? record?.capacity ?? ''))
     setEventName(view?.event?.name ?? '')
@@ -142,6 +147,15 @@ export function Shelter({ ctx, shelterId }: { ctx: AppContext; shelterId: string
             <button type="button" class="button" onClick={() => navigate(`/shelter/${shelterId}/checkin`)}>{t('checkin.title')}</button>
             <button type="button" class="button button-secondary" onClick={() => navigate(`/shelter/${shelterId}/people`)}>{t('person.list_title')}</button>
             <button type="button" class="button button-secondary" onClick={() => navigate(`/shelter/${shelterId}/exit`)}>{t('exit.title')}</button>
+            <button type="button" class="button button-secondary" onClick={() => navigate(`/shelter/${shelterId}/delivery`)}>{t('items.donations')}</button>
+            {role === 'admin' && (
+              <>
+                <button type="button" class="button button-secondary" onClick={() => navigate(`/shelter/${shelterId}/items`)}>{t('items.open')}</button>
+                <button type="button" class="button button-secondary" onClick={() => navigate(`/shelter/${shelterId}/review`)}>
+                  {inReview ? t('review.open', { count: inReview }) : t('review.title')}
+                </button>
+              </>
+            )}
           </>
         )}
 

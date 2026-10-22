@@ -15,7 +15,7 @@ import type {
   PersonSummary,
   PersonView,
 } from './api-phase3'
-import type { DeliveryRequest, DeliveryResponse, DeliveryView, PutItemsRequest, PutItemsResponse, ReviewRequest } from './api-phase5'
+import type { DeliveryRequest, DeliveryResponse, DeliveryView, Items, PutItemsRequest, PutItemsResponse, ReviewRequest } from './api-phase5'
 import type {
   MatchDecisionRequest,
   MatchDecisionResponse,
@@ -126,6 +126,8 @@ export interface ShelterView {
   flagged?: boolean
   created_at?: string
   role?: 'admin' | 'volunteer' | null
+  /** What the shelter gives (3.5.2); full view only. */
+  items?: Items
 }
 
 export interface InviteInfo {
