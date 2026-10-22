@@ -42,9 +42,13 @@ pub async fn occupancy(db: &FirestoreDb, shelter_id: &str) -> Result<u32, ApiErr
         .query()
         .await
         .map_err(fs_error)?;
-    Ok(rows
-        .first()
-        .map_or(0, |c| u32::try_from(c.open).unwrap_or(0)))
+    // an aggregate that cannot be read as a count is an error, not an empty shelter
+    rows.first().map_or(Ok(0), |c| {
+        u32::try_from(c.open).map_err(|_| {
+            tracing::error!(open = c.open, "integrity: occupancy count out of range");
+            ApiError::internal()
+        })
+    })
 }
 
 /// `capacity - occupancy`, never below zero; `None` while the shelter has no capacity set.

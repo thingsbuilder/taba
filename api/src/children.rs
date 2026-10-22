@@ -24,6 +24,82 @@ pub fn can_change_status(volunteer: &Volunteer) -> bool {
     volunteer.has_global(GlobalRole::Protection) || volunteer.has_global(GlobalRole::CivilDefense)
 }
 
+/// What a write asks of `is_child` and `child_status`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChildChange {
+    pub is_child: Option<bool>,
+    pub child_status: Option<ChildStatus>,
+}
+
+/// The single rule for `is_child` and `child_status` of a person who already exists; every
+/// route that writes them goes through here. Anyone may raise the protection (declare a child,
+/// or send the status a child already has); only `protection` and the Civil Defense
+/// (`may_alter`) lower it, change the status or clear the condition. The two fields move
+/// together: a status implies a child, and clearing the condition clears the status.
+/// Returns the status the `child_separated` alert is owed for: `separated` or `unaccompanied`,
+/// and only when it is new, so a repeated write raises nothing.
+pub fn change_child_state(
+    person: &mut PersonDoc,
+    change: ChildChange,
+    may_alter: bool,
+) -> Result<Option<ChildStatus>, ApiError> {
+    if change.is_child == Some(false) && change.child_status.is_some() {
+        let mut error = ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid_person");
+        error.detail = json!({ "field": "child_status" });
+        return Err(error);
+    }
+    let clears = change.is_child == Some(false) && person.is_child;
+    let alters = change
+        .child_status
+        .is_some_and(|status| Some(status) != person.child_status);
+    if (clears || alters) && !may_alter {
+        return Err(ApiError::protection_role_required());
+    }
+    if clears {
+        person.is_child = false;
+        person.child_status = None;
+        return Ok(None);
+    }
+    let became_child = !person.is_child && (change.is_child == Some(true) || alters);
+    if became_child {
+        person.is_child = true;
+    }
+    if alters {
+        person.child_status = change.child_status;
+    }
+    Ok(person
+        .child_status
+        .filter(|status| (alters || became_child) && *status != ChildStatus::WithGuardian))
+}
+
+fn protection_rank(status: Option<ChildStatus>) -> u8 {
+    match status {
+        None => 0,
+        Some(ChildStatus::WithGuardian) => 1,
+        Some(ChildStatus::Separated) => 2,
+        Some(ChildStatus::Unaccompanied) => 3,
+    }
+}
+
+/// Late biometrics folds the record `old` into `new`: the merged person is a child if either
+/// was, with the more protective of the two statuses, so a fusion never lowers the protection.
+/// Returns the status the alert is owed for when the fusion made `new` more protected.
+pub fn merge_child_state(new: &mut PersonDoc, old: &PersonDoc) -> Option<ChildStatus> {
+    let before = (new.is_child, new.child_status);
+    new.is_child |= old.is_child;
+    if protection_rank(old.child_status) > protection_rank(new.child_status) {
+        new.child_status = old.child_status;
+    }
+    // a status belongs to a child
+    if new.child_status.is_some() {
+        new.is_child = true;
+    }
+    (before != (new.is_child, new.child_status))
+        .then_some(new.child_status)
+        .flatten()
+        .filter(|status| *status != ChildStatus::WithGuardian)
+}
+
 /// Adds the `child_separated` alert to the transaction of the write that made the child
 /// `separated` or `unaccompanied`; a no-op for `with_guardian`. The alert reaches the
 /// protection queue, the Civil Defense and the admins of the shelter, and carries the
@@ -564,5 +640,110 @@ mod tests {
         assert!(!can_change_status(&with_role(GlobalRole::Validator)));
         assert!(!can_change_status(&with_role(GlobalRole::Mediator)));
         assert!(!can_change_status(&volunteer("stranger")));
+    }
+
+    // ---- the child state rule, without a database ----
+
+    fn adult() -> PersonDoc {
+        person(Level::Assisted, Some("s"))
+    }
+
+    fn kid(status: ChildStatus) -> PersonDoc {
+        child("s", status, vec![])
+    }
+
+    fn change(is_child: Option<bool>, child_status: Option<ChildStatus>) -> ChildChange {
+        ChildChange {
+            is_child,
+            child_status,
+        }
+    }
+
+    #[test]
+    fn anyone_may_declare_a_child_but_only_protection_lowers_or_changes_it() {
+        use ChildStatus::*;
+        // declaring raises the protection: allowed to anyone, alert owed for separated
+        let mut p = adult();
+        let alert = change_child_state(&mut p, change(Some(true), None), false).unwrap();
+        assert_eq!((p.is_child, p.child_status, alert), (true, None, None));
+        // a status for a person who had none is a change of status: protection only
+        let error = change_child_state(&mut p, change(None, Some(Separated)), false).unwrap_err();
+        assert_eq!(error.code, "protection_role_required");
+        assert_eq!(p.child_status, None);
+        let alert = change_child_state(&mut p, change(None, Some(Separated)), true).unwrap();
+        assert_eq!(alert, Some(Separated));
+        // clearing the condition, or changing the status, is refused to everyone else...
+        for ask in [change(Some(false), None), change(None, Some(WithGuardian))] {
+            let mut p = kid(Separated);
+            let error = change_child_state(&mut p, ask, false).unwrap_err();
+            assert_eq!(error.code, "protection_role_required", "{ask:?}");
+            assert_eq!((p.is_child, p.child_status), (true, Some(Separated)));
+        }
+        // ...and allowed to protection, the two fields moving together
+        let mut p = kid(Separated);
+        assert_eq!(
+            change_child_state(&mut p, change(Some(false), None), true).unwrap(),
+            None
+        );
+        assert_eq!((p.is_child, p.child_status), (false, None));
+        let mut p = kid(Separated);
+        assert_eq!(
+            change_child_state(&mut p, change(None, Some(WithGuardian)), true).unwrap(),
+            None
+        );
+        assert_eq!((p.is_child, p.child_status), (true, Some(WithGuardian)));
+    }
+
+    #[test]
+    fn repeating_a_child_state_changes_nothing_and_owes_no_alert() {
+        use ChildStatus::*;
+        let mut p = kid(Unaccompanied);
+        for may_alter in [false, true] {
+            let same = change(Some(true), Some(Unaccompanied));
+            assert_eq!(change_child_state(&mut p, same, may_alter).unwrap(), None);
+            assert_eq!(
+                (p.is_child, p.child_status),
+                (true, Some(Unaccompanied)),
+                "{may_alter}"
+            );
+        }
+        // clearing what is not set is not a lowering
+        let mut p = adult();
+        assert_eq!(
+            change_child_state(&mut p, change(Some(false), None), false).unwrap(),
+            None
+        );
+        // a status and "not a child" together is a contradiction
+        let error =
+            change_child_state(&mut p, change(Some(false), Some(Separated)), true).unwrap_err();
+        assert_eq!(error.code, "invalid_person");
+    }
+
+    #[test]
+    fn a_fusion_never_lowers_the_protection() {
+        use ChildStatus::*;
+        let alert = |new: PersonDoc, old: PersonDoc| {
+            let mut new = new;
+            let alert = merge_child_state(&mut new, &old);
+            (new.is_child, new.child_status, alert)
+        };
+        assert_eq!(
+            alert(adult(), kid(Separated)),
+            (true, Some(Separated), Some(Separated))
+        );
+        assert_eq!(
+            alert(kid(WithGuardian), kid(Unaccompanied)),
+            (true, Some(Unaccompanied), Some(Unaccompanied))
+        );
+        // the more protected record wins whichever side it was on, and nothing new is owed
+        assert_eq!(
+            alert(kid(Separated), kid(WithGuardian)),
+            (true, Some(Separated), None)
+        );
+        assert_eq!(
+            alert(kid(Separated), adult()),
+            (true, Some(Separated), None)
+        );
+        assert_eq!(alert(adult(), adult()), (false, None, None));
     }
 }
