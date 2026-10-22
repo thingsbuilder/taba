@@ -15,7 +15,7 @@ O **Taba** é uma rede open source de abrigos para desastres no Brasil, como enc
 - evitar cadastro duplicado e retirada de doação repetida entre abrigos;
 - ajudar **famílias a encontrar parentes desaparecidos**, inclusive quem não consegue dizer o próprio nome.
 
-> **Situação:** fase de especificação. Nada foi implementado ainda. Veja a [especificação](docs/pt_br/spec/).
+> **Situação:** em implementação. A API (Rust) e o app web (PWA) já existem e cobrem as funcionalidades abaixo; a [especificação](docs/pt_br/spec/) continua sendo a referência. Os limites conhecidos estão em [dívidas técnicas](docs/pt_br/dividas-tecnicas.md).
 
 ## Como funciona
 
@@ -40,7 +40,7 @@ Um abrigo pode ser criado por um único operador com um celular. O app funciona 
 O Taba trata **dados biométricos de pessoas vulneráveis**. Quem rodar uma instância precisa levar isso a sério.
 
 - **Biometria é dado pessoal sensível** pela LGPD (art. 5º, II). Cada operação tem uma base legal no art. 11. Por exemplo: proteção da vida na busca de desaparecidos, prevenção à fraude nas doações, política pública na operação do poder público. Os detalhes estão em [base legal LGPD](docs/pt_br/base%20legal%20LGPD.md).
-- **Só o token é guardado, nunca a foto.** E o token é guardado como HMAC, para que um banco vazado não possa ser cruzado com outros sistemas. A única exceção é uma miniatura do rosto, criptografada, de quem está sem identificação, como uma pessoa inconsciente ou uma criança pequena. Ela é apagada assim que a pessoa tiver um nome ou um número de pulseira.
+- **A pessoa é identificada pelo token, não pela foto.** O token é guardado como HMAC, para que um banco vazado não possa ser cruzado com outros sistemas. Há duas exceções, ambas com fotos **criptografadas** e temporárias: (1) a miniatura do rosto de quem está sem identificação, como uma pessoa inconsciente ou uma criança pequena, apagada assim que a pessoa tiver um nome ou um número de pulseira; (2) as fotos que a família envia numa busca, guardadas só enquanto a busca tem um match em aberto, para o mediador comparar os rostos, e apagadas quando o último match é decidido, quando o evento termina ou depois do prazo de retenção.
 - **A busca nunca revela a localização para quem buscou.** Um mediador (operador de abrigo ou Defesa Civil), ou a própria pessoa encontrada, decide se o contato vai acontecer. Isso protege vítimas de agressores que estejam procurando por elas.
 - **Os dados são apagados quando o evento termina**, depois de um prazo de retenção.
 - **Crianças** seguem o art. 14 da LGPD (melhor interesse da criança).

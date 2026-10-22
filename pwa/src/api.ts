@@ -15,7 +15,7 @@ import type {
   PersonSummary,
   PersonView,
 } from './api-phase3'
-import type { EventDashboard, EventSummary } from './api-phase6'
+import type { EventDashboard, EventList } from './api-phase6'
 import type { DeliveryRequest, DeliveryResponse, DeliveryStatus, DeliveryView, Items, PutItemsRequest, PutItemsResponse, ReviewRequest } from './api-phase5'
 import type {
   MatchDecisionRequest,
@@ -316,7 +316,7 @@ export function createApi(fetchFn: typeof fetch, deviceId: () => Promise<string>
     reviewDelivery: (secret: string, id: string, body: ReviewRequest) => call<Record<string, never>>('POST', `/v1/deliveries/${id}/review`, { secret, body }),
 
     // Phase 6 (spec 3.10, 8.8). The two CSVs are files: the caller reads the blob, so they return the raw response.
-    getDashboardEvents: (secret: string) => call<{ events: EventSummary[] }>('GET', '/v1/dashboard/events', { secret }),
+    getDashboardEvents: (secret: string) => call<EventList>('GET', '/v1/dashboard/events', { secret }),
     getDashboardEvent: (secret: string, id: string) => call<EventDashboard>('GET', `/v1/dashboard/events/${id}`, { secret }),
     getDailyCsv: (secret: string, id: string) => fetchFn(`/v1/dashboard/events/${id}/daily.csv`, { headers: { Authorization: `Bearer ${secret}` } }),
     getShelterExport: (secret: string, shelterId: string) => fetchFn(`/v1/shelters/${shelterId}/export.csv`, { headers: { Authorization: `Bearer ${secret}` } }),

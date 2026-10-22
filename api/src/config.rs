@@ -1,5 +1,5 @@
 //! Runtime configuration read from environment variables (spec 6.2.2).
-//! Only `GCP_PROJECT` is required in phase 0; the rest has defaults or is optional.
+//! Only `GCP_PROJECT` is required; the rest has defaults or is optional.
 
 use std::fmt;
 use std::str::FromStr;
