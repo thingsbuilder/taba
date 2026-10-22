@@ -22,6 +22,7 @@ mod runner;
 #[cfg(test)]
 mod tests;
 
-// `Jobs`, `StepFailure` and `run_once` are reached by name from the tests only.
-#[allow(unused_imports)]
-pub use runner::{Jobs, StepFailure, run_once, spawn};
+// `run_once` is reached by name from the tests only.
+#[cfg(test)]
+pub use runner::run_once;
+pub use runner::spawn;

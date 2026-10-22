@@ -27,6 +27,4 @@ mod persist;
 #[cfg(test)]
 mod tests;
 
-#[allow(unused_imports)]
-pub use model::PurgeReport;
 pub use persist::run;

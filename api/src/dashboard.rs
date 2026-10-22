@@ -30,5 +30,5 @@ pub(crate) use domain::count_value;
 pub use http::{daily_csv, get_event, list_events};
 
 // The paths other modules and the tests reach the panel by.
-#[allow(unused_imports)]
+#[cfg(test)]
 pub use model::*;
