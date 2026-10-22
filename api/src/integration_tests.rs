@@ -2308,7 +2308,9 @@ async fn anomalies_reach_the_validator_and_the_civil_defense_and_never_the_admin
 
 #[tokio::test]
 async fn the_dashboard_counts_the_event_and_the_csv_has_a_line_per_shelter_and_no_person() {
-    let s = scene().await;
+    let mut s = scene().await;
+    // No delivery is drawn for the Unico: 5% of the runs would fail on `liveness_required`.
+    std::sync::Arc::make_mut(&mut s.app.state.config).delivery_sample_rate = 0.0;
     let validator = actor_with(&s.app, "Validator", GlobalRole::Validator).await;
     let dc = actor_with(&s.app, "DC", GlobalRole::CivilDefense).await;
     let other = s.app.actor("Other").await;
