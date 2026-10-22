@@ -17,6 +17,7 @@ use crate::auth::{AppState, Membership, Volunteer};
 use crate::error::ApiError;
 use crate::idempotency;
 use crate::matching;
+use crate::search_photos;
 use crate::shelters::Confirmation;
 use crate::store::{self, tx_create, tx_replace};
 use crate::volunteers::GlobalRole;
@@ -57,7 +58,7 @@ pub struct Family {
 }
 
 /// `searches/{search_id}` (UUID of the client), spec 7. Only the `person_id` derived from each
-/// photo is kept, never the photo or the token.
+/// photo is kept, never the token; the photos themselves only while a match is open (`search_photos`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchDoc {
     #[serde(alias = "_firestore_id", default, skip_serializing)]
@@ -73,6 +74,10 @@ pub struct SearchDoc {
     pub person_ids: Vec<String>,
     pub photos_sent: u32,
     pub usable_photos: u32,
+    /// How many of the family's photos are kept encrypted in `search_photos` (0 when none, and
+    /// once the last open match is decided).
+    #[serde(default)]
+    pub retained_photos: u32,
     pub missing_person: MissingPerson,
     pub family: Family,
     pub status: SearchStatus,
@@ -265,8 +270,10 @@ async fn person_ids_of(
 /// Writes the search, takes the daily slot when `limit` is given, audits and compares it with the
 /// people already registered, in one transaction. An id that already exists for the same owner
 /// is a repeat: it answers as the first time and changes nothing.
+#[allow(clippy::too_many_arguments)]
 async fn commit_search(
     db: &FirestoreDb,
+    key: &[u8],
     owner: &SearchOwner,
     input: &SearchInput,
     person_ids: &[String],
@@ -276,7 +283,7 @@ async fn commit_search(
 ) -> Result<u32, ApiError> {
     store::transact(db, |db, tx| {
         let (owner, input, tz) = (owner.clone(), input.clone(), tz.to_string());
-        let person_ids = person_ids.to_vec();
+        let (person_ids, key) = (person_ids.to_vec(), key.to_vec());
         Box::pin(async move {
             if let Some(existing) = store::get::<SearchDoc>(&db, COLLECTION, &input.id).await? {
                 return if existing.created_by == owner.volunteer_id {
@@ -288,6 +295,13 @@ async fn commit_search(
             if let Some(limit) = limit {
                 take_daily_slot(&db, tx, &owner.volunteer_id, limit, &tz).await?;
             }
+            // The family's photos are kept (encrypted) only when the search already has a match.
+            let opened = matching::on_search_registered(&db, tx, &input.id, &person_ids).await?;
+            let retained_photos = if opened > 0 {
+                search_photos::retain(&db, tx, &key, &input.id, &input.photos)?
+            } else {
+                0
+            };
             let search = SearchDoc {
                 id: None,
                 created_by: owner.volunteer_id.clone(),
@@ -297,6 +311,7 @@ async fn commit_search(
                 person_ids: person_ids.clone(),
                 photos_sent: input.photos.len() as u32,
                 usable_photos,
+                retained_photos,
                 missing_person: input.missing_person.clone(),
                 family: input.family.clone(),
                 status: SearchStatus::Active,
@@ -314,7 +329,6 @@ async fn commit_search(
                 entry = entry.on_device(device);
             }
             audit::add(&db, tx, &entry)?;
-            matching::on_search_registered(&db, tx, &input.id, &person_ids).await?;
             Ok(usable_photos)
         })
     })
@@ -366,6 +380,7 @@ async fn register(
     }
     let usable_photos = commit_search(
         &state.db,
+        state.thumbnail_key(),
         &owner,
         &input,
         &person_ids,
@@ -1075,7 +1090,7 @@ mod tests {
                 },
             };
             handles.push(tokio::spawn(async move {
-                commit_search(&db, &owner, &input, &[target], 1, None, "UTC")
+                commit_search(&db, &[7u8; 32], &owner, &input, &[target], 1, None, "UTC")
                     .await
                     .unwrap();
             }));

@@ -16,6 +16,7 @@ use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::members::ShelterRole;
 use crate::people::{self, PersonDoc};
+use crate::search_photos;
 use crate::searches::{self, Family, SearchDoc};
 use crate::shelters::{self, Confirmation, ShelterDoc};
 use crate::store::{self, fs_error, tx_replace};
@@ -366,6 +367,7 @@ pub async fn get_match(
             "has_thumbnail": person.thumbnail_encrypted.is_some(),
         },
         "shelter_name": shelter,
+        "search_photos": if m.status == MatchStatus::Open { search.retained_photos } else { 0 },
         "created_at": m.created_at.to_string(),
     });
     if m.status == MatchStatus::Open && sees_history(&volunteer) {
@@ -400,6 +402,56 @@ pub async fn get_match_thumbnail(
     Ok((
         [(CONTENT_TYPE, "image/jpeg"), (CACHE_CONTROL, "no-store")],
         jpeg,
+    )
+        .into_response())
+}
+
+/// `GET /v1/matches/{id}/search-photos/{n}`: a photo the family sent with the search, for who
+/// attends the match and only while it is open; the person id never leaves the server. Every
+/// access is audited.
+pub async fn get_match_search_photo(
+    State(state): State<AppState>,
+    volunteer: Volunteer,
+    Path((match_id, n)): Path<(String, u32)>,
+) -> Result<Response, ApiError> {
+    let m = load_match(&state.db, &match_id).await?;
+    if !attends(&volunteer, &m) {
+        return Err(forbidden());
+    }
+    let not_found = || ApiError::new(StatusCode::NOT_FOUND, "photo_not_found");
+    if m.status != MatchStatus::Open {
+        return Err(not_found());
+    }
+    let search: SearchDoc = store::get(&state.db, searches::COLLECTION, &m.search_id)
+        .await?
+        .ok_or_else(match_not_found)?;
+    if n >= search.retained_photos {
+        return Err(not_found());
+    }
+    let photo: search_photos::PhotoDoc = store::get(
+        &state.db,
+        search_photos::COLLECTION,
+        &search_photos::photo_id(&m.search_id, n),
+    )
+    .await?
+    .ok_or_else(not_found)?;
+    let encrypted = photo.photo_encrypted.as_deref().ok_or_else(not_found)?;
+    let bytes = thumbnail::decrypt(state.thumbnail_key(), encrypted)?;
+    let entry = match_audit(
+        "search_photo.view",
+        &volunteer,
+        &m,
+        ("search", &m.search_id),
+    );
+    audit_now(&state, entry).await?;
+    let content_type = if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png"
+    } else {
+        "image/jpeg"
+    };
+    Ok((
+        [(CONTENT_TYPE, content_type), (CACHE_CONTROL, "no-store")],
+        bytes,
     )
         .into_response())
 }
@@ -524,6 +576,29 @@ pub async fn post_decision(
             tx_replace(&db, tx, COLLECTION, &match_id, &m)?;
             let entry = match_audit(decision.action(), &volunteer, &m, ("match", &match_id));
             audit::add(&db, tx, &entry)?;
+            // The family's photos stay while any other match of the search is still open.
+            let others_open: Vec<MatchDoc> = db
+                .fluent()
+                .select()
+                .from(COLLECTION)
+                .filter(|q| {
+                    q.for_all([
+                        q.field(path!(MatchDoc::search_id)).eq(m.search_id.as_str()),
+                        q.field(path!(MatchDoc::status)).eq(MatchStatus::Open),
+                    ])
+                })
+                .obj()
+                .query()
+                .await
+                .map_err(fs_error)?;
+            // `others_open` still has this match: its own status is not written yet.
+            if others_open.len() <= 1 {
+                if let Some(mut search) =
+                    store::get::<SearchDoc>(&db, searches::COLLECTION, &m.search_id).await?
+                {
+                    search_photos::discard(&db, tx, &m.search_id, &mut search, "decided")?;
+                }
+            }
             Ok(family)
         })
     })
@@ -714,6 +789,7 @@ mod tests {
             person_ids: vec![person_id.clone()],
             photos_sent: 1,
             usable_photos: 1,
+            retained_photos: 0,
             missing_person: MissingPerson {
                 name: "Maria de Souza".into(),
                 nickname: Some("Mari".into()),
@@ -1007,6 +1083,7 @@ mod tests {
                     "name": "Maria Souza", "social_name": null, "wristband": null,
                     "has_thumbnail": true
                 },
+                "search_photos": 0,
                 "shelter_name": "A",
                 "created_at": body["created_at"],
             })
@@ -1052,6 +1129,175 @@ mod tests {
         let (_, body) = w.app.send("GET", &path, &w.mediator.secret, None).await;
         assert!(body.get("history").is_none());
         assert_eq!(body["status"], "declined");
+    }
+
+    /// Keeps `photos` for the search of the match, as registering a search with a match does.
+    async fn keep_photos(app: &TestApp, match_id: &str, photos: &[Vec<u8>]) -> String {
+        let search_id = stored(app, match_id).await.search_id;
+        let key = app.state.thumbnail_key().to_vec();
+        store::transact(&app.state.db, |db, tx| {
+            let (search_id, key, photos) = (search_id.clone(), key.clone(), photos.to_vec());
+            Box::pin(async move {
+                let mut search: SearchDoc = store::get(&db, searches::COLLECTION, &search_id)
+                    .await?
+                    .unwrap();
+                search.retained_photos = search_photos::retain(&db, tx, &key, &search_id, &photos)?;
+                tx_replace(&db, tx, searches::COLLECTION, &search_id, &search)
+            })
+        })
+        .await
+        .unwrap();
+        search_id
+    }
+
+    #[tokio::test]
+    async fn the_family_photos_go_to_who_attends_while_open_and_every_view_is_audited() {
+        let w = world().await;
+        let id = seed(
+            &w.app,
+            MediatorKind::Shelter,
+            Some(&w.shelter_a),
+            false,
+            "en",
+        )
+        .await;
+        let png = vec![0x89, b'P', b'N', b'G', 1];
+        let search_id = keep_photos(&w.app, &id, &[JPEG.to_vec(), png.clone()]).await;
+        // Encrypted at rest.
+        let stored_photo: search_photos::PhotoDoc = store::get(
+            &w.app.state.db,
+            search_photos::COLLECTION,
+            &search_photos::photo_id(&search_id, 0),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            !stored_photo
+                .photo_encrypted
+                .unwrap()
+                .windows(JPEG.len())
+                .any(|x| x == JPEG)
+        );
+
+        let (_, view) = w
+            .app
+            .send("GET", &format!("/v1/matches/{id}"), &w.admin_a.secret, None)
+            .await;
+        assert_eq!(view["search_photos"], 2);
+        assert!(
+            !view
+                .to_string()
+                .contains(&stored(&w.app, &id).await.person_id)
+        );
+
+        let path = |n: u32| format!("/v1/matches/{id}/search-photos/{n}");
+        let (status, cache, bytes) = raw_get(&w.app, &path(0), &w.admin_a).await;
+        assert_eq!(
+            (status, cache.as_str(), bytes),
+            (StatusCode::OK, "no-store", JPEG.to_vec())
+        );
+        let (status, _, bytes) = raw_get(&w.app, &path(1), &w.mediator).await;
+        assert_eq!((status, bytes), (StatusCode::OK, png));
+        assert_eq!(
+            raw_get(&w.app, &path(2), &w.admin_a).await.0,
+            StatusCode::NOT_FOUND
+        );
+        for who in [&w.admin_b, &w.volunteer_a, &w.protection] {
+            assert_eq!(
+                raw_get(&w.app, &path(0), who).await.0,
+                StatusCode::FORBIDDEN,
+                "{}",
+                who.id
+            );
+        }
+        let views = audit_of(&w.app, "search_photo.view").await;
+        assert_eq!(views.len(), 2);
+        assert!(
+            views
+                .iter()
+                .all(|e| e["legal_basis"] == "vital_interest"
+                    && e["shelter_id"] == json!(w.shelter_a))
+        );
+    }
+
+    #[tokio::test]
+    async fn every_decision_erases_the_photos_of_the_last_open_match() {
+        for decision in ["accept", "decline", "not_the_person"] {
+            let w = world().await;
+            let id = seed(
+                &w.app,
+                MediatorKind::Shelter,
+                Some(&w.shelter_a),
+                false,
+                "en",
+            )
+            .await;
+            let search_id = keep_photos(&w.app, &id, &[JPEG.to_vec(), JPEG.to_vec()]).await;
+            assert_eq!(search_photos::all(&w.app.state.db).await.len(), 2);
+            assert_eq!(
+                decide(&w.app, &w.admin_a, &id, decision).await.0,
+                StatusCode::OK
+            );
+            assert!(
+                search_photos::all(&w.app.state.db).await.is_empty(),
+                "{decision}"
+            );
+            let search: SearchDoc = store::get(&w.app.state.db, searches::COLLECTION, &search_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(search.retained_photos, 0);
+            assert_eq!(
+                raw_get(
+                    &w.app,
+                    &format!("/v1/matches/{id}/search-photos/0"),
+                    &w.admin_a
+                )
+                .await
+                .0,
+                StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                audit_of(&w.app, "search_photos.discard.decided")
+                    .await
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_photos_stay_while_another_match_of_the_search_is_open() {
+        let w = world().await;
+        let first = seed(
+            &w.app,
+            MediatorKind::Shelter,
+            Some(&w.shelter_a),
+            false,
+            "en",
+        )
+        .await;
+        let search_id = keep_photos(&w.app, &first, &[JPEG.to_vec()]).await;
+        let mut second = stored(&w.app, &first).await;
+        second.person_id = "another-person".into();
+        store::replace(&w.app.state.db, COLLECTION, "second-match", &second)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            decide(&w.app, &w.admin_a, &first, "decline").await.0,
+            StatusCode::OK
+        );
+        assert_eq!(search_photos::all(&w.app.state.db).await.len(), 1);
+        assert_eq!(
+            decide(&w.app, &w.admin_a, "second-match", "decline")
+                .await
+                .0,
+            StatusCode::OK
+        );
+        assert!(search_photos::all(&w.app.state.db).await.is_empty());
+        let _ = search_id;
     }
 
     #[tokio::test]

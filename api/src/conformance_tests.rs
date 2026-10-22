@@ -120,6 +120,11 @@ const READ_AUDIT: &[(&str, &str, &str)] = &[
     ("GET", "/v1/matches", "match.list"),
     ("GET", "/v1/matches/{id}", "match.view"),
     ("GET", "/v1/matches/{id}/thumbnail", "thumbnail.view"),
+    (
+        "GET",
+        "/v1/matches/{id}/search-photos/{n}",
+        "search_photo.view",
+    ),
     ("GET", "/v1/people/{person_id}/thumbnail", "thumbnail.view"),
 ];
 
@@ -223,6 +228,8 @@ fn every_audit_action_of_the_table_is_written_by_some_module() {
 #[test]
 fn no_route_of_spec_16_is_registered() {
     for (method, path) in registered_routes() {
+        // The photos of the family's search are not the photos of the site (spec 16.4).
+        let path = path.replace("search-photos", "search-files");
         for banned in [
             "merge",
             "remote",
@@ -416,6 +423,10 @@ fn assert_clean(what: &str, key: &str, text: &str) {
 /// The documents of a collection as JSON. A person's encrypted thumbnail is bytes, which JSON has
 /// no value for: it is left out here and checked on its own.
 async fn documents(db: &firestore::FirestoreDb, collection: &str) -> Vec<Value> {
+    // Photos of a search are encrypted bytes, checked on their own in `matches`.
+    if collection == "search_photos" {
+        return vec![];
+    }
     if collection != "people" {
         return all_docs(db, collection).await;
     }

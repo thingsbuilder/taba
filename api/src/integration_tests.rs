@@ -2712,3 +2712,69 @@ async fn a_rescue_feeds_the_anomalies_once_and_a_replay_does_not_count() {
             .contains(&"anomaly_volume".to_string())
     );
 }
+
+#[tokio::test]
+async fn the_family_photos_are_kept_only_for_a_search_with_a_match_and_erased_on_the_decision() {
+    let s = scene().await;
+    let photos = || crate::search_photos::all(&s.app.state.db);
+    // A search nobody matches keeps nothing.
+    let (status, _) = register_search(&s.app, &s.admin, "tok-nobody").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert!(photos().await.is_empty());
+
+    // Someone is at the shelter; a search for them has a match and keeps its photo, encrypted.
+    let (status, body) = checkin_photo(
+        &s.app,
+        &s.volunteer,
+        &s.shelter,
+        "tok-here",
+        json!({ "data": { "name": "Ana" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, _) = register_search(&s.app, &s.admin, "tok-here").await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let kept = photos().await;
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert!(
+        !kept[0]
+            .photo_encrypted
+            .as_ref()
+            .unwrap()
+            .windows(6)
+            .any(|w| w == b"a face")
+    );
+
+    // The attendant of the queue sees it; the person id is nowhere in the answers.
+    let listed = matches_of(&s.app, &s.admin).await;
+    let id = listed[0]["id"].as_str().unwrap().to_string();
+    let (status, view) = call(&s.app, &s.admin, "GET", &format!("/v1/matches/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["search_photos"], 1);
+    let (status, shown) = text(
+        &s.app,
+        &s.admin,
+        &format!("/v1/matches/{id}/search-photos/0"),
+    )
+    .await;
+    assert_eq!((status, shown.as_str()), (StatusCode::OK, "a face"));
+    let (status, _) = text(
+        &s.app,
+        &s.volunteer,
+        &format!("/v1/matches/{id}/search-photos/0"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // The decision erases it.
+    let (status, body) = call(
+        &s.app,
+        &s.admin,
+        "POST",
+        &format!("/v1/matches/{id}/decision"),
+        Some(json!({ "decision": "decline", "decided_by": "person" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(photos().await.is_empty());
+}

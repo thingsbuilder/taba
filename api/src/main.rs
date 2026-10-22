@@ -32,6 +32,7 @@ mod purge;
 mod rescues;
 mod roles;
 mod search_links;
+mod search_photos;
 mod searches;
 mod shelters;
 mod status;
@@ -148,6 +149,10 @@ fn router(state: AppState) -> Router {
         .route(
             "/v1/matches/{id}/thumbnail",
             get(matches::get_match_thumbnail),
+        )
+        .route(
+            "/v1/matches/{id}/search-photos/{n}",
+            get(matches::get_match_search_photo),
         )
         .route("/v1/matches/{id}/decision", post(matches::post_decision))
         .route("/v1/volunteers/{id}/roles", post(roles::post_role))

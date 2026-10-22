@@ -19,6 +19,7 @@ use crate::events::{self, ClosureReason, EventDoc, EventStatus};
 use crate::invites::{self, InviteStatus};
 use crate::matches::{self, MatchDoc, MatchStatus};
 use crate::people::{self, PersonDoc};
+use crate::search_photos;
 use crate::searches::{self, SearchDoc, SearchStatus};
 use crate::shelters::{self, ShelterDoc, ShelterStatus};
 use crate::store::{self, fs_error, tx_delete, tx_replace};
@@ -202,6 +203,24 @@ async fn notify_expiring_searches(state: &AppState) -> Result<(), ApiError> {
             .query()
             .await
             .map_err(fs_error)?;
+        // The event is over: the family's photos kept for a match go now, not at the discard.
+        for search in active.iter().filter(|s| s.retained_photos > 0) {
+            let Some(search_id) = search.id.clone() else {
+                continue;
+            };
+            store::transact(&state.db, |db, tx| {
+                let search_id = search_id.clone();
+                Box::pin(async move {
+                    if let Some(mut search) =
+                        store::get::<SearchDoc>(&db, searches::COLLECTION, &search_id).await?
+                    {
+                        search_photos::discard(&db, tx, &search_id, &mut search, "event_closed")?;
+                    }
+                    Ok(())
+                })
+            })
+            .await?;
+        }
         let pending: Vec<String> = active
             .into_iter()
             .filter(|s| s.expiry_notified_at.is_none())
@@ -544,6 +563,7 @@ mod tests {
             person_ids: vec![],
             photos_sent: 1,
             usable_photos: 1,
+            retained_photos: 0,
             missing_person: MissingPerson {
                 name: "Fulano".into(),
                 nickname: None,
@@ -694,6 +714,48 @@ mod tests {
             (EventStatus::Closed, Some(ClosureReason::AllSheltersClosed))
         );
         assert!(closed.closed_at.is_some() && closed.purge_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn the_family_photos_are_erased_when_the_event_closes() {
+        let w = world().await;
+        let owner = w.app.actor("Owner").await;
+        let id = search(&w.app, &w.event, &owner.id).await;
+        let mut doc: SearchDoc = store::get(&w.app.state.db, searches::COLLECTION, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        doc.retained_photos = 1;
+        store::replace(&w.app.state.db, searches::COLLECTION, &id, &doc)
+            .await
+            .unwrap();
+        let photo = search_photos::PhotoDoc {
+            search_id: id.clone(),
+            photo_encrypted: Some(vec![1, 2, 3]),
+            created_at: store::now(),
+        };
+        store::replace(
+            &w.app.state.db,
+            search_photos::COLLECTION,
+            &search_photos::photo_id(&id, 0),
+            &photo,
+        )
+        .await
+        .unwrap();
+        run_once(&w.app.state).await.unwrap();
+        assert_eq!(
+            search_photos::all(&w.app.state.db).await.len(),
+            1,
+            "the event is open"
+        );
+        idle_for(&w.app, &w.event, 31).await;
+        run_once(&w.app.state).await.unwrap();
+        assert!(search_photos::all(&w.app.state.db).await.is_empty());
+        let stored: SearchDoc = store::get(&w.app.state.db, searches::COLLECTION, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.retained_photos, 0);
     }
 
     #[tokio::test]
