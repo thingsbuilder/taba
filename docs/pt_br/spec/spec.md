@@ -712,6 +712,10 @@ O banco é o `(default)`, em modo nativo, na região da instalação — o únic
 | `shelters` | `event_id` ASC, `status` ASC |
 | `people` | `current_shelter_id` ASC, `updated_at` DESC |
 | `people` | `event_ids` ARRAY_CONTAINS, `level` ASC |
+| `people` | `current_shelter_id` ASC, `birth_year` ASC |
+| `people` | `current_shelter_id` ASC, `vulnerabilities.indigenous_people` ASC |
+| `people` | `current_shelter_id` ASC, `vulnerabilities.migrant_language` ASC |
+| `people` | `current_shelter_id` ASC, `vulnerabilities.disability` ARRAY_CONTAINS |
 | `households` | `member_ids` ARRAY_CONTAINS |
 | `cards` | `household_id` ASC, `status` ASC |
 | `deliveries` | `person_id` ASC, `item` ASC, `delivered_at` DESC |
