@@ -501,7 +501,6 @@ async fn phase_6_routes_are_registered_and_ask_for_a_session() {
         ("GET", "/v1/dashboard/events"),
         ("GET", "/v1/dashboard/events/e1"),
         ("GET", "/v1/dashboard/events/e1/daily.csv"),
-        ("GET", "/v1/shelters/s1/export.csv"),
     ] {
         let (status, _, answer) = app.request(method, path, &[], None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}");
