@@ -2,6 +2,7 @@ import type { ApiStatus } from './api'
 import { type PhotoFields, blobToBase64, decryptPhotoFields, encryptPhotoFields } from './crypto'
 import type { Db, QueueItem } from './db'
 import { logEvent, routeOf } from './diagnostics'
+import { recordDeliveryReply } from './delivery'
 import { PHOTO_ERRORS } from './queue-errors'
 import { recordSearchReply } from './search'
 import { applyPhase3Synced, undoPhase3Local } from './sync'
@@ -321,6 +322,7 @@ export function createQueue(deps: QueueDeps) {
         await remove(item.id)
         await applyPhase3Synced(db, item, reply)
         await recordSearchReply(db, item, reply)
+        await recordDeliveryReply(db, item, reply)
         await deps.onSynced?.(item, reply)
         notify()
         continue
