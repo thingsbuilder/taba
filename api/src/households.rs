@@ -279,7 +279,7 @@ pub async fn post_household(
             for person in &mut members {
                 person.household_id = Some(new.id.clone());
                 person.updated_at = at;
-                tx_replace(&db, tx, people::COLLECTION, &person_key(person), person)?;
+                tx_replace(&db, tx, people::COLLECTION, person.stored_id()?, person)?;
             }
             audit::add(
                 &db,
@@ -295,10 +295,6 @@ pub async fn post_household(
     .await?;
     crate::members::touch_shelter_event(&state, &shelter_id).await;
     Ok((StatusCode::CREATED, Json(json!({ "household": created }))))
-}
-
-fn person_key(person: &PersonDoc) -> String {
-    person.id.clone().unwrap_or_default()
 }
 
 // ---- GET /v1/households/{id} ----
@@ -402,7 +398,7 @@ pub async fn patch_household(
             tx_replace(&db, tx, COLLECTION, &id, &household)?;
             for person in &mut changed {
                 person.updated_at = at;
-                tx_replace(&db, tx, people::COLLECTION, &person_key(person), person)?;
+                tx_replace(&db, tx, people::COLLECTION, person.stored_id()?, person)?;
             }
             audit::add(
                 &db,
