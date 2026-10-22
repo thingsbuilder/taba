@@ -127,6 +127,8 @@ export interface MatchDetail {
   /** What the registry has of the person found. */
   person: { name?: string; social_name?: string; wristband?: string; has_thumbnail: boolean }
   shelter_name?: string
+  /** How many photos of the family can be fetched; 0 once the match is decided. */
+  search_photos: number
   created_at: string
   /** Only for `mediator`, `protection` and the Civil Defense, and only while the match is open (4.11). */
   history?: { stays: { shelter_id: string; entered_at: string; left_at?: string | null; exit_reason?: string | null }[] }

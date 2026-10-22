@@ -28,6 +28,7 @@ export function MatchCheck({ ctx, matchId }: { ctx: AppContext; matchId: string 
   const [busy, setBusy] = useState(false)
   const [closed, setClosed] = useState(false)
   const [thumb, setThumb] = useState<string | null>(null)
+  const [familyPhotos, setFamilyPhotos] = useState<string[]>([])
   const [done, setDone] = useState<{ decision: MatchDecision; response: MatchDecisionResponse } | null>(null)
 
   useEffect(() => {
@@ -48,6 +49,25 @@ export function MatchCheck({ ctx, matchId }: { ctx: AppContext; matchId: string 
       if (url) URL.revokeObjectURL(url)
     }
   }, [match?.person.has_thumbnail, matchId, online])
+  useEffect(() => {
+    const count = match?.status === 'open' ? match.search_photos : 0
+    if (!active || !count || !online) return
+    let urls: string[] = []
+    let gone = false
+    void (async () => {
+      for (let n = 0; n < count; n++) {
+        const res = await api.getMatchSearchPhoto(active.secret, matchId, n)
+        if (gone || !res.ok) continue
+        urls = [...urls, URL.createObjectURL(await res.blob())]
+        setFamilyPhotos(urls)
+      }
+    })()
+    return () => {
+      gone = true
+      urls.forEach((u) => URL.revokeObjectURL(u))
+      setFamilyPhotos([])
+    }
+  }, [match?.status, match?.search_photos, matchId, online])
   if (!active) return null
 
   async function decide(decision: MatchDecision) {
@@ -121,6 +141,13 @@ export function MatchCheck({ ctx, matchId }: { ctx: AppContext; matchId: string 
               {match.person.social_name && <p class="body"><span class="caption">{t('match.r_social_name')}</span> {match.person.social_name}</p>}
               {match.person.wristband && <p class="body"><span class="caption">{t('match.r_wristband')}</span> <span class="code">{match.person.wristband}</span></p>}
               {thumb && <img class="camera-view" src={thumb} alt={t('match.thumbnail_alt')} />}
+              {familyPhotos.length > 0 && (
+                <>
+                  <p class="caption">{t('match.family_photos')}</p>
+                  {familyPhotos.map((src, i) => <img class="camera-view" key={src} src={src} alt={t('match.family_photo_alt', { n: i + 1 })} />)}
+                  <p class="caption">{t('match.family_photos_note')}</p>
+                </>
+              )}
               {match.history && match.history.stays.length > 0 && (
                 <>
                   <p class="caption">{t('match.history')}</p>

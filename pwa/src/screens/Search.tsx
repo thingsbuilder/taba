@@ -197,6 +197,7 @@ export function Search({ ctx }: { ctx: AppContext }) {
         <section class="card">
           <h2 class="subtitle">{t('search.photos_title')}</h2>
           <p class="caption">{t('search.photos_hint')}</p>
+          <p class="caption">{t('search.photos_kept')}</p>
           <p class="caption" role="status">{t('search.photos_count', { n: photos.length })}</p>
           <ul class="list">
             {photos.map((p, i) => (

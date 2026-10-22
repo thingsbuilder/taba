@@ -38,6 +38,14 @@ describe('the consent screen in three languages', () => {
     expect(d['consent.privacy_s9_body']).toMatch(/\S/)
   })
 
+  it.each([
+    ['pt-BR', ptBR, /só até a equipe conferir/],
+    ['en', en, /only until the team checks/],
+    ['es', es, /solo hasta que el equipo compruebe/],
+  ] as const)('%s tells the family their photos are kept only until the check', (_lang, dict, kept) => {
+    expect((dict as Record<string, string>)['family.consent_stored']).toMatch(kept)
+  })
+
   it('shows the responsible and the unconfirmed notice when there are, and omits them when there are not', () => {
     const full = consentView('es', { unconfirmed: true, responsible: 'Ana Lima' })
     expect(full.responsible).toBe('Responsable del piloto: Ana Lima')
