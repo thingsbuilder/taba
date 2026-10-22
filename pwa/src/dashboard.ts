@@ -21,6 +21,9 @@ export const formatRatio = (ratio: number | null): string =>
 export const formatDecimal = (n: number | null): string =>
   n === null ? '–' : new Intl.NumberFormat(getLanguage(), { maximumFractionDigits: 2 }).format(n)
 
+/** The "updated at" time of an answer, in the language of the app. */
+export const formatGeneratedAt = (iso: string): string => new Date(iso).toLocaleString(getLanguage())
+
 /** `403` has its own text; the rest follow the shared error codes. */
 export const dashboardErrorKey = (status: number): string | null => (status === 403 ? 'dashboard.error_forbidden' : null)
 

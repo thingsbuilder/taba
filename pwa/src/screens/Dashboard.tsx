@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'preact/hooks'
 import type { AlertView } from '../api'
-import type { EventDashboard, EventSummary } from '../api-phase6'
+import type { EventDashboard, EventList } from '../api-phase6'
 import type { AppContext } from '../app-context'
 import { errorKey } from '../app-context'
-import { ANOMALY_KINDS, anomaliesOf, canSeeDashboard, dashboardErrorKey, formatDecimal, formatNumber, formatRatio, saveCsv } from '../dashboard'
+import { ANOMALY_KINDS, anomaliesOf, canSeeDashboard, dashboardErrorKey, formatDecimal, formatGeneratedAt, formatNumber, formatRatio, saveCsv } from '../dashboard'
 import { logEvent } from '../diagnostics'
 import { useOnline } from '../hooks'
 import { getLanguage, t } from '../i18n'
@@ -34,7 +34,7 @@ function Block({ title, children }: { title: string; children: preact.ComponentC
 export function Dashboard({ ctx }: { ctx: AppContext }) {
   const { active, api } = ctx
   const online = useOnline()
-  const [events, setEvents] = useState<EventSummary[] | null>(null)
+  const [list, setList] = useState<EventList | null>(null)
   const [eventId, setEventId] = useState('')
   const [data, setData] = useState<EventDashboard | null>(null)
   const [alerts, setAlerts] = useState<AlertView[]>([])
@@ -55,7 +55,7 @@ export function Dashboard({ ctx }: { ctx: AppContext }) {
     void api.getDashboardEvents(active.secret).then((res) => {
       logEvent('dashboard_events', { status: res.ok ? 200 : res.status })
       if (!res.ok) return fail(res.status, res.error)
-      setEvents(res.data.events)
+      setList(res.data)
       setEventId((cur) => cur || res.data.events.find((e) => e.status === 'active')?.id || res.data.events[0]?.id || '')
     })
     void api.listAlerts(active.secret).then((res) => res.ok && setAlerts(res.data.alerts.filter((a) => ANOMALY_KINDS.includes(a.kind))))
@@ -83,6 +83,7 @@ export function Dashboard({ ctx }: { ctx: AppContext }) {
     if (!saved) setError(dashboardErrorKey(res.status) ?? 'error.generic')
   }
 
+  const events = list?.events ?? null
   const summary = events?.find((e) => e.id === eventId)
   const toConfirm = data?.unconfirmed_shelters ?? summary?.unconfirmed_shelters ?? []
   const anomalies = anomaliesOf(alerts, eventId)
@@ -98,6 +99,7 @@ export function Dashboard({ ctx }: { ctx: AppContext }) {
       {online && error && <p class="notice notice-error" role="alert">{t(error)}</p>}
       {online && !error && !events && <p class="body" role="status">{t('dashboard.loading')}</p>}
       {online && events && events.length === 0 && <p class="body">{t('dashboard.no_events')}</p>}
+      {online && list && !list.complete && <p class="notice notice-error" role="alert">{t('dashboard.list_partial')}</p>}
       {online && events && events.length > 0 && (
         <>
           <label class="field">
@@ -137,6 +139,12 @@ export function Dashboard({ ctx }: { ctx: AppContext }) {
           {!data && !error && <p class="body" role="status">{t('dashboard.loading')}</p>}
           {data && totals && (
             <>
+              <p class="caption">{t('dashboard.updated_at', { time: formatGeneratedAt(data.generated_at) })}</p>
+              {!data.complete && (
+                <p class="notice notice-error" role="alert">
+                  {t('dashboard.partial', { what: data.partial_indicators.map((k) => t(`dashboard.partial.${k}`)).join(', ') })}
+                </p>
+              )}
               <button type="button" class="button" disabled={busy} onClick={() => void downloadDaily()}>{t('dashboard.daily_csv')}</button>
 
               <Block title={t('dashboard.people')}>

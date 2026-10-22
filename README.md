@@ -15,7 +15,7 @@
 - avoid duplicate registrations and duplicate donation pickups across shelters;
 - help **families find missing relatives**, including people who cannot say their own name.
 
-> **Status:** specification phase. Nothing is implemented yet. See the [specification](docs/en/spec/).
+> **Status:** under implementation. The API (Rust) and the web app (PWA) already exist and cover the features below; the [specification](docs/en/spec/) remains the reference. Known limits are listed in [technical debts](docs/pt_br/dividas-tecnicas.md) (Portuguese).
 
 ## How it works
 
@@ -40,7 +40,7 @@ Shelters can be created by a single operator with a phone. The app works offline
 Taba handles **biometric data of vulnerable people**. Anyone running an instance must take this seriously.
 
 - **Biometric data is sensitive personal data** under Brazil's LGPD (art. 5, II). Each operation has a legal basis under art. 11. For example: protection of life for the missing person search, fraud prevention for donations, public policy for government operations. Details are in [base legal LGPD](docs/pt_br/base%20legal%20LGPD.md) (Portuguese).
-- **Only the token is stored, never the photo.** The token itself is stored as an HMAC, so a leaked database cannot be matched against other systems. The one exception is a small, encrypted face thumbnail of a person with no identification, such as an unconscious person or a small child. It is deleted as soon as the person has a name or a wristband number.
+- **A person is identified by the token, not by a photo.** The token is stored as an HMAC, so a leaked database cannot be matched against other systems. There are two exceptions, both **encrypted** and temporary photos: (1) a small face thumbnail of a person with no identification, such as an unconscious person or a small child, deleted as soon as the person has a name or a wristband number; (2) the photos a family sends with a search, kept only while the search has an open match so the mediator can compare faces, and deleted when the last match is decided, when the event ends, or after the retention period.
 - **The search never reveals a location to whoever searched.** A mediator (a shelter operator or Civil Defense), or the person who was found, decides whether contact happens. This protects victims from abusers looking for them.
 - **Data is deleted when the event ends**, after a retention period.
 - **Children** follow LGPD art. 14 (best interest of the child).
