@@ -346,8 +346,8 @@ Registration is done **at the landing or triage point**, not in the boat.
 1. Who registers: volunteer of a `confirmed` shelter, Civil Defense, `mediator` or `protection` [dec. d; dec. k, A5].
 2. The screen states, before anything else: **"Esta busca não substitui o registro de desaparecimento na delegacia."** ("This search does not replace the missing person report at the police station.") [dec. k, A5].
 3. The operator records: name, nickname and notes of the missing person; name, phone, relationship and language of the family; 1 to 5 photos (gallery allowed, this is the exception). Limit: `SEARCHES_PER_DAY` searches per volunteer per day (default 10), counted on the day of the `TZ_PILOT` time zone (default `America/Sao_Paulo`): the quota starts again at midnight there, not at 21:00 [dec. k, Q8].
-4. `POST /v1/searches`. With no signal, it goes through the queue; the photos stay **encrypted on the device** (6.1.7) and are **deleted right after sending** (`2xx`) [dec. k, Q45].
-5. Server generates one token per photo (`api+humantoken`), stores only the derived `person_id`s (`searches.person_ids`, "search" level: does not become a person) and compares with `people`. A match on any photo counts. In degraded mode, the search waits in the queue.
+4. `POST /v1/searches`. With no signal, it goes through the queue; the photos stay **encrypted on the device** (6.1.7) and are **deleted right after sending** (`2xx`) [dec. k, Q45]. On the server the photos are kept only under the conditions of item 5.
+5. Server generates one token per photo (`api+humantoken`), stores only the derived `person_id`s (`searches.person_ids`, "search" level: does not become a person) and compares with `people`. A match on any photo counts. **Retention of the family's photos** [owner decision, 2026-10-22]: if the search is born with a match (some photo matched a person already registered), the server keeps **all** the photos sent (up to 5), encrypted with `THUMBNAIL_KEY` like the thumbnail, in `search_photos/{search_id}.{n}` (one document per photo, each under 1 MiB), so the mediator can check the face on `/matches/:id`. A search with no match at registration keeps nothing; a match made later (a later check-in or rescue) finds **no** photos, because they are not kept on the chance of a match. The photos are only written after the answer of the search has gone out (the time of the answer does not reveal the match, 10.3); only JPEG and PNG are kept; if the writing fails, the search stays without photos and the failure is audited (`search_photos.retain_failed`). The photos are deleted when the last open match of the search is decided, when the search's event closes, with the event's discard or `PURGE_AFTER_DAYS` (30 days) after the search was made (a match nobody attends, a search with no event), whichever comes first. In degraded mode, the search waits in the queue.
 6. **The response is always the same**, with or without a match: `202 {message: "search_registered", usable_photos}`. The app shows "Busca registrada. Se a pessoa for encontrada e concordar, a equipe entrará em contato com a família." ("Search registered. If the person is found and agrees, the team will contact the family.") Not even the operator learns whether there was a match.
 7. `usable_photos` says how many photos produced a token, so the operator can ask for others.
 8. The search stays active until the purge of the event of the originating shelter; each later check-in or rescue is compared with the active searches [dec. k, Q25].
@@ -410,7 +410,7 @@ The event's reference contacts (`reference_contacts: {civil_defense_phone, child
 | `verified` | Capture with liveness | Shelter, donation, being a child's guardian | final |
 | `assisted` | Photo from the app camera | Shelter, donation by card [dec. k, Q42 rejected], location and reunification | → `verified` on the first capture with liveness, with no new registration [dec. i, Q1] |
 | `no_biometrics` | Record by name/wristband (refusal, no face, degraded mode) [dec. k, C1] | Shelter and donation; outside the photo search | → `assisted` or `verified` via `PUT /people/{id}/biometrics` (4.12) |
-| "search" | Family photo | Nothing; stays only in `searches.person_ids` | does not become a person |
+| "search" | Family photo | Nothing in `people`; stays only in `searches.person_ids`. The photos stay, encrypted, in `search_photos` only while a match is open (3.7 item 5) | does not become a person |
 
 Level never goes down. Decision k updates the original levels table: `assisted` and `no_biometrics` receive donations.
 
@@ -470,7 +470,7 @@ Whoever decides first (admin or `mediator`) closes the match for the others; the
 
 Flow:
 1. Sees the notice in "Avisos" (Notices) (`GET /v1/matches`): name, nickname, relationship and notes given by the family; name of the person in the registry; thumbnail if any; shelter. **Does not see the family's contact yet.**
-2. **Checks with the person** the data given by the family before any decision [dec. k, A6]. The screen shows this data as a checklist.
+2. **Checks with the person** the data given by the family before any decision [dec. k, A6]. The screen shows this data as a checklist, the thumbnail of the person in the shelter and, when there are any, the photos the family sent (online only, deleted at the decision).
 3. The person decides; if incapacitated, whoever handles it decides (`decided_by = operator`).
 4. `POST /v1/matches/{id}/decision {decision: accept|decline|not_the_person, decided_by: person|operator, note}`.
 5. `accept`: the response carries `family {name, phone, relationship, language}` and `whatsapp_link` (`https://wa.me/<phone>?text=<mensagem>`, in the family's language). The screen instructs: **"Depois de combinar o contato, apague este número do seu celular."** ("After arranging the contact, delete this number from your phone.") [dec. k, A4]. Location is never sent automatically.
@@ -802,10 +802,13 @@ Dates: `Timestamp`. `client_*` = phone time; no prefix = server time.
 `person_id`, `volunteer_id`, `device_id`, `lat`, `lon`, `accuracy_m`, `landing_point?`, `captured_at` (client), `received_at`, `event_id?`, `destination_shelter_id?`, `note?`.
 
 ### `searches/{search_id}` (client UUID)
-`created_by` (the volunteer the search is in the name of: who typed it or who made the family link), `via: volunteer|family_link`, `origin_shelter_id?`, `event_id?`, `person_ids: []` (HMAC of the photos' tokens), `photos_sent`, `usable_photos`, `missing_person: {name, nickname?, notes}`, `family: {name, phone, relationship, language}`, `status: active|closed`, `expiry_notified_at?`, `created_at`.
+`created_by` (the volunteer the search is in the name of: who typed it or who made the family link), `via: volunteer|family_link`, `origin_shelter_id?`, `event_id?`, `person_ids: []` (HMAC of the photos' tokens), `photos_sent`, `usable_photos`, `retained_photos` (how many of the family's photos are kept in `search_photos`; 0 for most), `missing_person: {name, nickname?, notes}`, `family: {name, phone, relationship, language}`, `status: active|closed`, `expiry_notified_at?`, `created_at`.
 
 ### `search_links/{code}` (128 random bits, base64url)
 `created_by`, `shelter_id`, `event_id?`, `status: active|used|canceled`, `created_at`, `expires_at` (12 h; TTL), `used_at?`, `search_id?`, `attempts`.
+
+### `search_photos/{search_id}.{n}`
+`search_id`, `photo_encrypted` (bytes: nonce || AES-256-GCM of the photo, with `THUMBNAIL_KEY`), `created_at`. It only exists while the search has an open match; deleted when the last open match is decided, when the event closes, at the discard and `PURGE_AFTER_DAYS` after the search was made.
 
 ### `matches/{sha256(search_id|person_id)}`
 `search_id`, `person_id`, `is_child: bool`, `mediator_kind: shelter|central|protection`, `mediator_shelter_id?`, `status: open|accepted|declined|not_the_person`, `decided_by?: person|operator`, `decided_by_volunteer?`, `decided_at?`, `note?`, `created_at`.
@@ -909,7 +912,8 @@ Delivery details: the body accepts `offline: true` (a delivery made without sign
 | `PATCH /rescues/{id}` | `{landing_point?, destination_shelter_id?}` (author) | `200` |
 | `POST /searches` | `{id, photos_base64: [1..5], missing_person: {name, nickname?, notes}, family: {name, phone, relationship, language}}` | `202 {message: "search_registered", usable_photos}` (same with or without a match); `429 search_limit` |
 | `GET /matches` | — | queues the volunteer handles (4.8) |
-| `GET /matches/{id}` | — | details for checking, without the family's contact |
+| `GET /matches/{id}` | — | details for checking, without the family's contact; `search_photos` = how many family photos there are to see |
+| `GET /matches/{id}/search-photos/{n}` | — | photo `n` (0 to 4) the family sent, `no-store`; only who attends the match, and only while it is open; audited (`search_photo.view`) |
 | `POST /matches/{id}/decision` | `{decision: accept\|decline\|not_the_person, decided_by: person\|operator, note?}` | `200 {family?, whatsapp_link?}`; `409 match_already_decided` |
 
 ### 8.8 Dashboard, alerts, export
@@ -985,7 +989,7 @@ Items that reference a shelter, person or household created offline come after i
 - **Event:** keeps only `name`, dates and `stats`, `status = purged`.
 - **Volunteer profiles:** deleted 365 days after `last_seen_at`, except banned ones [dec. k, Q21].
 - **Audit:** 1-year TTL [dec. k, Q21].
-- **Photos of people** never stay on the server: they only exist in the process memory during the call to Unico [dec. e]. On the phone, they are kept encrypted and deleted after the `2xx` (6.1.7).
+- **Photos of people** do not stay on the server, with one exception [owner decision, 2026-10-22]: the photos a family sent with a search that already has a match stay encrypted in `search_photos` until the match is decided, the event closes or the discard (3.7 item 5). All the others only exist in the process memory during the call to Unico [dec. e]. On the phone, they are kept encrypted and deleted after the `2xx` (6.1.7).
 
 #### 10.1.3 Transparency [dec. k, C1, M2]
 - Short text on each collection screen (check-in, search): purpose, retention period, who has access, legal basis, who is responsible.

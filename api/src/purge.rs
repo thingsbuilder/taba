@@ -31,7 +31,9 @@ use crate::members::{self, MembershipDoc, MembershipStatus, ShelterRole};
 use crate::shelters::{self, ShelterStatus};
 use crate::store::{self, fs_error, tx_create, tx_delete, tx_replace};
 use crate::volunteers::{self, GlobalRole};
-use crate::{alerts, cards, households, matches, people, rescues, search_links, searches};
+use crate::{
+    alerts, cards, households, matches, people, rescues, search_links, search_photos, searches,
+};
 
 /// Writes of one transaction (Firestore takes 500).
 const BATCH_WRITES: usize = 400;
@@ -832,6 +834,17 @@ impl<'a> Pass<'a> {
             {
                 ops.push(Op::Plain(matches::COLLECTION, found));
             }
+            for photo in ids_where(
+                self.db(),
+                search_photos::COLLECTION,
+                "search_id",
+                &search,
+                None,
+            )
+            .await?
+            {
+                ops.push(Op::Plain(search_photos::COLLECTION, photo));
+            }
             ops.push(Op::Plain(searches::COLLECTION, search));
         }
         if !self.run_ops(&target, ops).await? {
@@ -1395,6 +1408,7 @@ mod tests {
             person_ids: vec![new_id()],
             photos_sent: 1,
             usable_photos: 1,
+            retained_photos: 0,
             missing_person: MissingPerson {
                 name: "Fulano".into(),
                 nickname: None,
@@ -1784,6 +1798,28 @@ mod tests {
         close(&w.app, &far_event, 5, 60).await;
         run(&w.app.state).await.unwrap();
         assert!(exists(&w.app, people::COLLECTION, &both).await);
+    }
+
+    #[tokio::test]
+    async fn the_discard_takes_the_family_photos_of_the_event_searches() {
+        let w = world().await;
+        let (search, _) = search_in(&w).await;
+        let photo = search_photos::PhotoDoc {
+            search_id: search.clone(),
+            photo_encrypted: Some(vec![1, 2, 3]),
+            created_at: store::now(),
+        };
+        put(
+            &w.app,
+            search_photos::COLLECTION,
+            &search_photos::photo_id(&search, 0),
+            &photo,
+        )
+        .await;
+        close(&w.app, &w.event, -1, 60).await;
+        run(&w.app.state).await.unwrap();
+        assert_eq!(count(&w.app, search_photos::COLLECTION).await, 0);
+        assert!(!exists(&w.app, searches::COLLECTION, &search).await);
     }
 
     #[tokio::test]

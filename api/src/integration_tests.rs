@@ -2712,3 +2712,121 @@ async fn a_rescue_feeds_the_anomalies_once_and_a_replay_does_not_count() {
             .contains(&"anomaly_volume".to_string())
     );
 }
+
+const FAMILY_JPEG: [u8; 6] = [0xFF, 0xD8, 0xFF, 0xE0, 1, 2];
+
+/// A search with a JPEG and something that is not an image, both of the person `token`.
+async fn jpeg_search(app: &TestApp, who: &Actor, token: &str, id: &str) -> (StatusCode, Value) {
+    tokens(app, &[token, token]);
+    let mut body = search_body(2);
+    body["id"] = json!(id);
+    body["photos_base64"] = json!([
+        STANDARD.encode(FAMILY_JPEG),
+        STANDARD.encode(b"not an image")
+    ]);
+    call(app, who, "POST", "/v1/searches", Some(body)).await
+}
+
+/// The photos are written after the answer: waits until `n` documents are there.
+async fn wait_for_photos(app: &TestApp, n: usize) -> Vec<crate::search_photos::PhotoDoc> {
+    for _ in 0..200 {
+        let kept = crate::search_photos::all(&app.state.db).await;
+        if kept.len() == n {
+            return kept;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("the photos never reached {n}");
+}
+
+#[tokio::test]
+async fn the_family_photos_are_kept_only_for_a_search_with_a_match_and_erased_on_the_decision() {
+    let s = scene().await;
+    // A search nobody matches keeps nothing.
+    let (status, _) = jpeg_search(&s.app, &s.admin, "tok-nobody", &new_id()).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(crate::search_photos::all(&s.app.state.db).await.is_empty());
+
+    // Someone is at the shelter; a search for them has a match and keeps the image, encrypted
+    // (the second "photo" is not an image and is not kept).
+    let (status, body) = checkin_photo(
+        &s.app,
+        &s.volunteer,
+        &s.shelter,
+        "tok-here",
+        json!({ "data": { "name": "Ana" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, _) = jpeg_search(&s.app, &s.admin, "tok-here", &new_id()).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let kept = wait_for_photos(&s.app, 1).await;
+    assert!(
+        !kept[0]
+            .photo_encrypted
+            .as_ref()
+            .unwrap()
+            .windows(4)
+            .any(|w| w == &FAMILY_JPEG[..4])
+    );
+
+    // The attendant of the queue sees it; a plain volunteer does not.
+    let listed = matches_of(&s.app, &s.admin).await;
+    let id = listed[0]["id"].as_str().unwrap().to_string();
+    let (status, view) = call(&s.app, &s.admin, "GET", &format!("/v1/matches/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["search_photos"], 1);
+    let path = format!("/v1/matches/{id}/search-photos/0");
+    let (status, shown) = text(&s.app, &s.admin, &path).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!shown.is_empty());
+    assert_eq!(
+        text(&s.app, &s.volunteer, &path).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    // The decision erases it.
+    let (status, body) = call(
+        &s.app,
+        &s.admin,
+        "POST",
+        &format!("/v1/matches/{id}/decision"),
+        Some(json!({ "decision": "decline", "decided_by": "person" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(crate::search_photos::all(&s.app.state.db).await.is_empty());
+}
+
+#[tokio::test]
+async fn the_answer_of_a_search_does_not_wait_for_the_photos_to_be_written() {
+    let s = scene().await;
+    let (status, body) = checkin_photo(
+        &s.app,
+        &s.volunteer,
+        &s.shelter,
+        "tok-gate",
+        json!({ "data": { "name": "Ana" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = new_id();
+    crate::search_photos::gate::close(&id);
+    // With the writing held, the answer still comes: it does not depend on the photos.
+    let answered = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        jpeg_search(&s.app, &s.admin, "tok-gate", &id),
+    )
+    .await
+    .expect("the answer waited for the photos");
+    assert_eq!(answered.0, StatusCode::ACCEPTED);
+    assert!(crate::search_photos::all(&s.app.state.db).await.is_empty());
+    let search: crate::searches::SearchDoc = store::get(&s.app.state.db, "searches", &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(search.retained_photos, 0);
+    crate::search_photos::gate::open(&id);
+    wait_for_photos(&s.app, 1).await;
+}

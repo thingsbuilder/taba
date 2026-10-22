@@ -107,13 +107,15 @@ pub async fn on_person_registered(
 
 /// The other direction: a search just registered is compared with the people already
 /// registered under each of its `person_ids` (spec 3.7 item 5). It always reads every person,
-/// found or not, so a search with no match does the same work as one with a match.
+/// found or not, so a search with no match does the same work as one with a match. Returns how
+/// many matches it opened.
 pub async fn on_search_registered(
     db: &FirestoreDb,
     tx: &mut FirestoreTransaction<'_>,
     search_id: &str,
     person_ids: &[String],
-) -> Result<(), ApiError> {
+) -> Result<u32, ApiError> {
+    let mut opened = 0;
     for person_id in person_ids {
         let person: Option<PersonDoc> = store::get(db, people::COLLECTION, person_id).await?;
         let shelter: Option<ShelterDoc> = match person
@@ -124,8 +126,10 @@ pub async fn on_search_registered(
             None => None,
         };
         if let Some(person) = person.filter(|p| p.level != Level::NoBiometrics) {
-            open_match(db, tx, search_id, &person, person_id, shelter.as_ref()).await?;
+            if open_match(db, tx, search_id, &person, person_id, shelter.as_ref()).await? {
+                opened += 1;
+            }
         }
     }
-    Ok(())
+    Ok(opened)
 }
