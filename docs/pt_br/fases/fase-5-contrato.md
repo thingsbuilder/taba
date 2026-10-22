@@ -46,3 +46,7 @@ Compartilhado e já pronto: `error.rs` (`liveness_required` 428, `admin_approval
 ## Regras de convivência
 
 As mesmas das fases 3 e 4: arquivos disjuntos, nada de refatoração fora da sua linha, commits pequenos em inglês, testes de concorrência onde a spec 6.2.4 pede, testes automáticos nunca chamam a Unico, nada da instalação no repo.
+
+## Adendo: leitura dos itens salvos
+
+Não há `GET .../items`. Os itens salvos voltam em `items` (o mapa `shelters.items`) na visão de membros de `GET /v1/shelters/{id}` (`shelters::full_view`: membros do abrigo, validador e Defesa Civil); a visão pública não traz `items`. A PWA (C e D) lê `view.items` (`items?: Items` em `ShelterView`, `api.ts`).

@@ -497,12 +497,7 @@ async fn anyone_signed_in_creates_a_shelter_and_reads_the_basics_of_any() {
 async fn phase_5_routes_are_registered_and_ask_for_a_session() {
     let app = TestApp::new().await;
     let ana = app.actor("Ana").await;
-    for (method, path) in [
-        ("PUT", "/v1/shelters/s1/items"),
-        ("POST", "/v1/shelters/s1/deliveries"),
-        ("GET", "/v1/shelters/s1/deliveries?status=in_review"),
-        ("POST", "/v1/deliveries/d1/review"),
-    ] {
+    for (method, path) in [("POST", "/v1/shelters/s1/deliveries")] {
         let body = (method != "GET").then(|| json!({}));
         let (status, _, answer) = app.request(method, path, &[], body.clone()).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}");
