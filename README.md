@@ -28,8 +28,14 @@ Main features:
 3. **Rescue registration** at the landing or triage point.
 4. **Volunteers**, invited by QR code or link, always verified with Human Token.
 5. **Missing person search** from photos sent by the family.
-6. **"I'm safe"**: residents register themselves. Anyone who needs rescue is told to call 193 (Fire Department) or 199 (Civil Defense).
-7. **Revalidation** for high-value donations and for releasing a child from a shelter.
+6. **Revalidation** for high-value donations and for releasing a child from a shelter.
+
+**Not implemented yet** (planned for after the pilot, [section 16 of the specification](docs/en/spec/)):
+
+- **"I'm safe"**: residents register themselves. Anyone who needs rescue is told to call 193 (Fire Department) or 199 (Civil Defense).
+- **Remote endorsement** and the chain of shelter confirmation.
+- **Merging shelters and events.**
+- **Photos of the site.**
 
 Shelters can be created by a single operator with a phone. The app works offline and syncs when there is signal. A new shelter starts as **unconfirmed** and only sees its own data until it is confirmed. Shelters form **events** automatically, based on distance, with no back office needed to declare that a disaster has started.
 
