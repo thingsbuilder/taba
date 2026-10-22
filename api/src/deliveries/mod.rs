@@ -1,16 +1,18 @@
-//! Deliveries (spec 3.5.3, 4.7, 7, 8.6): `POST /v1/shelters/{id}/deliveries`. The decision (draw,
-//! liveness, admin approval, duplicate) and the write happen in one transaction; the types are
-//! shared with `deliveries_admin.rs`.
+//! Deliveries (spec 3.5.3, 4.7, 7, 8.6): `POST /v1/shelters/{id}/deliveries`. `domain.rs` holds the
+//! rules and the types (shared with `deliveries_admin.rs`); this file parses the request, reads
+//! what the rules need and writes the result in one transaction, so the decision (draw, liveness,
+//! admin approval, duplicate) and the write cannot be separated by a second delivery.
 
-use std::collections::{BTreeMap, HashMap};
+mod domain;
+
+use std::collections::HashMap;
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use firestore::{FirestoreDb, FirestoreInstant, path};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{self, AppState, CaptureDoc, Purpose, Volunteer, resolve_person, usable_capture};
@@ -20,126 +22,13 @@ use crate::error::ApiError;
 use crate::events::{self, EventDoc, EventStatus};
 use crate::households::{forbidden, load_household};
 use crate::people::{self, Level, PersonDoc};
-use crate::shelters::{self, Confirmation, ShelterDoc};
+use crate::shelters::{self, ShelterDoc};
 use crate::store::{self, fs_error, now, tx_create, tx_replace};
 
-pub const COLLECTION: &str = "deliveries";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ItemScope {
-    PerPerson,
-    PerHousehold,
-}
-
-/// One item a shelter gives (spec 3.5.2); `shelters.items` maps the item name to this.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ItemSpec {
-    pub scope: ItemScope,
-    /// Days between two deliveries of the item; absent means the default of 7. Ignored when `once_per_event`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub period_days: Option<u32>,
-    #[serde(default)]
-    pub once_per_event: bool,
-    #[serde(default)]
-    pub high_value: bool,
-}
-
-/// `shelters.items` (spec 7): item name to its rule.
-pub type Items = BTreeMap<String, ItemSpec>;
-
-/// How the person who took the item was checked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Verification {
-    Card,
-    Liveness,
-    AdminApproval,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeliveryStatus {
-    Ok,
-    InReview,
-    ReviewedOk,
-    Irregular,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReasonKind {
-    DuplicateInPeriod,
-    LivenessUnavailable,
-}
-
-/// Why a delivery waits for review (spec 4.7).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Reason {
-    pub kind: ReasonKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_delivery_id: Option<String>,
-}
-
-/// `deliveries/{delivery_id}` (UUID of the client), spec 7. `person_id` is a token id or, for a
-/// `no_biometrics` person, a client UUID; `late biometrics` repoints it (`people::repoint_person_refs`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeliveryDoc {
-    pub shelter_id: String,
-    pub shelter_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub event_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub person_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub household_id: Option<String>,
-    /// Phase 6 fills it when the delivery is pseudonymized.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub household_pseudonym: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub card_code: Option<String>,
-    pub item: String,
-    pub scope: ItemScope,
-    pub quantity: u32,
-    /// Empty once the delivery is pseudonymized.
-    #[serde(default)]
-    pub delivered_by: String,
-    /// The phone's clock.
-    #[serde(with = "firestore::serialize_as_timestamp")]
-    pub delivered_at: FirestoreInstant,
-    #[serde(with = "firestore::serialize_as_timestamp")]
-    pub received_at: FirestoreInstant,
-    pub verification: Verification,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approved_by: Option<String>,
-    pub status: DeliveryStatus,
-    #[serde(default)]
-    pub reasons: Vec<Reason>,
-    /// The app said the delivery was made offline and the server believed it (`offline_claim`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub offline_claimed: bool,
-    /// The phone's `delivered_at` was ahead of the server's clock and was cut to `received_at`.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub delivered_at_clamped: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reviewed_by: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review_note: Option<String>,
-    #[serde(default)]
-    pub pseudonymized: bool,
-}
+pub use domain::*;
 
 const CAPTURES: &str = "captures";
 const MAX_QUANTITY: u32 = 1000;
-const DEFAULT_PERIOD_DAYS: i64 = 7;
-const DAY_MICROS: i64 = 86_400_000_000;
-/// A delivery the app calls offline reaches the server later: one that arrives within this of its
-/// own `delivered_at` was not queued, and the claim is ignored (the server treats it as online).
-const OFFLINE_MIN_DELAY_MICROS: i64 = 30_000_000;
-/// `delivered_at` is the phone's clock: refused when older than this; a time ahead of the server's
-/// is not refused (a phone with the clock ahead would never get a delivery through) but cut to the
-/// moment of receipt.
-const MAX_AGE_MICROS: i64 = 30 * DAY_MICROS;
 /// Most recent deliveries of the same item and owner that the duplicate check looks at.
 const MAX_PREVIOUS: u32 = 50;
 
@@ -165,125 +54,6 @@ pub struct DeliveryRequest {
     admin_approval: bool,
     #[serde(default)]
     offline: bool,
-}
-
-// ---- the decision ----
-
-/// Whether `sha256(delivery_id)`, read as a number in [0, 1), is below `rate` (spec 3.5.3). The
-/// same id always gives the same answer, so a retry is drawn the same way.
-pub fn is_sampled(delivery_id: &str, rate: f64) -> bool {
-    let digest = Sha256::digest(delivery_id.as_bytes());
-    let mut head = [0u8; 8];
-    head.copy_from_slice(&digest[..8]);
-    // 2^64 as a float: the largest value maps to just below 1.
-    (u64::from_be_bytes(head) as f64 / 18_446_744_073_709_551_616.0) < rate
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Decision {
-    /// Delivered on the card alone.
-    Card,
-    /// The capture sent with the request must be the person.
-    Revalidate,
-    /// An admin of the shelter vouches for the person.
-    AdminApproval,
-    /// Liveness was due but cannot be done now: the delivery waits for review.
-    Unavailable,
-    /// `428`: ask for a selfie (or the admin's approval).
-    Ask,
-}
-
-/// What a delivery needs (spec 3.5.3 items 3, 4 and 7). `unavailable`: offline or Unico degraded,
-/// where there is no draw and a `high_value` item without an admin goes to review.
-fn decide(
-    high_value: bool,
-    sampled: bool,
-    unavailable: bool,
-    admin_approval: bool,
-    has_capture: bool,
-) -> Decision {
-    if admin_approval {
-        return Decision::AdminApproval;
-    }
-    if unavailable {
-        return if high_value {
-            Decision::Unavailable
-        } else {
-            Decision::Card
-        };
-    }
-    if has_capture {
-        return Decision::Revalidate;
-    }
-    if high_value || sampled {
-        Decision::Ask
-    } else {
-        Decision::Card
-    }
-}
-
-/// Whether two deliveries of the item are close enough to be a duplicate: less than `period_days`
-/// apart (either order, since offline items can sync out of order), or any time for `once_per_event`.
-fn within_period(spec: &ItemSpec, a: FirestoreInstant, b: FirestoreInstant) -> bool {
-    if spec.once_per_event {
-        return true;
-    }
-    let days = spec.period_days.map_or(DEFAULT_PERIOD_DAYS, i64::from);
-    (a.as_microsecond() - b.as_microsecond()).abs() < days * DAY_MICROS
-}
-
-/// Whether the app's `offline` claim is believed: only for a delivery that waited at least
-/// `OFFLINE_MIN_DELAY_MICROS` between `delivered_at` and now.
-fn offline_claim_accepted(
-    claimed: bool,
-    delivered_at: FirestoreInstant,
-    received_at: FirestoreInstant,
-) -> bool {
-    claimed
-        && received_at.as_microsecond() - delivered_at.as_microsecond() >= OFFLINE_MIN_DELAY_MICROS
-}
-
-/// The phone's `delivered_at` against the server's clock: a time in the future is cut to
-/// `received_at` (and says so); one older than 30 days is not plausible (`None`).
-fn plausible_delivered_at(
-    delivered_at: FirestoreInstant,
-    received_at: FirestoreInstant,
-) -> Option<(FirestoreInstant, bool)> {
-    if delivered_at > received_at {
-        return Some((received_at, true));
-    }
-    (received_at.as_microsecond() - delivered_at.as_microsecond() <= MAX_AGE_MICROS)
-        .then_some((delivered_at, false))
-}
-
-/// What the requesting shelter may be told about the delivery that makes its own a duplicate:
-/// its own shelter's, always; another shelter's only to a confirmed requester (the date), and the
-/// name only when that other shelter is confirmed too (spec 3.5.3 item 6, 4.7).
-pub fn previous_visibility(
-    requester: &ShelterDoc,
-    requester_id: &str,
-    previous_shelter_id: &str,
-    other: Option<&ShelterDoc>,
-) -> (bool, bool) {
-    let own = previous_shelter_id == requester_id;
-    let confirmed = requester.confirmation == Confirmation::Confirmed;
-    let date = own || confirmed;
-    let name =
-        own || (confirmed && other.is_some_and(|o| o.confirmation == Confirmation::Confirmed));
-    (date, name)
-}
-
-/// What someone typed or scanned, as Crockford reads it (same rule as `cards.rs`).
-fn normalize_card(input: &str) -> String {
-    input
-        .trim()
-        .chars()
-        .map(|c| match c.to_ascii_uppercase() {
-            'I' | 'L' => '1',
-            'O' => '0',
-            other => other,
-        })
-        .collect()
 }
 
 // ---- reads ----
@@ -364,7 +134,7 @@ async fn find_duplicate(db: &FirestoreDb, w: &Write) -> Result<Option<String>, A
     let mut active: HashMap<String, bool> = HashMap::new();
     for row in rows {
         let Some(id) = row.id else { continue };
-        if id == w.id || !within_period(&w.spec, row.delivered_at, w.delivered_at) {
+        if !counts_against(w, &id, row.delivered_at) {
             continue;
         }
         let counts = match &row.event_id {
@@ -387,30 +157,6 @@ async fn find_duplicate(db: &FirestoreDb, w: &Write) -> Result<Option<String>, A
     Ok(None)
 }
 
-// ---- the write ----
-
-/// Everything the transaction that records the delivery needs.
-#[derive(Clone)]
-struct Write {
-    id: String,
-    shelter_id: String,
-    shelter: ShelterDoc,
-    volunteer: Volunteer,
-    card_code: String,
-    person_id: String,
-    household_id: String,
-    item: String,
-    spec: ItemSpec,
-    quantity: u32,
-    delivered_at: FirestoreInstant,
-    decision: Decision,
-    offline_claimed: bool,
-    delivered_at_clamped: bool,
-    received_at: FirestoreInstant,
-    /// The revalidation capture, already resolved to the person (`Decision::Revalidate`).
-    capture_id: Option<String>,
-}
-
 /// One transaction: re-reads the card, the household and the capture, looks for the duplicate and
 /// writes the delivery. Of two deliveries of the same household the second one sees the first.
 async fn record(
@@ -420,7 +166,7 @@ async fn record(
 ) -> Result<DeliveryDoc, ApiError> {
     events::ensure_shelter_open(db, &w.shelter_id).await?;
     if let Some(existing) = store::get::<DeliveryDoc>(db, COLLECTION, &w.id).await? {
-        return same_delivery(existing, &w.shelter_id, &w.volunteer.id);
+        return same_delivery(existing, &w.shelter_id, &w.volunteer_id);
     }
     let (household_id, _, _) = load_target(db, &w.card_code, &w.person_id).await?;
     if household_id != w.household_id {
@@ -442,87 +188,18 @@ async fn record(
         )?;
     }
 
-    let mut reasons = Vec::new();
-    if let Some(previous) = find_duplicate(db, w).await? {
-        reasons.push(Reason {
-            kind: ReasonKind::DuplicateInPeriod,
-            previous_delivery_id: Some(previous),
-        });
-    }
-    if w.decision == Decision::Unavailable {
-        reasons.push(Reason {
-            kind: ReasonKind::LivenessUnavailable,
-            previous_delivery_id: None,
-        });
-    }
-    let approved = w.decision == Decision::AdminApproval;
-    let doc = DeliveryDoc {
-        shelter_id: w.shelter_id.clone(),
-        shelter_name: w.shelter.name.clone(),
-        event_id: w.shelter.event_id.clone(),
-        person_id: Some(w.person_id.clone()),
-        household_id: Some(w.household_id.clone()),
-        household_pseudonym: None,
-        card_code: Some(w.card_code.clone()),
-        item: w.item.clone(),
-        scope: w.spec.scope,
-        quantity: w.quantity,
-        delivered_by: w.volunteer.id.clone(),
-        delivered_at: w.delivered_at,
-        received_at: w.received_at,
-        verification: match w.decision {
-            Decision::Revalidate => Verification::Liveness,
-            Decision::AdminApproval => Verification::AdminApproval,
-            _ => Verification::Card,
-        },
-        approved_by: approved.then(|| w.volunteer.id.clone()),
-        status: if reasons.is_empty() {
-            DeliveryStatus::Ok
-        } else {
-            DeliveryStatus::InReview
-        },
-        reasons,
-        offline_claimed: w.offline_claimed,
-        delivered_at_clamped: w.delivered_at_clamped,
-        reviewed_by: None,
-        review_note: None,
-        pseudonymized: false,
-    };
+    let reasons = w.reasons(find_duplicate(db, w).await?);
+    let doc = w.delivery(reasons);
     tx_create(db, tx, COLLECTION, &w.id, &doc)?;
-    // What the audit says besides the delivery: the offline claim the server believed and a clock cut.
-    let action = format!(
-        "delivery.{}{}{}",
-        if approved { "admin_approval" } else { "create" },
-        if w.offline_claimed { "_offline" } else { "" },
-        if w.delivered_at_clamped {
-            "_clamped"
-        } else {
-            ""
-        },
-    );
     audit::add(
         db,
         tx,
-        &AuditEntry::new(action, "delivery", &w.id)
-            .by(&w.volunteer.id)
+        &AuditEntry::new(w.audit_action(), "delivery", &w.id)
+            .by(&w.volunteer_id)
             .in_shelter(&w.shelter_id)
             .basis(LegalBasis::FraudPrevention),
     )?;
     Ok(doc)
-}
-
-/// A delivery that already exists answers the same request again (same shelter, same volunteer);
-/// the same id from anyone else is a conflict.
-fn same_delivery(
-    existing: DeliveryDoc,
-    shelter_id: &str,
-    volunteer_id: &str,
-) -> Result<DeliveryDoc, ApiError> {
-    if existing.shelter_id == shelter_id && existing.delivered_by == volunteer_id {
-        Ok(existing)
-    } else {
-        Err(ApiError::new(StatusCode::CONFLICT, "delivery_id_taken"))
-    }
 }
 
 /// A revalidation that did not match: the capture is spent, nothing else is written but the audit.
@@ -649,7 +326,7 @@ pub async fn post_delivery(
         .cloned()
         .ok_or_else(|| invalid("item"))?;
     events::ensure_shelter_open(&state.db, &shelter_id).await?;
-    let card_code = normalize_card(&request.card_code);
+    let card_code = cards::crockford(&request.card_code);
     let (household_id, person, person_id) =
         load_target(&state.db, &card_code, &request.person_id).await?;
 
@@ -711,7 +388,7 @@ pub async fn post_delivery(
         id: request.id.clone(),
         shelter_id: shelter_id.clone(),
         shelter: shelter.clone(),
-        volunteer,
+        volunteer_id: volunteer.id,
         card_code,
         person_id,
         household_id,
@@ -922,74 +599,6 @@ mod tests {
             .unwrap();
         app.unico.finish_with_token(&doc.process_id, token);
         id
-    }
-
-    // ---- the draw and the decision ----
-
-    #[test]
-    fn the_draw_is_deterministic_and_close_to_the_rate() {
-        let id = new_id();
-        assert_eq!(is_sampled(&id, 0.05), is_sampled(&id, 0.05));
-        let ids: Vec<String> = (0..20_000).map(|_| new_id()).collect();
-        let drawn = ids.iter().filter(|id| is_sampled(id, 0.05)).count();
-        assert!((700..=1300).contains(&drawn), "{drawn} of 20000");
-        assert!(ids.iter().all(|id| !is_sampled(id, 0.0)));
-        assert!(ids.iter().all(|id| is_sampled(id, 1.0)));
-        // growing the rate never undraws an id
-        assert!(
-            ids.iter()
-                .all(|id| !is_sampled(id, 0.05) || is_sampled(id, 0.5))
-        );
-    }
-
-    #[test]
-    fn the_decision_table() {
-        use Decision::*;
-        // (high_value, sampled, unavailable, admin_approval, has_capture)
-        let cases = [
-            ((false, false, false, false, false), Card),
-            ((false, true, false, false, false), Ask),
-            ((true, false, false, false, false), Ask),
-            ((true, false, false, false, true), Revalidate),
-            ((false, false, false, false, true), Revalidate),
-            ((true, true, false, true, true), AdminApproval),
-            ((false, false, false, true, false), AdminApproval),
-            ((true, false, true, false, false), Unavailable),
-            ((true, false, true, true, false), AdminApproval),
-            ((false, true, true, false, false), Card),
-            ((false, false, true, false, true), Card),
-        ];
-        for ((high, sampled, unavailable, admin, capture), expected) in cases {
-            assert_eq!(
-                decide(high, sampled, unavailable, admin, capture),
-                expected,
-                "{high} {sampled} {unavailable} {admin} {capture}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_period_is_strictly_shorter_than_period_days_and_ignored_for_once_per_event() {
-        let base = store::now();
-        let week = spec(ItemScope::PerPerson, None, false, false);
-        let at_ = |micros: i64| {
-            FirestoreInstant::from_microsecond(base.as_microsecond() + micros).unwrap()
-        };
-        assert!(within_period(&week, base, at_(7 * DAYS - 1)));
-        assert!(!within_period(&week, base, at_(7 * DAYS)));
-        assert!(
-            within_period(&week, at_(7 * DAYS - 1), base),
-            "either order"
-        );
-        let three = spec(ItemScope::PerPerson, Some(3), false, false);
-        assert!(!within_period(&three, base, at_(3 * DAYS)));
-        let once = spec(ItemScope::PerPerson, Some(3), true, false);
-        assert!(within_period(&once, base, at_(400 * DAYS)));
-    }
-
-    #[test]
-    fn card_codes_are_read_as_crockford() {
-        assert_eq!(normalize_card(" abcd2o4l "), "ABCD2041");
     }
 
     // ---- criteria 25, 27, 28: ordinary deliveries ----

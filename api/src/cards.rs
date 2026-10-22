@@ -67,9 +67,9 @@ fn is_canonical(code: &str) -> bool {
 }
 
 /// What someone typed or scanned, as Crockford reads it: case does not matter and `I`, `L` and
-/// `O` stand for `1`, `1` and `0`. Anything else outside the alphabet is refused.
-fn normalize(input: &str, field: &str) -> Result<String, ApiError> {
-    let code: String = input
+/// `O` stand for `1`, `1` and `0`. Whether the result is a code is `is_canonical`'s to say.
+pub fn crockford(input: &str) -> String {
+    input
         .trim()
         .chars()
         .map(|c| match c.to_ascii_uppercase() {
@@ -77,7 +77,12 @@ fn normalize(input: &str, field: &str) -> Result<String, ApiError> {
             'O' => '0',
             other => other,
         })
-        .collect();
+        .collect()
+}
+
+/// `crockford`, refusing anything that is still not a code.
+fn normalize(input: &str, field: &str) -> Result<String, ApiError> {
+    let code = crockford(input);
     is_canonical(&code)
         .then_some(code)
         .ok_or_else(|| invalid(field))
