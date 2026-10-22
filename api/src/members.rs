@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::alerts::{self, AlertDoc, AlertKind};
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Membership, Volunteer};
 use crate::error::ApiError;
 use crate::shelters::{self, ShelterDoc};
@@ -104,7 +104,8 @@ pub async fn change_role(
                 audit::add(
                     &db,
                     tx,
-                    &AuditEntry::new(action, "volunteer", &volunteer_id),
+                    &AuditEntry::new(action, "volunteer", &volunteer_id)
+                        .basis(LegalBasis::PublicPolicy),
                 )?;
                 Ok(true)
             };
@@ -372,7 +373,8 @@ pub async fn promote_member(
                         &membership_id(&shelter_id, &target),
                     )
                     .by(&by)
-                    .in_shelter(&shelter_id),
+                    .in_shelter(&shelter_id)
+                    .basis(LegalBasis::FraudPrevention),
                 )?;
             }
             let profile: VolunteerDoc = store::get(&db, VOLUNTEERS, &target)
@@ -452,6 +454,7 @@ pub async fn remove_member(
                 &db,
                 tx,
                 &AuditEntry::new("member.remove", "membership", &id)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&by)
                     .in_shelter(&shelter_id),
             )
@@ -494,6 +497,7 @@ pub async fn leave_shelter(
                 &db,
                 tx,
                 &AuditEntry::new("member.leave", "membership", &id)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&who)
                     .in_shelter(&shelter_id),
             )
@@ -578,7 +582,9 @@ pub async fn ban_volunteer(
             audit::add(
                 &db,
                 tx,
-                &AuditEntry::new("volunteer.ban", "volunteer", &target).by(&by),
+                &AuditEntry::new("volunteer.ban", "volunteer", &target)
+                    .basis(LegalBasis::FraudPrevention)
+                    .by(&by),
             )
         })
     })

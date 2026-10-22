@@ -110,6 +110,7 @@ pub async fn put_items(
                 &db,
                 tx,
                 &AuditEntry::new("shelter.items", "shelter", &id)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&volunteer.id)
                     .in_shelter(&id),
             )?;

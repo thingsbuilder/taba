@@ -11,7 +11,7 @@ use firestore::{FirestoreDb, FirestoreInstant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::geo;
@@ -366,7 +366,9 @@ pub async fn patch_event(
             audit::add(
                 &db,
                 tx,
-                &AuditEntry::new("event.update", "event", &event_id).by(&volunteer.id),
+                &AuditEntry::new("event.update", "event", &event_id)
+                    .basis(LegalBasis::PublicPolicy)
+                    .by(&volunteer.id),
             )?;
             Ok(event)
         })

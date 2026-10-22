@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::store::{self, tx_replace};
@@ -70,7 +70,8 @@ async fn change(
                 &db,
                 tx,
                 &AuditEntry::new(format!("role.{verb}.{}", role.name()), "volunteer", &target)
-                    .by(&by),
+                    .by(&by)
+                    .basis(LegalBasis::PublicPolicy),
             )
         })
     })
