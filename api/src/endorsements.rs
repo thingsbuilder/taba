@@ -18,7 +18,7 @@ use crate::error::ApiError;
 use crate::geo;
 use crate::members;
 use crate::shelters::{
-    self, Confirmation, ConfirmationType, Endorsement, EndorsementKind, ShelterDoc, valid_position,
+    self, Confirmation, Endorsement, EndorsementKind, ShelterDoc, valid_position,
 };
 use crate::store::{self, tx_create, tx_replace};
 
@@ -35,6 +35,24 @@ pub struct EndorsementCodeDoc {
     #[serde(with = "firestore::serialize_as_timestamp")]
     pub expires_at: FirestoreInstant,
     pub used: bool,
+}
+
+impl EndorsementCodeDoc {
+    /// A code works once and until it expires (spec 3.9.2).
+    fn is_usable(&self, now: FirestoreInstant) -> bool {
+        !self.used && now < self.expires_at
+    }
+
+    /// The distance between the phone that made the code and the endorser's, which must be known
+    /// to the metre and within `radius_m` (spec 3.9.3).
+    fn distance_to(&self, position: &Position, radius_m: f64) -> Result<f64, ApiError> {
+        valid_position(position.lat, position.lon, position.accuracy)?;
+        let distance_m = geo::haversine_m(self.lat, self.lon, position.lat, position.lon);
+        if distance_m > radius_m {
+            return Err(too_far(distance_m));
+        }
+        Ok(distance_m)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -140,7 +158,7 @@ pub async fn endorse(
         Box::pin(async move {
             let mut code = store::get::<EndorsementCodeDoc>(&db, COLLECTION, &request.code)
                 .await?
-                .filter(|c| !c.used && store::now() < c.expires_at)
+                .filter(|c| c.is_usable(store::now()))
                 .ok_or_else(|| ApiError::new(StatusCode::GONE, "endorsement_code_invalid"))?;
             let mut shelter: ShelterDoc = store::get(&db, shelters::COLLECTION, &code.shelter_id)
                 .await?
@@ -177,15 +195,9 @@ pub async fn endorse(
             }
 
             // Both phones must know where they are, and be close (spec 3.9.3).
-            let position = &request.position;
-            valid_position(position.lat, position.lon, position.accuracy)?;
-            let distance_m = geo::haversine_m(code.lat, code.lon, position.lat, position.lon);
-            if distance_m > radius_m {
-                return Err(too_far(distance_m));
-            }
+            let distance_m = code.distance_to(&request.position, radius_m)?;
 
-            shelter.confirm(ConfirmationType::InPerson);
-            shelter.endorsements.push(Endorsement {
+            shelter.endorse_in_person(Endorsement {
                 kind: EndorsementKind::InPerson,
                 volunteer_id: volunteer.id.clone(),
                 endorser_shelter_id: request.endorser_shelter_id.clone(),
@@ -219,6 +231,50 @@ mod tests {
     use super::*;
     use crate::test_support::{Actor, ORIGIN, TestApp, all_docs, audit_actions, north_of_origin};
     use crate::volunteers::GlobalRole;
+
+    // ---- the code (no database) ----
+
+    fn code_doc(used: bool, expires_in_secs: i64) -> EndorsementCodeDoc {
+        let now = store::now();
+        EndorsementCodeDoc {
+            shelter_id: "s1".into(),
+            created_by: "v".into(),
+            lat: -30.0,
+            lon: -51.0,
+            accuracy_m: 5.0,
+            expires_at: FirestoreInstant::from_microsecond(
+                now.as_microsecond() + expires_in_secs * 1_000_000,
+            )
+            .unwrap(),
+            used,
+        }
+    }
+
+    /// A replay does not widen access: a code that was used or has expired is not usable again.
+    #[test]
+    fn a_code_works_once_and_until_it_expires() {
+        let now = store::now();
+        assert!(code_doc(false, 60).is_usable(now));
+        assert!(!code_doc(true, 60).is_usable(now));
+        assert!(!code_doc(false, -1).is_usable(now));
+    }
+
+    #[test]
+    fn the_endorser_must_be_within_the_radius_and_know_where_it_is() {
+        let code = code_doc(false, 60);
+        let at = |lat: f64, accuracy: f64| Position {
+            lat,
+            lon: -51.0,
+            accuracy,
+        };
+        assert_eq!(code.distance_to(&at(-30.0, 5.0), 100.0).unwrap(), 0.0);
+        // 0.001 degree of latitude is about 111 m
+        let error = code.distance_to(&at(-30.001, 5.0), 100.0).unwrap_err();
+        assert_eq!(error.code, "too_far");
+        assert!(code.distance_to(&at(-30.001, 5.0), 200.0).is_ok());
+        let error = code.distance_to(&at(-30.0, 101.0), 100.0).unwrap_err();
+        assert_eq!(error.code, "insufficient_accuracy");
+    }
 
     fn error_of(body: &Value) -> Option<&str> {
         body["error"].as_str()
@@ -409,7 +465,7 @@ mod tests {
             ),
             (
                 Confirmation::Confirmed,
-                Some(ConfirmationType::InPerson),
+                Some(shelters::ConfirmationType::InPerson),
                 true
             )
         );

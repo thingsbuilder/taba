@@ -1,6 +1,7 @@
 //! Automatic events (spec 4.3): a shelter joins the active event within `EVENT_RADIUS_KM`, or
 //! starts one. `PATCH /v1/events/{id}` renames it and sets the reference contacts (spec 8.2).
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use axum::Json;
@@ -25,7 +26,6 @@ const MAX_PHONE_CHARS: usize = 30;
 /// `last_activity_at` is written at most this often per event (spec 4.3.3).
 const ACTIVITY_INTERVAL: Duration = Duration::from_secs(3600);
 
-#[allow(dead_code)] // `purged` is written by the discard of phase 6
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventStatus {
@@ -42,7 +42,6 @@ pub enum ClosureReason {
 }
 
 /// What an event keeps of its numbers when its data is discarded (spec 7, `events.stats`).
-#[allow(dead_code)] // stage 0 scaffold: the discard writes it
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventStats {
     pub shelters: u32,
@@ -77,7 +76,7 @@ pub struct EventDoc {
     pub closed_at: Option<FirestoreInstant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closure_reason: Option<ClosureReason>,
-    /// When the event's data is discarded: `closed_at` + `PURGE_AFTER_DAYS` (spec 4.3, phase 6 does the discard).
+    /// When the event's data is discarded: `closed_at` + `PURGE_AFTER_DAYS` (spec 4.3).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -178,11 +177,13 @@ pub async fn assign(
     now: FirestoreInstant,
 ) -> Result<Assignment, ApiError> {
     let mut in_range: Vec<String> = Vec::new();
+    // Event ids already read, active or not: many shelters of one event cost one read.
+    let mut checked: HashSet<String> = HashSet::new();
     for near in geo::open_shelters_within(db, lat, lon, f64::from(radius_km) * 1000.0).await? {
         let Some(event_id) = near.shelter.event_id else {
             continue;
         };
-        if in_range.contains(&event_id) {
+        if !checked.insert(event_id.clone()) {
             continue;
         }
         let event: Option<EventDoc> = store::get(db, COLLECTION, &event_id).await?;
@@ -229,9 +230,10 @@ pub async fn ensure_shelter_open(db: &FirestoreDb, shelter_id: &str) -> Result<(
 }
 
 /// Whether the event's activity should be written now, and if so, remembers it.
-// ponytail: the "written within the hour" memory is per process (single e2-micro instance), and is
-// lost on restart, which costs one extra write per event. With more than one instance, each one
-// would write once an hour; read `last_activity_at` from the event document to share the limit.
+// The "written within the hour" memory is per process and is lost on restart. Limit: one extra
+// write per event after a restart, and N writes an hour per event with N instances (the deployment
+// runs one). Nothing is lost either way; `last_activity_at` on the event document would share the
+// limit between instances.
 fn activity_due(state: &AppState, event_id: &str, now: Instant) -> bool {
     let mut seen = state
         .event_activity
@@ -636,7 +638,7 @@ mod patch_tests {
             Some("199"),
             "a refused request changes nothing"
         );
-        // The shelter's own view carries the contacts for the child alerts of phase 3.
+        // The shelter's own view carries the contacts for the child alerts.
         let (_, seen) = app
             .send(
                 "GET",

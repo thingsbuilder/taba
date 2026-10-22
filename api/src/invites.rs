@@ -11,6 +11,7 @@ use firestore::jiff::SignedDuration;
 use firestore::{FirestoreDb, FirestoreInstant, path};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::task::JoinSet;
 
 use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{
@@ -26,6 +27,8 @@ use crate::volunteers::{self, ProfileInput, VolunteerDoc};
 pub const COLLECTION: &str = "invites";
 const QR_TTL: SignedDuration = SignedDuration::from_mins(30);
 const LINK_TTL: SignedDuration = SignedDuration::from_hours(24);
+/// Profiles of the people who joined by link that the admin's list reads at the same time.
+const PROFILE_READS_AT_ONCE: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,6 +76,57 @@ impl InviteDoc {
         match self.kind {
             InviteKind::Qr => Via::Qr,
             InviteKind::Link => Via::Link,
+        }
+    }
+
+    /// Spends the invite on `person_id`. Single use: only a valid invite can be spent, so a replay
+    /// (the same code again, by the same person or another) finds it used.
+    fn redeem(&mut self, person_id: &str, now: FirestoreInstant) -> Result<(), ApiError> {
+        if !self.is_valid(now) {
+            return Err(invite_invalid());
+        }
+        self.status = InviteStatus::Used;
+        self.used_by = Some(person_id.to_string());
+        self.used_at = Some(now);
+        Ok(())
+    }
+
+    /// Withdraws an invite that nobody has used yet.
+    fn cancel(&mut self, now: FirestoreInstant) -> Result<(), ApiError> {
+        if !self.is_valid(now) {
+            return Err(invite_invalid());
+        }
+        self.status = InviteStatus::Canceled;
+        Ok(())
+    }
+
+    /// Whether someone with this `previous` membership of the shelter may come in by this invite:
+    /// not if already in, and not again by link after being removed (spec 3.3.7).
+    fn admits(&self, previous: Option<MembershipStatus>) -> Result<(), ApiError> {
+        match (previous, self.kind) {
+            (Some(MembershipStatus::Active), _) => {
+                Err(ApiError::new(StatusCode::CONFLICT, "already_member"))
+            }
+            (Some(MembershipStatus::Removed), InviteKind::Link) => {
+                Err(ApiError::new(StatusCode::FORBIDDEN, "removed_from_shelter"))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The membership the invite grants.
+    fn membership(&self, code: &str, person_id: &str, now: FirestoreInstant) -> MembershipDoc {
+        MembershipDoc {
+            shelter_id: self.shelter_id.clone(),
+            volunteer_id: person_id.to_string(),
+            role: self.role,
+            status: MembershipStatus::Active,
+            via: self.via(),
+            invite_code: Some(code.to_string()),
+            invited_by: Some(self.created_by.clone()),
+            joined_at: now,
+            removed_by: None,
+            removed_at: None,
         }
     }
 }
@@ -211,19 +265,36 @@ pub async fn list_invites(
         })
         .collect();
 
-    let mut joined_by_link = Vec::new();
-    for member in members::active_in_shelter(&state.db, &shelter_id).await? {
-        if member.via != Via::Link {
-            continue;
+    let by_link: Vec<MembershipDoc> = members::active_in_shelter(&state.db, &shelter_id)
+        .await?
+        .into_iter()
+        .filter(|m| m.via == Via::Link)
+        .collect();
+    let mut joined_by_link = Vec::with_capacity(by_link.len());
+    for chunk in by_link.chunks(PROFILE_READS_AT_ONCE) {
+        let mut reads = JoinSet::new();
+        for (position, member) in chunk.iter().enumerate() {
+            let (db, id) = (state.db.clone(), member.volunteer_id.clone());
+            reads.spawn(async move {
+                (
+                    position,
+                    store::get::<VolunteerDoc>(&db, volunteers::COLLECTION, &id).await,
+                )
+            });
         }
-        let profile: Option<VolunteerDoc> =
-            store::get(&state.db, volunteers::COLLECTION, &member.volunteer_id).await?;
-        joined_by_link.push(json!({
-            "volunteer_id": member.volunteer_id,
-            "name": profile.map(|p| p.name),
-            "invite_code": member.invite_code,
-            "joined_at": member.joined_at.to_string(),
-        }));
+        let mut names = vec![None; chunk.len()];
+        while let Some(done) = reads.join_next().await {
+            let (position, profile) = done.map_err(|_| ApiError::internal())?;
+            names[position] = profile?.map(|p| p.name);
+        }
+        for (member, name) in chunk.iter().zip(names) {
+            joined_by_link.push(json!({
+                "volunteer_id": member.volunteer_id,
+                "name": name,
+                "invite_code": member.invite_code,
+                "joined_at": member.joined_at.to_string(),
+            }));
+        }
     }
     Ok(Json(
         json!({ "invites": invites, "joined_by_link": joined_by_link }),
@@ -248,7 +319,7 @@ pub async fn cancel_invite(
                 return Err(forbidden());
             }
             crate::events::ensure_shelter_open(&db, &invite.shelter_id).await?;
-            invite.status = InviteStatus::Canceled;
+            invite.cancel(store::now())?;
             tx_replace(&db, tx, COLLECTION, &code, &invite)?;
             audit::add(
                 &db,
@@ -360,36 +431,14 @@ async fn accept_in(
         &membership_id(&invite.shelter_id, &a.person_id),
     )
     .await?;
-    match previous.as_ref().map(|m| (m.status, invite.kind)) {
-        Some((MembershipStatus::Active, _)) => {
-            return Err(ApiError::new(StatusCode::CONFLICT, "already_member"));
-        }
-        // Someone removed from a shelter comes back only in person (spec 3.3.7).
-        Some((MembershipStatus::Removed, InviteKind::Link)) => {
-            return Err(ApiError::new(StatusCode::FORBIDDEN, "removed_from_shelter"));
-        }
-        _ => {}
-    }
+    invite.admits(previous.map(|m| m.status))?;
     let shelter: ShelterDoc = store::get(db, shelters::COLLECTION, &invite.shelter_id)
         .await?
         .ok_or_else(invite_invalid)?;
 
-    let membership = MembershipDoc {
-        shelter_id: invite.shelter_id.clone(),
-        volunteer_id: a.person_id.clone(),
-        role: invite.role,
-        status: MembershipStatus::Active,
-        via: invite.via(),
-        invite_code: Some(a.code.clone()),
-        invited_by: Some(invite.created_by.clone()),
-        joined_at: now,
-        removed_by: None,
-        removed_at: None,
-    };
+    let membership = invite.membership(&a.code, &a.person_id, now);
     let session = new_session(&a.person_id, &a.device_id, a.session_days, now);
-    invite.status = InviteStatus::Used;
-    invite.used_by = Some(a.person_id.clone());
-    invite.used_at = Some(now);
+    invite.redeem(&a.person_id, now)?;
 
     let membership_key = membership_id(&invite.shelter_id, &a.person_id);
     tx_replace(db, tx, volunteers::COLLECTION, &a.person_id, &volunteer)?;
@@ -496,6 +545,95 @@ mod tests {
     use super::*;
     use crate::test_support::{Actor, ORIGIN, TestApp, all_docs, audit_actions, new_id};
     use crate::volunteers::GlobalRole;
+
+    // ---- the invite and its membership (no database) ----
+
+    fn invite_of(kind: InviteKind, role: ShelterRole) -> InviteDoc {
+        let now = store::now();
+        InviteDoc {
+            shelter_id: "s1".into(),
+            kind,
+            role,
+            created_by: "admin".into(),
+            created_at: now,
+            expires_at: now + QR_TTL,
+            status: InviteStatus::Active,
+            used_by: None,
+            used_at: None,
+        }
+    }
+
+    /// A replay does not widen access: an invite is spent once, and a spent, canceled or expired
+    /// one grants nothing, to the same person or to another.
+    #[test]
+    fn an_invite_is_spent_once() {
+        let now = store::now();
+        let mut invite = invite_of(InviteKind::Qr, ShelterRole::Volunteer);
+        invite.redeem("p1", now).unwrap();
+        assert_eq!(invite.status, InviteStatus::Used);
+        assert_eq!(invite.used_by.as_deref(), Some("p1"));
+        for person in ["p1", "p2"] {
+            assert_eq!(
+                invite.redeem(person, now).unwrap_err().code,
+                "invite_invalid"
+            );
+        }
+        assert_eq!(invite.used_by.as_deref(), Some("p1"));
+        assert!(invite.cancel(now).is_err());
+
+        let mut canceled = invite_of(InviteKind::Link, ShelterRole::Volunteer);
+        canceled.cancel(now).unwrap();
+        assert!(canceled.redeem("p1", now).is_err());
+        assert!(
+            canceled.cancel(now).is_err(),
+            "canceling twice changes nothing"
+        );
+
+        let mut expired = invite_of(InviteKind::Qr, ShelterRole::Volunteer);
+        let later = expired.expires_at;
+        assert!(expired.redeem("p1", later).is_err());
+        assert_eq!(expired.status, InviteStatus::Active);
+    }
+
+    #[test]
+    fn who_may_come_in_by_which_invite() {
+        use MembershipStatus::*;
+        let qr = invite_of(InviteKind::Qr, ShelterRole::Volunteer);
+        let link = invite_of(InviteKind::Link, ShelterRole::Volunteer);
+        // (previous membership, by qr, by link)
+        let cases = [
+            (None, None, None),
+            (Some(Left), None, None),
+            (Some(Removed), None, Some("removed_from_shelter")),
+            (Some(Active), Some("already_member"), Some("already_member")),
+        ];
+        for (previous, by_qr, by_link) in cases {
+            assert_eq!(
+                qr.admits(previous).err().map(|e| e.code),
+                by_qr,
+                "{previous:?}"
+            );
+            assert_eq!(
+                link.admits(previous).err().map(|e| e.code),
+                by_link,
+                "{previous:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_membership_carries_the_role_and_the_way_in() {
+        let now = store::now();
+        let admin_by_qr = invite_of(InviteKind::Qr, ShelterRole::Admin).membership("c1", "p1", now);
+        assert_eq!(admin_by_qr.role, ShelterRole::Admin);
+        assert_eq!(admin_by_qr.via, Via::Qr);
+        assert_eq!(admin_by_qr.status, MembershipStatus::Active);
+        assert_eq!(admin_by_qr.invite_code.as_deref(), Some("c1"));
+        assert_eq!(admin_by_qr.invited_by.as_deref(), Some("admin"));
+        let by_link =
+            invite_of(InviteKind::Link, ShelterRole::Volunteer).membership("c2", "p1", now);
+        assert_eq!(by_link.via, Via::Link);
+    }
 
     fn error_of(body: &Value) -> Option<&str> {
         body["error"].as_str()
