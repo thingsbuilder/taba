@@ -592,8 +592,9 @@ pub async fn delete_current_session(
     State(state): State<AppState>,
     volunteer: Volunteer,
 ) -> Result<StatusCode, ApiError> {
-    let entry =
-        AuditEntry::new("session.delete", "session", &volunteer.session_id).by(&volunteer.id);
+    let entry = AuditEntry::new("session.delete", "session", &volunteer.session_id)
+        .basis(LegalBasis::FraudPrevention)
+        .by(&volunteer.id);
     state
         .db
         .run_transaction(|db, tx| {

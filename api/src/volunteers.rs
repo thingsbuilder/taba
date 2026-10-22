@@ -8,7 +8,7 @@ use firestore::{FirestoreInstant, paths};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::store::fs_error;
@@ -189,7 +189,9 @@ pub async fn patch_me(
         doc.language = valid_language(language)?;
     }
 
-    let entry = AuditEntry::new("volunteer.update", "volunteer", &volunteer.id).by(&volunteer.id);
+    let entry = AuditEntry::new("volunteer.update", "volunteer", &volunteer.id)
+        .basis(LegalBasis::FraudPrevention)
+        .by(&volunteer.id);
     let id = volunteer.id.clone();
     state
         .db

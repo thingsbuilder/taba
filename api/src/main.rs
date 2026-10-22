@@ -4,6 +4,8 @@ mod auth;
 mod cards;
 mod children;
 mod config;
+#[cfg(test)]
+mod conformance_tests;
 mod dashboard;
 mod degraded;
 mod deliveries;

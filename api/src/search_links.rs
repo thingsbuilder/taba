@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::alerts::{self, AlertDoc, AlertKind};
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::searches::{self, RegisterOutcome, SearchInput, SearchOwner, SearchVia};
@@ -198,6 +198,7 @@ pub async fn post_search_link(
                 &db,
                 tx,
                 &AuditEntry::new("search_link.create", "search_link", &code)
+                    .basis(LegalBasis::VitalInterest)
                     .by(&by)
                     .in_shelter(&link.shelter_id),
             )
@@ -240,6 +241,7 @@ pub async fn delete_search_link(
                 &db,
                 tx,
                 &AuditEntry::new("search_link.cancel", "search_link", &code)
+                    .basis(LegalBasis::VitalInterest)
                     .by(&volunteer.id)
                     .in_shelter(&link.shelter_id),
             )?;
@@ -420,6 +422,7 @@ where
             link.processing_until = None;
             tx_replace(&db, tx, COLLECTION, &code, &link)?;
             let mut entry = AuditEntry::new("search_link.submit", "search_link", &code)
+                .basis(LegalBasis::FamilyConsent)
                 .by(&link.created_by)
                 .in_shelter(&link.shelter_id);
             if let Some(device) = &device {

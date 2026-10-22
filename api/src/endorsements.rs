@@ -12,7 +12,7 @@ use firestore::jiff::SignedDuration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::geo;
@@ -96,6 +96,7 @@ pub async fn create_code(
                 &db,
                 tx,
                 &AuditEntry::new("endorsement.code", "shelter", &shelter_id)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&by)
                     .in_shelter(&shelter_id),
             )
@@ -199,6 +200,7 @@ pub async fn endorse(
                 &db,
                 tx,
                 &AuditEntry::new("endorsement.create", "shelter", &shelter_id)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&volunteer.id)
                     .in_shelter(&shelter_id),
             )?;

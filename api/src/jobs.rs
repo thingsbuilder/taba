@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::alerts::{self, AlertDoc, AlertKind};
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::AppState;
 use crate::endorsements;
 use crate::error::ApiError;
@@ -143,7 +143,11 @@ async fn close_events(state: &AppState) -> Result<(), ApiError> {
                 event.purge_at = Some(plus_days(now, purge_days));
                 event.delivery_purge_at = Some(plus_days(now, delivery_days));
                 tx_replace(&db, tx, events::COLLECTION, &id, &event)?;
-                audit::add(&db, tx, &AuditEntry::new("event.close", "event", &id))
+                audit::add(
+                    &db,
+                    tx,
+                    &AuditEntry::new("event.close", "event", &id).basis(LegalBasis::PublicPolicy),
+                )
             })
         })
         .await?;
@@ -341,7 +345,8 @@ async fn delete_thumbnails(state: &AppState) -> Result<(), ApiError> {
                     audit::add(
                         &db,
                         tx,
-                        &AuditEntry::new("person.thumbnail_purge", "person", &person_id),
+                        &AuditEntry::new("person.thumbnail_purge", "person", &person_id)
+                            .basis(LegalBasis::PublicPolicy),
                     )?;
                 }
                 Ok(())

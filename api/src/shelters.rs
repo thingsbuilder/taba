@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::alerts::{self, AlertDoc, AlertKind};
-use crate::audit::{self, AuditEntry};
+use crate::audit::{self, AuditEntry, LegalBasis};
 use crate::auth::{AppState, Volunteer};
 use crate::error::ApiError;
 use crate::events::{self, EventDoc};
@@ -515,6 +515,7 @@ async fn create_in(
         db,
         tx,
         &AuditEntry::new("shelter.create", "shelter", &new.id)
+            .basis(LegalBasis::FraudPrevention)
             .by(creator_id)
             .in_shelter(&new.id),
     )?;
@@ -646,6 +647,7 @@ pub async fn patch_shelter(
                 &db,
                 tx,
                 &AuditEntry::new("shelter.update", "shelter", &id)
+                    .basis(LegalBasis::FraudPrevention)
                     .by(&volunteer.id)
                     .in_shelter(&id),
             )?;
@@ -754,7 +756,8 @@ async fn update(
                     tx,
                     &AuditEntry::new(change.action(), "shelter", &id)
                         .by(&by)
-                        .in_shelter(&id),
+                        .in_shelter(&id)
+                        .basis(LegalBasis::FraudPrevention),
                 )?;
             }
             let event = event_of(&db, &shelter).await?;
