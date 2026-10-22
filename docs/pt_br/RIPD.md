@@ -29,7 +29,7 @@ O Taba é um aplicativo web (PWA) para abrigos e resgate em desastres. Voluntár
 - acompanham crianças desacompanhadas e a saída de crianças;
 - reportam números agregados à Defesa Civil (painel e CSV).
 
-O reconhecimento facial é feito pela Unico (Human Token). O Taba guarda só um identificador derivado do token, nunca a foto nem o token puro.
+O reconhecimento facial é feito pela Unico (Human Token). O Taba guarda só um identificador derivado do token, nunca o token puro e, em regra, nunca a foto; a exceção são as fotos que uma família enviou numa busca que já tem match, guardadas cifradas até a conferência (seção 10, R19).
 
 ## 3. Dados tratados e onde ficam
 
@@ -56,7 +56,7 @@ O reconhecimento facial é feito pela Unico (Human Token). O Taba guarda só um 
 
 ### 3.2 O que nunca é guardado
 
-- **Foto de pessoa no servidor.** Ela só existe na memória do processo durante a chamada à Unico. Nenhum documento do Firestore tem foto, salvo a miniatura cifrada.
+- **Foto de pessoa no servidor.** Ela só existe na memória do processo durante a chamada à Unico. Nenhum documento do Firestore tem foto, salvo a miniatura cifrada e, **por decisão do dono (2026-10-22)**, as fotos que uma família enviou numa busca que já nasce com match: ficam cifradas (`THUMBNAIL_KEY`) em `search_photos` até o match ser decidido, o evento encerrar ou o descarte. Busca sem match no registro não retém foto, e um match criado depois não encontra fotos.
 - **Token puro da Unico.** O servidor grava só o HMAC (`HMAC_KEY`). Nenhuma resposta da API devolve o token (critério 59).
 - **Foto na fila do celular depois do envio.** O `Blob` cifrado é apagado quando o item recebe `2xx`.
 - **Localização do aparelho em auditoria.** O `AuditEntry` do código não tem `ip`, `lat` nem `lon` (a spec 7 prevê esses campos: ver seção 14).
@@ -138,7 +138,7 @@ Não há pesquisa livre por nome na rede (Q22).
 
 1. Operador de abrigo `confirmed`, DC, `mediator` ou `protection` registra a busca (ou gera o link da família). Limite: `SEARCHES_PER_DAY` (10) por voluntário por dia no fuso `TZ_PILOT`. A tela diz que a busca não substitui o registro na delegacia.
 2. De 1 a 5 fotos (até 800 KB cada) vão ao servidor. Sem sinal, ficam cifradas na fila do celular e são apagadas após o `2xx`.
-3. O servidor envia cada foto à Unico (flow `api+humantoken`), recebe o token, deriva o HMAC e descarta foto e token. Em `searches` ficam só os `person_ids`, os dados informados e o voluntário em nome de quem a busca está. Cada busca grava auditoria com quem buscou (`vital_interest`).
+3. O servidor envia cada foto à Unico (flow `api+humantoken`), recebe o token, deriva o HMAC e descarta foto e token. Em `searches` ficam só os `person_ids`, os dados informados e o voluntário em nome de quem a busca está. Se a busca já nasce com match, as fotos são guardadas cifradas até a conferência (seção 10). Cada busca grava auditoria com quem buscou (`vital_interest`).
 4. O servidor compara os `person_ids` com `people`. Cada check-in ou resgate posterior é comparado com as buscas ativas. Correspondência cria um `match` (ID determinístico).
 5. A resposta ao operador é sempre a mesma, com ou sem match. Nem ele sabe se houve correspondência.
 6. Quem atende o match (nunca o abrigo de quem buscou) vê nome, apelido, parentesco e observações informados pela família, o nome no cadastro, a miniatura (se houver) e o abrigo. Confere os dados com a pessoa antes de decidir. Decisões: `accept`, `decline` ou `not_the_person` (falso positivo).
@@ -172,7 +172,8 @@ Não há pesquisa livre por nome na rede (Q22).
 | Sessões | 7 dias (`SESSION_DAYS`), renovadas no uso; banimento apaga | TTL |
 | Capturas (15 min), convites, códigos de aval, link da família (12 h) | Vencimento do próprio documento | TTL e tarefa horária |
 | Idempotência | 7 dias | TTL |
-| Foto de pessoa | Nunca no servidor. No celular, até o `2xx` do item | Código do app |
+| Foto de pessoa | Não fica no servidor, salvo as fotos da família de uma busca com match (linha abaixo). No celular, até o `2xx` do item | Código do app |
+| Fotos da família numa busca com match | Até o último match aberto da busca ser decidido, ou o evento encerrar, ou o descarte do evento: o que vier primeiro. Cifradas, em `search_photos` | `matches::post_decision`, tarefa horária (`jobs.rs`), `purge.rs`; auditoria `search_photos.retain`, `search_photos.discard.*` e `search_photo.view` |
 
 **Dados sem evento (não descartados).** Buscas com `event_id` nulo, resgates sem `event_id` e pessoas sem `event_ids` não pertencem a nenhum evento, então o fim de um evento não os apaga, e hoje nenhuma regra por idade os apaga (a exceção é a miniatura da pessoa sem evento nem abrigo, na primeira linha da tabela). No modo seco, a tarefa conta os que têm mais de `PURGE_AFTER_DAYS` e registra em `purge.dry_run` com `target_id = no_event` (`searches_without_event`, `rescues_without_event`, `people_without_event`). **A confirmar:** o dono decide a regra por idade (a partir de `created_at`, `received_at` ou `updated_at`) e se a busca avisa a família (`search_expiring`) antes de apagar.
 
@@ -238,7 +239,7 @@ Severidade (impacto no titular) e probabilidade são **avaliação técnica prel
 | R2 | Agressor usa a busca para achar a vítima | Alta | Média | Seção 11.2: resposta idêntica, mediação, contato só após aceite, sem localização automática, cota diária, auditoria | Baixo |
 | R3 | **Abrigo falso** capta dados de pessoas | Alta | Baixa | `unconfirmed` sem busca, mediação nem exportação; criador com liveness e banível; confirmação por validador ou aval presencial; alerta de proximidade | Baixo |
 | R4 | **Operador mal-intencionado** (voluntário credenciado) consulta ou copia dados | Alta | Média | Papéis mínimos; sem pesquisa livre por nome; auditoria em escrita e em acesso a miniatura e match; anomalias informativas; banimento; identificação por rosto | Médio. As anomalias só informam, não bloqueiam; ninguém monitora em tempo real. O estado das anomalias é em memória: um reinício da API o zera, e a sincronização da fila offline (vários registros de uma vez) pode gerar falso positivo |
-| R5 | **Vazamento** do Firestore ou das chaves | Alta | Baixa | Foto nunca guardada; token só como HMAC; miniatura cifrada; segredos fora do git; conta de serviço só com `roles/datastore.user`; descarte em 30 dias do que pertence a um evento (dados sem evento ficam, ver seção 10) | Médio. Nome, necessidades de saúde, vulnerabilidades, telefone da família e `stays` ficam em claro no Firestore. Sem backup |
+| R5 | **Vazamento** do Firestore ou das chaves | Alta | Baixa | Foto de pessoa não é guardada (exceto a foto de família de busca com match, cifrada e temporária: R19); token só como HMAC; miniatura cifrada; segredos fora do git; conta de serviço só com `roles/datastore.user`; descarte em 30 dias do que pertence a um evento (dados sem evento ficam, ver seção 10) | Médio. Nome, necessidades de saúde, vulnerabilidades, telefone da família e `stays` ficam em claro no Firestore. Sem backup |
 | R6 | **Falso positivo de match** expõe contato da família a quem não é a pessoa, ou liga pessoas erradas | Média | Média | Mediador confere os dados com a pessoa antes de aceitar; `not_the_person`; só o aceite libera o contato; indicador no painel | Baixo |
 | R7 | **Coerção ao consentimento**: pessoa em abrigo sente que precisa dar a selfie para receber abrigo ou doação | Média | Média | Recusa tem caminho de primeira classe (`no_biometrics`); texto "Recusar a selfie não tira abrigo nem doação"; dois botões de mesmo peso; taxa de recusa por abrigo no painel; voluntário marca a base legal | Médio. Depende da conduta do voluntário |
 | R8 | Criança tratada sem o consentimento dos pais | Média | Alta | Base `child_protection` (art. 14, § 3º); alerta imediato para `protection`; saída só com responsável conferido ou com `protection`/DC; alertas de exceção à DC | Baixo |
@@ -252,6 +253,7 @@ Severidade (impacto no titular) e probabilidade são **avaliação técnica prel
 | R16 | Fornecedor (Unico) trata ou retém a foto além do necessário | Alta | Baixa | Servidor descarta a foto; Unico prevê descartar a selfie depois do token | Médio. Contrato e DPA: **A confirmar** |
 | R17 | Abuso das rotas públicas (créditos da Unico, link da família) | Baixa | Média | Limites do link da família; corpo de 6 MB; modo degradado | Baixo. Sem limite nas demais rotas públicas |
 | R18 | Perda da `HMAC_KEY` | Média | Baixa | Backup fora da VM | Baixo |
+| R19 | **Foto de família retida cifrada** em `search_photos`: o rosto de quem está desaparecido (que não sabe da busca nem pode consentir) fica no Firestore enquanto o match está aberto; quem atende o match o vê na tela | Média | Baixa | Só com match; cifrada com a mesma chave da miniatura; só quem atende o match, com o match aberto, `no-store`, cada visualização auditada; apagada na decisão, no encerramento do evento e no descarte; busca sem match não retém | Médio. A chave de cifra é uma só (`THUMBNAIL_KEY`); a decisão concorrente de dois matches da mesma busca pode manter a foto até o encerramento do evento; **A confirmar** com o dono se o desenho vale (match criado depois da busca não vê fotos) |
 
 ## 14. Pontos a confirmar
 
